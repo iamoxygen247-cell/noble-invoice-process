@@ -34,11 +34,6 @@
         "method": "extract",
         "description": "Purchase order, job, work order, project, site reference, or reference number associated with the invoice. May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Work Order, WO, Project No., Project, Site Ref, Customer Ref, or Reference. If both PO and Job numbers exist, return both separated by a semicolon. Return null if no PO, job, work order, project, or reference number is present."
       },
-      "amount_excluding_gst": {
-        "type": "number",
-        "method": "extract",
-        "description": "GST is goods and services tax in Canada and it is 5% nationwide. This is the total amount excluding GST amount. Invoice amount before GST is usually the subtotal of the invoice but not always. Invoice can includes PST (provincial sales tax of 7%) as well. GST, Net Amount, Pre-tax Amount, Taxable Amount, Charges, Services Total, or Labour/Materials Subtotal. GST is Goodamount should be excludedDo not include GST amount only."
-      },
       "gst_amount": {
         "type": "number",
         "method": "extract",
@@ -69,7 +64,7 @@
           "trades",
           "other"
         ],
-        "description": "Categorise the vendor as one of the listed values based on the type of goods or services provided on the invoice. Use utilities for electricity, gas, water, waste, telecom, or similar services. Use landscaping for lawn, grounds, tree, irrigation, or snow services. Use insurance for insurance premiums, brokers, or claims-related invoices. Use trades for construction, repair, plumbing, electrical, HVAC, roofing, restoration, or other skilled trade services. Use other when none of the categories clearly apply."
+        "description": "Categorise the vendor as one of the listed values based on the type of goods or services provided on the invoice. Use utilities for electricity, gas, water, waste, telecom, or similar services. Use landscaping for lawn, grounds, tree, irrigation, or snow services. Use trades for construction, repair, plumbing, electrical, HVAC, roofing, restoration, or other skilled trade services. Use other when none of the categories clearly apply."
       },
       "anomaly_flag": {
         "type": "string",
