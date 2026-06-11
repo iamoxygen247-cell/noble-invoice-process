@@ -1,0 +1,111 @@
+{
+  "baseAnalyzerId": "prebuilt-document",
+  "description": "General commercial invoice extraction",
+  "config": {
+    "returnDetails": true,
+    "enableOcr": true,
+    "estimateFieldSourceAndConfidence": true
+  },
+  "fieldSchema": {
+    "name": "GeneralInvoiceExtras",
+    "fields": {
+      "vendor_name": {
+        "type": "string",
+        "method": "extract",
+        "description": "The name of the vendor or company issuing the invoice."
+      },
+      "vendor_tax_id": {
+        "type": "string",
+        "method": "extract",
+        "description": "The vendor tax identification number. May be labelled GST, HST, VAT, ABN, Tax ID, or similar depending on the country."
+      },
+      "invoice_number": {
+        "type": "string",
+        "method": "extract",
+        "description": "The invoice number or invoice ID. May be labelled Invoice No, Invoice #, or similar."
+      },
+      "invoice_date": {
+        "type": "string",
+        "method": "extract",
+        "description": "The date the invoice was issued. Return in YYYY-MM-DD format if possible."
+      },
+      "due_date": {
+        "type": "string",
+        "method": "extract",
+        "description": "The date payment is due. Return in YYYY-MM-DD format if possible."
+      },
+      "customer_name": {
+        "type": "string",
+        "method": "extract",
+        "description": "The name of the customer or company being billed."
+      },
+      "invoice_total": {
+        "type": "number",
+        "method": "extract",
+        "description": "The total amount due on the invoice including all taxes and fees."
+      },
+      "subtotal": {
+        "type": "number",
+        "method": "extract",
+        "description": "The subtotal amount before taxes. Return null if not stated."
+      },
+      "tax_amount": {
+        "type": "number",
+        "method": "extract",
+        "description": "The total tax amount such as GST, HST, VAT applied to the invoice. Return null if not stated."
+      },
+      "line_items": {
+        "type": "array",
+        "method": "generate",
+        "description": "The individual line items or charges on the invoice.",
+        "items": {
+          "type": "object",
+          "method": "generate",
+          "properties": {
+            "description": {
+              "type": "string",
+              "method": "extract",
+              "description": "Description of the goods or service for this line item."
+            },
+            "quantity": {
+              "type": "number",
+              "method": "extract",
+              "description": "Quantity of units for this line item."
+            },
+            "unit_price": {
+              "type": "number",
+              "method": "extract",
+              "description": "Price per unit for this line item."
+            },
+            "total_amount": {
+              "type": "number",
+              "method": "extract",
+              "description": "Total amount for this line item."
+            }
+          }
+        }
+      },
+      "is_handwritten": {
+        "type": "string",
+        "method": "classify",
+        "enum": ["yes", "no"],
+        "description": "Classify as yes if the document contains handwritten text for any of the following key fields: vendor name, customer name, invoice number, invoice date, due date, amounts, or line item descriptions. Indicators of handwriting include: inconsistent letter casing within a single word (e.g. seRvice, BuRnab), irregular character spacing, words that appear to be written rather than typed, or text that a human clearly wrote by hand rather than a computer printed. Also classify as yes if the document is a pre-printed template form where the blanks have been filled in by hand. Classify as no only if all key fields are entirely printed or digitally generated with consistent font rendering throughout. When in doubt, classify as yes."
+      },
+      "vendor_category": {
+        "type": "string",
+        "method": "classify",
+        "enum": ["utilities", "landscaping", "insurance", "trades", "other"],
+        "description": "Categorise the vendor as one of the listed values based on the type of goods or services provided on the invoice."
+      },
+      "anomaly_flag": {
+        "type": "string",
+        "method": "generate",
+        "description": "Note anything unusual about this invoice: missing critical fields, suspiciously round amounts with no itemisation, vendor name not matching the address region, or duplicate line items. Return an empty string if nothing unusual is detected."
+      }
+    }
+  },
+  "models": {
+    "completion": "prebuilt-analyzer-completion",
+    "embedding": "prebuilt-analyzer-embedding"
+  }
+}

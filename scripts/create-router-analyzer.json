@@ -1,0 +1,22 @@
+{
+  "baseAnalyzerId": "prebuilt-document",
+  "description": "Invoice type classifier and router",
+  "config": {
+    "returnDetails": true,
+    "enableOcr": true,
+    "estimateFieldSourceAndConfidence": true,
+    "contentCategories": {
+      "general_invoice": {
+        "description": "Commercial billing documents from vendors, tradespeople, insurers or utilities requesting payment for goods or services. Includes printed, digitally generated, scanned, and handwritten invoices.",
+        "analyzerId": "generalinvoice"
+      },
+      "other": {
+        "description": "Any document that does not match the above category. Use for contracts, statements, letters, or any non-invoice document."
+      }
+    }
+  },
+  "models": {
+    "completion": "prebuilt-analyzer-completion",
+    "embedding": "prebuilt-analyzer-embedding"
+  }
+}
