@@ -12,7 +12,7 @@
       "vendor_name": {
         "type": "string",
         "method": "extract",
-        "description": "Name of the company, supplier, contractor, utility, tradesperson, or vendor requesting payment. Usually appears in the invoice header, logo area, remittance section, or supplier contact block. Do not return the customer, bill-to party, property owner, or payer."
+        "description": "Name of the company, supplier, contractor, tradesperson, service provider, utility, or vendor issuing the invoice and requesting payment. Usually appears near the logo, top header, remittance details, or vendor contact block. Do not return the customer, Invoice To party, Bill To party, property manager, property owner, tenant, attention line, technician, or contact person."
       },
       "invoice_date": {
         "type": "date",
@@ -22,14 +22,14 @@
       "payment_due_date": {
         "type": "date",
         "method": "extract",
-        "description": "Date payment is due. May be labeled Due Date, Payment Due, Payable By, Due On, Balance Due Date, or Terms Due Date. Return only an explicitly stated payment due date. If only terms such as Net 30 are shown and no due date is printed, return null."
+        "description": "Date when payment is due. May be labeled Due Date, Payment Due Date, Payable By, Due On, Terms Due Date, or Balance Due Date. Return only an explicitly printed calendar date. Do not infer a due date from invoice date, service date, statement date, balance due, amount due, payment terms, or total due. If no due date is printed, return null."
       },
       "invoice_number": {
         "type": "string",
         "method": "extract",
-        "description": "Unique invoice identifier assigned by the vendor. May be labeled Invoice #, Invoice No., Inv No., Tax Invoice No., Bill Number, Document Number, Reference Number, or Ref. Do not return a PO number, job number, account number, customer number, quote number, or work order number unless it is explicitly the invoice number."
+        "description": "Unique invoice identifier assigned by the vendor for this invoice. Prefer values labeled Invoice #, Invoice No., Inv No., Tax Invoice No., Bill Number, Document Number, or a standalone # near the invoice/work-order header when it matches the invoice number. Do not return P.O. No., PO #, job number, work order number, GST number, vendor tax number, phone number, customer number, account number, applicator license number, service license number, product registration number, amount, date, or postal code."
       },
-      "job_number": {
+      "po_or_job_number": {
         "type": "string",
         "method": "extract",
         "description": "Purchase order, job, work order, project, site reference, or reference number associated with the invoice. May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Work Order, WO, Project No., Project, Site Ref, Customer Ref, or Reference. If both PO and Job numbers exist, return both separated by a semicolon. Return null if no PO, job, work order, project, or reference number is present."
@@ -37,24 +37,34 @@
       "gst_amount": {
         "type": "number",
         "method": "extract",
-        "description": "Goods and Services Tax amount charged on the invoice. GST is goods and services tax in Canada and it is 5%. May be labeled GST, G.S.T., Goods and Services Tax, GST/HST or Tax Amount. Return the numeric tax amount shown, not the tax rate. If separate GST and PST lines appear, return only the GST amount. If only one combined GST/HST/tax line is shown, return that tax amount. Return null if no GST or tax amount is stated."
+        "description": "Goods and Services Tax amount charged on the invoice. In this prototype, GST means Canadian GST at 5%. Prefer the amount directly associated with labels such as GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric money amount, not the GST rate. If both a GST line and a Total Tax line are shown and the amounts are the same, return the GST line amount. Use Total Tax only when there is no separate GST/G.S.T. line and no other tax types are present. Do not return the vendor GST registration number, GST account number, tax ID, subtotal, total invoice amount, balance due, line-item amount, rate, percentage, phone number, postal code, product registration number, or service license number."
+      },
+    "subtotal_before_tax": {
+        "type": "number",
+        "method": "extract",
+        "description": "Invoice subtotal before GST is added. Prefer values labeled Subtotal, Amount before GST, Total before GST, Net Amount, Pre-tax Amount, Taxable Amount, Cost of Service, or Service Amount. Do not return GST amount, Total Tax, final invoice total, Balance Due, Amount Due, Amount Paid, Rate, line item amount, or payment amount. Return null if no pre-GST subtotal is printed."
       },
       "total_invoice_amount": {
         "type": "number",
         "method": "extract",
-        "description": "Final invoice amount due including GST and all charges. May be labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Please Pay, or Amount Payable. Prefer the amount the customer is expected to pay. Do not return subtotal or amount before tax."
+        "description": "Final invoice amount the customer is expected to pay, including GST and all charges. Prefer values labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Please Pay Total, Please Pay, or Amount Payable. If Total and Balance Due are both present and equal, return that amount. Do not return subtotal, GST amount, total tax, amount paid, rate, line amount, cost of service, or amount before tax."
       },
       "service_address": {
         "type": "string",
         "method": "extract",
-        "description": "Address where the work, service, delivery, utility, repair, job, or property-related service was performed. May be labeled Service Address, Service Location, Site Address, Job Address, Work Location, Property Address, Premises, Installation Address, Ship To, or Service For. Do not return the vendor address. Do not return the billing address unless no separate service/site address exists and the billing address is clearly the serviced property."
+        "description": "Address where the work, service, delivery, repair, pest control visit, utility service, or job was performed. Prefer addresses labeled Ship To, Service Address, Service Location, Site Address, Job Address, Work Location, Property Address, Premises, Installation Address, or Service For. If both Invoice To/Bill To and Ship To/Service Address are present, return Ship To or Service Address. Do not return the vendor address. Do not return the Invoice To, Bill To, customer mailing address, remittance address, or vendor office address unless no service/site/ship-to address exists."
+      },
+      "invoice_description": {
+        "type": "string",
+        "method": "generate",
+        "description": "Generate one short sentence describing what this invoice is for. Use the invoice line item description, Service For field, work order title, service notes, or item description. The sentence must be 15 words or fewer. Do not include vendor name, invoice number, PO number, address, date, tax, total amount, payment status, or contact details. Do not mention GST. Use plain business wording. Example outputs: 'Rodent noise pest control service.' 'Lawn maintenance service.' 'Electrical repair work.' Return an empty string if the invoice purpose cannot be determined."
       },
       "is_handwritten": {
-        "type": "string",
-        "method": "classify",
-        "enum": ["yes","no"],
-        "description": "Classify as yes if the document contains handwritten text for any of the following key fields: vendor name, invoice number, invoice date, payment due date, PO or job number, amounts, GST, total invoice amount, service address, or line item descriptions. Indicators of handwriting include inconsistent letter casing within a single word, irregular character spacing, words that appear written rather than typed, or text that a human clearly wrote by hand rather than computer printed. Also classify as yes if the document is a pre-printed template form where blanks have been filled in by hand. Classify as no only if all key fields are entirely printed or digitally generated with consistent font rendering throughout. When in doubt, classify as yes."
-      },
+          "type": "string",
+          "method": "classify",
+          "enum": ["yes", "no"],
+          "description": "Classify yes only when one or more critical AP fields are handwritten or manually filled: vendor name, invoice number, invoice date, payment due date, PO/job number, GST amount, total invoice amount, or service address. Classify no when the critical AP fields are printed, digitally generated, or clearly machine-readable, even if the document includes handwritten notes, signatures, technician notes, checkboxes, or service comments elsewhere."
+        },
       "vendor_category": {
         "type": "string",
         "method": "classify",
