@@ -40,7 +40,7 @@
         "method": "extract",
         "description": "Goods and Services Tax amount charged on the invoice. In this prototype, GST means Canadian GST at 5%. Prefer the amount directly associated with labels such as GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric money amount, not the GST rate. If both a GST line and a Total Tax line are shown and the amounts are the same, return the GST line amount. Use Total Tax only when there is no separate GST/G.S.T. line and no other tax types are present. Do not return the vendor GST registration number, GST account number, tax ID, subtotal, total invoice amount, balance due, line-item amount, rate, percentage, phone number, postal code, product registration number, or service license number."
       },
-    "subtotal_before_tax": {
+      "subtotal_before_tax": {
         "type": "number",
         "method": "extract",
         "description": "Invoice subtotal before GST is added. Prefer values labeled Subtotal, Amount before GST, Total before GST, Net Amount, Pre-tax Amount, Taxable Amount, Cost of Service, or Service Amount. Do not return GST amount, Total Tax, final invoice total, Balance Due, Amount Due, Amount Paid, Rate, line item amount, or payment amount. Return null if no pre-GST subtotal is printed."
@@ -58,14 +58,14 @@
       "invoice_description": {
         "type": "string",
         "method": "generate",
-        "description": "Generate one short sentence describing what this invoice is for. Use the invoice line item description, Service For field, work order title, service notes, or item description. The sentence must be 15 words or fewer. Do not include vendor name, invoice number, PO number, address, date, tax, total amount, payment status, or contact details. Do not mention GST. Use plain business wording. Example outputs: 'Rodent noise pest control service.' 'Lawn maintenance service.' 'Electrical repair work.' Return an empty string if the invoice purpose cannot be determined."
+        "description": "Generate one short sentence describing what this invoice is for. Use the invoice line item description, Service For field, work order title, service notes, or item description. The sentence must be 15 words or fewer. When the invoice clearly represents a recurring monthly charge - for example a monthly utility bill or a monthly service contract - you may include the billing month by name (for example 'March') to indicate the period covered. Otherwise do not include any date. Never include a day number, a year, or a full calendar date. Do not include vendor name, invoice number, PO number, address, tax, total amount, payment status, or contact details. Do not mention GST. Use plain business wording. Example outputs: 'March electricity supply charges.' 'Monthly lawn maintenance service.' 'Electrical repair work.' Return an empty string if the invoice purpose cannot be determined."
       },
       "is_handwritten": {
-          "type": "string",
-          "method": "classify",
-          "enum": ["yes", "no"],
-          "description": "Classify yes only when one or more critical AP fields are handwritten or manually filled: vendor name, invoice number, invoice date, payment due date, PO/job number, GST amount, total invoice amount, or service address. Classify no when the critical AP fields are printed, digitally generated, or clearly machine-readable, even if the document includes handwritten notes, signatures, technician notes, checkboxes, or service comments elsewhere."
-        },
+        "type": "string",
+        "method": "classify",
+        "enum": ["yes", "no"],
+        "description": "Classify yes only when one or more critical AP fields are handwritten or manually filled: vendor name, invoice number, invoice date, payment due date, PO/job number, GST amount, total invoice amount, or service address. Classify no when the critical AP fields are printed, digitally generated, or clearly machine-readable, even if the document includes handwritten notes, signatures, technician notes, checkboxes, or service comments elsewhere."
+      },
       "vendor_category": {
         "type": "string",
         "method": "classify",

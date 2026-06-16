@@ -17,6 +17,7 @@ What it does:
     B2: router category other -> reject / effective category other
     B3: is_handwritten missing/unknown/yes -> human review
     B4: critical field missing, empty, missing confidence, or confidence < threshold -> human review
+        (the critical field set varies by router category; see CATEGORY_CRITICAL_FIELDS)
     GST math: total_invoice_amount - gst_amount should reconcile to 5% GST -> review if invalid
 - Writes a matrix CSV scorecard (column 0 = field labels, one column per run); overwrites to a
   fresh single-run matrix by default, or adds the run as a new rightmost column with
@@ -26,8 +27,8 @@ Prerequisites:
     python -m pip install azure-ai-contentunderstanding azure-core
 
 Examples:
-    python .\\step24_test_no_router_confidence.py --file ".\\samples\\invoice1.pdf"
-    python .\\step24_test_no_router_confidence.py --url "https://...blob.core.windows.net/.../invoice1.pdf?...sas..."
+    python .\\step24_test.py --file ".\\samples\\invoice1.pdf"
+    python .\\step24_test.py --url "https://...blob.core.windows.net/.../invoice1.pdf?...sas..."
 
 API key:
     For this prototype, you may paste the key into the API_KEY constant below.
@@ -56,10 +57,9 @@ from azure.core.exceptions import AzureError
 # -----------------------------------------------------------------------------
 
 ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
-# SECURITY: do not paste a live key here. The previously embedded key was exposed and
-# must be regenerated in the Foundry portal (Deployments pane). Supply the new key via
-# the AZURE_CU_KEY environment variable or --key. ensure_inputs() will stop with a clear
-# message if no key is provided.
+# SECURITY: do not paste a live key here. Supply the key via the AZURE_CU_KEY
+# environment variable or --key. ensure_inputs() will stop with a clear message
+# if no key is provided.
 API_KEY = "9n1Mwhx32kjiipj5F3A62Pell1qcBqRZr1VpTNCuBsbxILzaiGxXJQQJ99CFAC4f1cMXJ3w3AAAAACOGphgz"
 API_VERSION = "2025-11-01"
 ROUTER_ANALYZER_ID = "invoicerouter"
@@ -73,9 +73,12 @@ FIELD_CONFIDENCE_THRESHOLD = 0.75
 GST_RATE = 0.05
 GST_TOLERANCE = 0.02
 
-# Critical fields in the updated generalinvoice analyzer.
-# payment_due_date is intentionally not critical; the Logic App will handle it.
-# job_number / PO reference is intentionally not critical because valid invoices may omit it.
+# Default critical fields. Used for the general_invoice category, for trades and any
+# other invoice that routes to general_invoice, and for any category without an
+# explicit override in CATEGORY_CRITICAL_FIELDS below.
+# payment_due_date is intentionally not in the default set; the Logic App defaults it
+# to invoice_date + 30 days. job_number / PO reference is intentionally not critical
+# because valid invoices may omit it.
 CRITICAL_FIELDS = [
     "vendor_name",
     "invoice_number",
@@ -84,6 +87,40 @@ CRITICAL_FIELDS = [
     "total_invoice_amount",
     "service_address",
 ]
+
+# Per-router-category critical field sets, keyed by the router category
+# (contents[0].segments[0].category). A category listed here FULLY overrides
+# CRITICAL_FIELDS for that category - it is not merged.
+#
+# - utilities: same as the default plus payment_due_date. Utility bills carry a hard,
+#   printed due date, so it must be present rather than defaulted by the Logic App.
+# - landscaping: currently identical to the default. Listed explicitly so it stays
+#   pinned to the specified set even if the default changes later.
+CATEGORY_CRITICAL_FIELDS = {
+    "utilities": [
+        "vendor_name",
+        "invoice_date",
+        "payment_due_date",
+        "invoice_number",
+        "gst_amount",
+        "total_invoice_amount",
+        "service_address",
+    ],
+    "landscaping": [
+        "vendor_name",
+        "invoice_date",
+        "invoice_number",
+        "gst_amount",
+        "total_invoice_amount",
+        "service_address",
+    ],
+}
+
+
+def critical_fields_for(category: str) -> List[str]:
+    """Return the critical-field list for a router category, falling back to CRITICAL_FIELDS."""
+    return CATEGORY_CRITICAL_FIELDS.get((category or "").strip().lower(), CRITICAL_FIELDS)
+
 
 FIELD_PRINT_ORDER = [
     "vendor_name",
@@ -233,20 +270,11 @@ def analyze_input(client: ContentUnderstandingClient, args: argparse.Namespace):
     print(f"Content-Type: {content_type}")
     binary_input = file_path.read_bytes()
 
-    # The SDK can infer content type from the bytes in most cases. If your installed
-    # SDK version supports content_type, this argument is accepted; otherwise remove it.
-    try:
-        poller = client.begin_analyze_binary(
-            analyzer_id=args.analyzer_id,
-            binary_input=binary_input,
-            content_type=content_type,
-        )
-    except TypeError:
-        # Backward-compatible with SDK versions that do not expose content_type.
-        poller = client.begin_analyze_binary(
-            analyzer_id=args.analyzer_id,
-            binary_input=binary_input,
-        )
+    poller = client.begin_analyze_binary(
+        analyzer_id=args.analyzer_id,
+        binary_input=binary_input,
+        content_type=content_type,
+    )
     return poller.result()
 
 
@@ -355,7 +383,7 @@ def find_router_category(full: Dict[str, Any]) -> Tuple[str, str]:
                     return str(first_segment.get("category")), "$.contents[0].segments[0].category"
 
     # Fallback: first business category found anywhere in the result.
-    business_categories = {"general_invoice", "property_tax", "other"}
+    business_categories = {"general_invoice", "utilities", "landscaping", "other"}
     found_category, found_path = find_first_category_path(full, business_categories)
     if found_category is not None:
         return found_category, found_path
@@ -462,6 +490,7 @@ def print_array_field(field_name: str, field_data: Dict[str, Any]) -> None:
 def print_fields_and_apply_b4(
     fields: Dict[str, Any],
     threshold: float,
+    critical_fields: List[str],
 ) -> Tuple[bool, List[str]]:
     review_triggered = False
     review_reasons: List[str] = []
@@ -480,8 +509,8 @@ def print_fields_and_apply_b4(
         field_data = fields.get(field_name)
         if field_data is None:
             if field_name in FIELD_PRINT_ORDER:
-                gate = "REVIEW" if field_name in CRITICAL_FIELDS else "-"
-                if field_name in CRITICAL_FIELDS:
+                gate = "REVIEW" if field_name in critical_fields else "-"
+                if field_name in critical_fields:
                     review_triggered = True
                     review_reasons.append(f"{field_name} is missing")
                 print(f"  {field_name:<26} {'N/A':<12} {gate:<12} <missing>")
@@ -505,7 +534,7 @@ def print_fields_and_apply_b4(
             continue
 
         gate = "-"
-        if field_name in CRITICAL_FIELDS:
+        if field_name in critical_fields:
             if is_empty_value(value):
                 gate = "REVIEW"
                 review_triggered = True
@@ -805,9 +834,9 @@ def invoice_description_gate(value: Any) -> str:
     if value is None or (isinstance(value, str) and value.strip() == ""):
         return "not critical - empty"
     words = count_words(value)
-    if words <= 11:
+    if words <= 15:
         return "pass"
-    return f"warning: {words} words > 11"
+    return f"warning: {words} words > 15"
 
 
 # -----------------------------------------------------------------------------
@@ -824,11 +853,16 @@ def csv_scalar(value: Any) -> str:
     return str(value)
 
 
-def field_gate_for_scorecard(field_name: str, field_data: Any, threshold: float) -> str:
-    """Return the B4 status for a field in the vertical scorecard."""
-    if field_name not in CRITICAL_FIELDS:
+def field_gate_for_scorecard(
+    field_name: str,
+    field_data: Any,
+    threshold: float,
+    critical_fields: List[str],
+) -> str:
+    """Return the B4 status for a field in the scorecard."""
+    if field_name not in critical_fields:
         if field_name == "payment_due_date":
-            return "not critical - handled by Logic App"
+            return "not critical - Logic App defaults to invoice_date + 30 days"
         return "not critical"
 
     if field_data is None:
@@ -861,6 +895,7 @@ def append_scorecard(
     field_threshold: float = FIELD_CONFIDENCE_THRESHOLD,
     append: bool = False,
     run_label: Optional[str] = None,
+    critical_fields: Optional[List[str]] = None,
 ) -> None:
     """
     Write this run's scorecard as a column in a matrix CSV.
@@ -878,8 +913,20 @@ def append_scorecard(
     --append-scorecard the run is added as a new rightmost column; a legacy stacked
     file is migrated to a matrix on first append. The column header defaults to the
     run's UTC timestamp, or run_label when provided.
+
+    critical_fields is the active critical-field set for this run's router category;
+    it falls back to the default CRITICAL_FIELDS when not supplied.
     """
+    if critical_fields is None:
+        critical_fields = CRITICAL_FIELDS
+
     run_id = run_id_utc()
+
+    payment_due_date_gate = (
+        "critical for this category"
+        if "payment_due_date" in critical_fields
+        else "not critical - Logic App defaults to invoice_date + 30 days"
+    )
 
     pairs: List[Tuple[str, str]] = [
         ("run_id_utc", run_id),
@@ -890,8 +937,8 @@ def append_scorecard(
         ("router_confidence_gate", "skipped - not consistently available in CU router result"),
         ("effective_document_type", effective_document_type),
         ("analyzer_used", analyzer_used),
-        ("critical_fields", ", ".join(CRITICAL_FIELDS)),
-        ("payment_due_date_gate", "not critical - handled by Logic App"),
+        ("critical_fields", ", ".join(critical_fields)),
+        ("payment_due_date_gate", payment_due_date_gate),
     ]
 
     ordered_field_names = FIELD_PRINT_ORDER + [
@@ -908,7 +955,7 @@ def append_scorecard(
             (f"{field_name}.confidence", "MISSING" if confidence is None else f"{confidence:.3f}")
         )
         pairs.append(
-            (f"{field_name}.gate", field_gate_for_scorecard(field_name, field_data, field_threshold))
+            (f"{field_name}.gate", field_gate_for_scorecard(field_name, field_data, field_threshold, critical_fields))
         )
 
         if field_name == "invoice_description":
@@ -958,8 +1005,9 @@ def main() -> int:
     print(f"Result JSON output: {args.out} (overwrite mode)")
     print(f"Scorecard output: {args.scorecard} ({'new column (append)' if args.append_scorecard else 'fresh matrix (overwrite)'})")
     print(f"Critical field threshold: {args.field_threshold:.2f}")
-    print(f"Critical fields: {', '.join(CRITICAL_FIELDS)}")
-    print("payment_due_date: not critical - handled by Logic App")
+    print(f"Default critical fields: {', '.join(CRITICAL_FIELDS)}")
+    print("Per-category critical overrides: utilities (adds payment_due_date)")
+    print("payment_due_date: critical for utilities; otherwise Logic App defaults to invoice_date + 30 days")
     print("=" * 72)
 
     try:
@@ -984,6 +1032,7 @@ def main() -> int:
         return 1
 
     router_category, router_category_path = find_router_category(full)
+    active_critical = critical_fields_for(router_category)
 
     child_content, child_selection_reason = find_child_content(
         contents,
@@ -1016,6 +1065,7 @@ def main() -> int:
     print("Router confidence gate: skipped")
     print(f"Child category:         {category_from_child}")
     print(f"Analyzer used:          {analyzer_used}")
+    print(f"Active critical fields: {', '.join(active_critical)}")
     print()
 
     review_reasons: List[str] = []
@@ -1061,6 +1111,7 @@ def main() -> int:
             field_threshold=args.field_threshold,
             append=args.append_scorecard,
             run_label=args.run_label,
+            critical_fields=active_critical,
         )
         print(f"Scorecard written to {args.scorecard}" + (" (new column)" if args.append_scorecard else " (fresh matrix)"))
         return 0
@@ -1068,7 +1119,7 @@ def main() -> int:
     print("=" * 72)
     print("EXTRACTED FIELDS")
     print("=" * 72)
-    b4_review, b4_reasons = print_fields_and_apply_b4(fields, args.field_threshold)
+    b4_review, b4_reasons = print_fields_and_apply_b4(fields, args.field_threshold, active_critical)
 
     is_handwritten_field = fields.get("is_handwritten", {})
     is_handwritten_value = (get_value(is_handwritten_field) or "").strip().lower()
@@ -1146,6 +1197,7 @@ def main() -> int:
         field_threshold=args.field_threshold,
         append=args.append_scorecard,
         run_label=args.run_label,
+        critical_fields=active_critical,
     )
     print()
     print(f"Scorecard written to {args.scorecard}" + (" (new column)" if args.append_scorecard else " (fresh matrix)"))
