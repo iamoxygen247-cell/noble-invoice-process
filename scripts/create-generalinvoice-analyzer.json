@@ -4,6 +4,7 @@
   "config": {
     "returnDetails": true,
     "enableOcr": true,
+    "enableLayout": true,
     "estimateFieldSourceAndConfidence": true
   },
   "fieldSchema": {
@@ -27,7 +28,7 @@
       "invoice_number": {
         "type": "string",
         "method": "extract",
-        "description": "Unique invoice identifier assigned by the vendor for this invoice. Prefer values labeled Invoice #, Invoice No., Inv No., Tax Invoice No., Bill Number, Document Number, or a standalone # near the invoice/work-order header when it matches the invoice number. Do not return P.O. No., PO #, job number, work order number, GST number, vendor tax number, phone number, customer number, account number, applicator license number, service license number, product registration number, amount, date, or postal code."
+        "description": "Unique invoice identifier assigned by the vendor for this invoice. Prefer the value in the invoice header or top-right invoice table that is directly labeled Invoice #, Invoice No., Invoice Number, Inv #, Inv No., Tax Invoice No., Bill Number, or Document Number. The invoice number is often near the invoice date. If the document includes both an invoice page and a work order page, prefer the value labeled Invoice # on the invoice page; use a standalone '#:' value on the work order page only if it matches the invoice page number. Return only the identifier value, not the label. Do not return P.O. No., PO #, PO number, job number, work order number, project number, reference number, customer number, account number, vendor GST number, tax ID, phone number, postal code, license number, product registration number, date, subtotal, GST amount, total amount, balance due, or service address."
       },
       "po_or_job_number": {
         "type": "string",

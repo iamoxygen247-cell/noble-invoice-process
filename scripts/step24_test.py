@@ -18,7 +18,9 @@ What it does:
     B3: is_handwritten missing/unknown/yes -> human review
     B4: critical field missing, empty, missing confidence, or confidence < threshold -> human review
     GST math: total_invoice_amount - gst_amount should reconcile to 5% GST -> review if invalid
-- Writes a vertical field/value CSV scorecard; overwrites safely by default or appends with --append-scorecard.
+- Writes a matrix CSV scorecard (column 0 = field labels, one column per run); overwrites to a
+  fresh single-run matrix by default, or adds the run as a new rightmost column with
+  --append-scorecard (auto-migrating a legacy vertical-section file on first append).
 
 Prerequisites:
     python -m pip install azure-ai-contentunderstanding azure-core
@@ -54,7 +56,11 @@ from azure.core.exceptions import AzureError
 # -----------------------------------------------------------------------------
 
 ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
-API_KEY = "PASTE_YOUR_API_KEY_HERE"
+# SECURITY: do not paste a live key here. The previously embedded key was exposed and
+# must be regenerated in the Foundry portal (Deployments pane). Supply the new key via
+# the AZURE_CU_KEY environment variable or --key. ensure_inputs() will stop with a clear
+# message if no key is provided.
+API_KEY = "9n1Mwhx32kjiipj5F3A62Pell1qcBqRZr1VpTNCuBsbxILzaiGxXJQQJ99CFAC4f1cMXJ3w3AAAAACOGphgz"
 API_VERSION = "2025-11-01"
 ROUTER_ANALYZER_ID = "invoicerouter"
 GENERAL_INVOICE_ANALYZER_ID = "generalinvoice"
@@ -171,8 +177,19 @@ def parse_args() -> argparse.Namespace:
         "--append-scorecard",
         action="store_true",
         help=(
-            "Append the current run to an existing vertical scorecard. "
-            "Default is to overwrite the scorecard so stale rows from prior runs do not remain."
+            "Add this run as a new rightmost column in the scorecard matrix. "
+            "If the file is in the legacy vertical-section format, it is migrated to a "
+            "matrix on first append (prior runs become their own columns). Default "
+            "(without this flag) overwrites to a fresh single-run matrix."
+        ),
+    )
+    parser.add_argument(
+        "--run-label",
+        default=None,
+        help=(
+            "Optional human-readable column header for this run in the scorecard matrix "
+            "(e.g. baseline_0.75). Defaults to the run's UTC timestamp. Header collisions "
+            "get a #N suffix."
         ),
     )
     return parser.parse_args()
@@ -594,50 +611,23 @@ def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
                 pass
 
 
-def read_csv_header(path: Path) -> Optional[List[str]]:
+def read_all_rows(path: Path) -> List[List[str]]:
+    """Read every row of a CSV file. Returns [] if the file is missing or empty."""
     if not path.exists() or path.stat().st_size == 0:
-        return None
+        return []
     with path.open("r", newline="", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        return next(reader, None)
+        return [row for row in csv.reader(f)]
 
 
-def ensure_vertical_scorecard_compatible(path: Path) -> None:
-    header = read_csv_header(path)
-    if header is None:
-        return
-    if header != ["field", "value"]:
-        raise ValueError(
-            f"Existing scorecard is not in vertical field/value format: {path}. "
-            "Run without --append-scorecard to overwrite it, or choose a new --scorecard path."
-        )
-
-
-def write_scorecard_rows(path: Path, rows: List[Tuple[str, Any]], append: bool) -> None:
-    """Write scorecard rows safely whether or not the target file already exists."""
+def write_rows_atomic(path: Path, out_rows: List[List[str]]) -> None:
+    """Write all rows to CSV via a temp file plus atomic replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    if append:
-        ensure_vertical_scorecard_compatible(path)
-        write_header = not path.exists() or path.stat().st_size == 0
-        with path.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if write_header:
-                writer.writerow(["field", "value"])
-            for field_name, value in rows:
-                writer.writerow([field_name, csv_scalar(value)])
-        return
-
-    # Default: overwrite. This avoids stale values and avoids mixing old wide CSVs
-    # with the newer vertical scorecard format. Use atomic replace so existing files
-    # are handled consistently.
     tmp_path = temp_path_for(path)
     try:
         with tmp_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["field", "value"])
-            for field_name, value in rows:
-                writer.writerow([field_name, csv_scalar(value)])
+            for row in out_rows:
+                writer.writerow(row)
         os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
@@ -645,6 +635,164 @@ def write_scorecard_rows(path: Path, rows: List[Tuple[str, Any]], append: bool) 
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def derive_column_header(run_label: Optional[str], run_id: str) -> str:
+    """Column header for this run: the run label if given, otherwise the UTC run id."""
+    label = (run_label or "").strip()
+    return label if label else run_id
+
+
+def unique_header(candidate: str, existing: List[str]) -> str:
+    """Return candidate, suffixed #2, #3, ... if it collides with an existing column."""
+    if candidate not in existing:
+        return candidate
+    n = 2
+    while f"{candidate}#{n}" in existing:
+        n += 1
+    return f"{candidate}#{n}"
+
+
+def looks_like_old_vertical(rows: List[List[str]]) -> bool:
+    """The legacy stacked format is identified by the presence of a 'record_start' row."""
+    return any(row and row[0] == "record_start" for row in rows)
+
+
+def parse_vertical_sections(rows: List[List[str]]) -> List[List[Tuple[str, str]]]:
+    """
+    Parse the legacy stacked scorecard into one (key, value) list per run section.
+    Scaffolding rows (header, record_start, record_end, blank separators) are dropped.
+    """
+    sections: List[List[Tuple[str, str]]] = []
+    current: Optional[List[Tuple[str, str]]] = None
+    for row in rows:
+        if not row:
+            continue
+        key = row[0]
+        value = row[1] if len(row) > 1 else ""
+        if key == "field" and value == "value":
+            continue
+        if key == "record_start":
+            current = []
+            continue
+        if key == "record_end":
+            if current is not None:
+                sections.append(current)
+                current = None
+            continue
+        if key == "" and value == "":
+            continue
+        if current is not None:
+            current.append((key, value))
+    if current:  # tolerate a trailing section that was never closed with record_end
+        sections.append(current)
+    return sections
+
+
+def matrix_from_sections(
+    sections: List[List[Tuple[str, str]]],
+) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+    """Convert parsed legacy sections into (headers, ordered_keys, key_to_cells)."""
+    headers: List[str] = []
+    order: List[str] = []
+    seen = set()
+    maps: List[Dict[str, str]] = []
+    for i, section in enumerate(sections):
+        section_map: Dict[str, str] = {}
+        for key, value in section:
+            section_map[key] = value  # within a section, last value wins
+            if key not in seen:
+                seen.add(key)
+                order.append(key)
+        maps.append(section_map)
+        raw_header = section_map.get("run_id_utc") or f"run_{i + 1}"
+        headers.append(unique_header(raw_header, headers))
+    cellmap: Dict[str, List[str]] = {
+        key: [maps[i].get(key, "") for i in range(len(sections))] for key in order
+    }
+    return headers, order, cellmap
+
+
+def parse_matrix(
+    rows: List[List[str]],
+) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+    """Parse an existing matrix scorecard into (headers, ordered_keys, key_to_cells)."""
+    if not rows:
+        return [], [], {}
+    header = rows[0]
+    headers = header[1:]
+    width = len(headers)
+    order: List[str] = []
+    cellmap: Dict[str, List[str]] = {}
+    for row in rows[1:]:
+        if not row or not row[0]:
+            continue
+        key = row[0]
+        cells = row[1:]
+        if len(cells) < width:
+            cells = cells + [""] * (width - len(cells))
+        elif len(cells) > width:
+            cells = cells[:width]
+        if key in cellmap:
+            continue  # defensive: ignore duplicate row labels
+        cellmap[key] = cells
+        order.append(key)
+    return headers, order, cellmap
+
+
+def write_scorecard_matrix(
+    path: Path,
+    pairs: List[Tuple[str, str]],
+    column_header: str,
+    append: bool,
+) -> None:
+    """
+    Write this run as a column in a matrix CSV (column 0 holds the field labels).
+
+    append=False (default): overwrite to a fresh two-column matrix (field + this run).
+    append=True: add this run as a new rightmost column. If the existing file is in the
+    legacy stacked vertical-section format, it is migrated to a matrix first so prior
+    runs are preserved as their own columns.
+    """
+    # Deduplicate this run's keys defensively; keep first-seen order, last value wins.
+    this_keys: List[str] = []
+    this_map: Dict[str, str] = {}
+    for key, value in pairs:
+        if key not in this_map:
+            this_keys.append(key)
+        this_map[key] = value
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if append and path.exists() and path.stat().st_size > 0:
+        rows = read_all_rows(path)
+        if looks_like_old_vertical(rows):
+            headers, order, cellmap = matrix_from_sections(parse_vertical_sections(rows))
+        else:
+            headers, order, cellmap = parse_matrix(rows)
+
+        column_header = unique_header(column_header, headers)
+        width = len(headers)
+
+        merged_order = list(order)
+        for key in this_keys:
+            if key not in cellmap and key not in merged_order:
+                merged_order.append(key)
+
+        out_rows: List[List[str]] = [["field"] + headers + [column_header]]
+        for key in merged_order:
+            left = cellmap.get(key, [""] * width)
+            if len(left) < width:
+                left = left + [""] * (width - len(left))
+            out_rows.append([key] + left + [this_map.get(key, "")])
+        write_rows_atomic(path, out_rows)
+        return
+
+    # Overwrite (default), or an --append against a missing/empty file: fresh matrix.
+    out_rows = [["field", column_header]]
+    for key in this_keys:
+        out_rows.append([key, this_map[key]])
+    write_rows_atomic(path, out_rows)
 
 
 def count_words(value: Any) -> int:
@@ -712,28 +860,29 @@ def append_scorecard(
     review_reasons: List[str],
     field_threshold: float = FIELD_CONFIDENCE_THRESHOLD,
     append: bool = False,
+    run_label: Optional[str] = None,
 ) -> None:
     """
-    Append a vertical scorecard to CSV.
+    Write this run's scorecard as a column in a matrix CSV.
 
-    Output shape:
-        field,value
-        source,...
-        router_category,...
-        vendor_name,...
-        vendor_name.confidence,...
-        vendor_name.gate,...
+    Output shape (column 0 holds the row labels; each run is one column):
+        field,<run_a>,<run_b>
+        run_id_utc,...,...
+        source,...,...
+        vendor_name,...,...
+        vendor_name.confidence,...,...
+        vendor_name.gate,...,...
+        ...
 
-    By default, this overwrites the target CSV so the current run is clear and
-    does not depend on the file being absent. With --append-scorecard, multiple
-    runs are appended as repeated field/value sections separated by record_start
-    and record_end rows.
+    By default this overwrites the target to a fresh single-run matrix. With
+    --append-scorecard the run is added as a new rightmost column; a legacy stacked
+    file is migrated to a matrix on first append. The column header defaults to the
+    run's UTC timestamp, or run_label when provided.
     """
-    rows: List[Tuple[str, Any]] = []
+    run_id = run_id_utc()
 
-    rows.extend([
-        ("record_start", "-----"),
-        ("run_id_utc", run_id_utc()),
+    pairs: List[Tuple[str, str]] = [
+        ("run_id_utc", run_id),
         ("source", source),
         ("input_type", input_type),
         ("router_category", router_category),
@@ -743,7 +892,7 @@ def append_scorecard(
         ("analyzer_used", analyzer_used),
         ("critical_fields", ", ".join(CRITICAL_FIELDS)),
         ("payment_due_date_gate", "not critical - handled by Logic App"),
-    ])
+    ]
 
     ordered_field_names = FIELD_PRINT_ORDER + [
         name for name in fields.keys() if name not in FIELD_PRINT_ORDER
@@ -754,27 +903,30 @@ def append_scorecard(
         value = get_value(field_data)
         confidence = get_confidence(field_data)
 
-        rows.append((field_name, value))
-        rows.append((f"{field_name}.confidence", "MISSING" if confidence is None else f"{confidence:.3f}"))
-        rows.append((f"{field_name}.gate", field_gate_for_scorecard(field_name, field_data, field_threshold)))
+        pairs.append((field_name, csv_scalar(value)))
+        pairs.append(
+            (f"{field_name}.confidence", "MISSING" if confidence is None else f"{confidence:.3f}")
+        )
+        pairs.append(
+            (f"{field_name}.gate", field_gate_for_scorecard(field_name, field_data, field_threshold))
+        )
 
         if field_name == "invoice_description":
-            rows.append(("invoice_description.word_count", count_words(value)))
-            rows.append(("invoice_description.length_gate", invoice_description_gate(value)))
+            pairs.append(("invoice_description.word_count", csv_scalar(count_words(value))))
+            pairs.append(("invoice_description.length_gate", invoice_description_gate(value)))
 
-    rows.extend([
-        ("amount_excluding_gst_calculated", math_result.get("amount_excluding_gst_calculated")),
-        ("expected_gst_5_percent", math_result.get("expected_gst_5_percent")),
-        ("actual_gst", math_result.get("actual_gst")),
-        ("gst_difference", math_result.get("difference")),
-        ("gst_math_valid", math_result.get("gst_math_valid")),
+    pairs.extend([
+        ("amount_excluding_gst_calculated", csv_scalar(math_result.get("amount_excluding_gst_calculated"))),
+        ("expected_gst_5_percent", csv_scalar(math_result.get("expected_gst_5_percent"))),
+        ("actual_gst", csv_scalar(math_result.get("actual_gst"))),
+        ("gst_difference", csv_scalar(math_result.get("difference"))),
+        ("gst_math_valid", csv_scalar(math_result.get("gst_math_valid"))),
         ("routing_decision", routing_decision),
         ("review_reasons", " | ".join(review_reasons)),
-        ("record_end", "-----"),
-        ("", ""),
     ])
 
-    write_scorecard_rows(path, rows, append=append)
+    column_header = derive_column_header(run_label, run_id)
+    write_scorecard_matrix(path, pairs, column_header, append=append)
 
 
 # -----------------------------------------------------------------------------
@@ -804,7 +956,7 @@ def main() -> int:
     print(f"Preferred child analyzer: {args.general_invoice_analyzer_id}")
     print("Router confidence gate: skipped - not consistently available")
     print(f"Result JSON output: {args.out} (overwrite mode)")
-    print(f"Scorecard output: {args.scorecard} ({'append' if args.append_scorecard else 'overwrite'} mode)")
+    print(f"Scorecard output: {args.scorecard} ({'new column (append)' if args.append_scorecard else 'fresh matrix (overwrite)'})")
     print(f"Critical field threshold: {args.field_threshold:.2f}")
     print(f"Critical fields: {', '.join(CRITICAL_FIELDS)}")
     print("payment_due_date: not critical - handled by Logic App")
@@ -908,8 +1060,9 @@ def main() -> int:
             review_reasons=review_reasons,
             field_threshold=args.field_threshold,
             append=args.append_scorecard,
+            run_label=args.run_label,
         )
-        print(f"Scorecard written to {args.scorecard}" + (" (append mode)" if args.append_scorecard else " (overwrite mode)"))
+        print(f"Scorecard written to {args.scorecard}" + (" (new column)" if args.append_scorecard else " (fresh matrix)"))
         return 0
 
     print("=" * 72)
@@ -992,9 +1145,10 @@ def main() -> int:
         review_reasons=review_reasons,
         field_threshold=args.field_threshold,
         append=args.append_scorecard,
+        run_label=args.run_label,
     )
     print()
-    print(f"Scorecard written to {args.scorecard}" + (" (append mode)" if args.append_scorecard else " (overwrite mode)"))
+    print(f"Scorecard written to {args.scorecard}" + (" (new column)" if args.append_scorecard else " (fresh matrix)"))
 
     return 0
 
