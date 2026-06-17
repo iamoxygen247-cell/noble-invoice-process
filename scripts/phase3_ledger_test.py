@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-Phase 3 - ProcessingLog ledger test harness for the Noble invoice prototype.
+Phase 3 - InvoiceExtractProcessLog ledger test harness for the Noble invoice prototype.
 
 Validates the Azure Table Storage ledger the Phase 4 Logic App will write to.
 
@@ -63,7 +63,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-TABLE_NAME = "ProcessingLog"
+TABLE_NAME = "InvoiceExtractProcessLog"
 DEFAULT_RETENTION_DAYS = 90
 TABLES_ENDPOINT_TEMPLATE = "https://{account}.table.core.windows.net"
 CONNECTION_STRING_ENV = "AZURE_TABLES_CONNECTION_STRING"
@@ -80,7 +80,7 @@ _INVALID_KEY_CHARS = re.compile(r"[\u0000-\u001F\u007F-\u009F/\\#?]")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Phase 3 ProcessingLog ledger test harness."
+        description="Phase 3 InvoiceExtractProcessLog ledger test harness."
     )
     p.add_argument(
         "--account",
