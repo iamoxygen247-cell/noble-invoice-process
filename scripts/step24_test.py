@@ -60,7 +60,7 @@ ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
 # SECURITY: do not paste a live key here. Supply the key via the AZURE_CU_KEY
 # environment variable or --key. ensure_inputs() will stop with a clear message
 # if no key is provided.
-API_KEY = "9n1Mwhx32kjiipj5F3A62Pell1qcBqRZr1VpTNCuBsbxILzaiGxXJQQJ99CFAC4f1cMXJ3w3AAAAACOGphgz"
+API_KEY = ""
 API_VERSION = "2025-11-01"
 ROUTER_ANALYZER_ID = "invoicerouter"
 GENERAL_INVOICE_ANALYZER_ID = "generalinvoice"
