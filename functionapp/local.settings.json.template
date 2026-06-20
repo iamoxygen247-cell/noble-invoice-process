@@ -1,0 +1,20 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "AZURE_CU_ENDPOINT": "https://invoice-processing-dev-resource.services.ai.azure.com/",
+    "AZURE_CU_KEY": "",
+    "AZURE_CU_ANALYZER_ID": "invoicerouter",
+    "AZURE_CU_GENERAL_ANALYZER_ID": "generalinvoice",
+    "AZURE_CU_API_VERSION": "2025-11-01",
+
+    "AZURE_STORAGE_ACCOUNT": "stinvoicedevwestus",
+    "AZURE_TABLES_TABLE": "InvoiceExtractProcessLog",
+    "AZURE_TABLES_CONNECTION_STRING": "",
+
+    "AZURE_CLIENT_ID": "",
+    "FIELD_CONFIDENCE_THRESHOLD": "0.75"
+  }
+}

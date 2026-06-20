@@ -1,0 +1,12 @@
+# Azure Functions Python v2 worker
+azure-functions>=1.20.0
+
+# Content Understanding GA SDK (same package step24_test.py validated against)
+azure-ai-contentunderstanding>=1.1.0
+azure-core>=1.30.0
+
+# Managed-identity / AAD auth (CU keyless option and Table Storage)
+azure-identity>=1.17.0
+
+# InvoiceExtractProcessLog ledger
+azure-data-tables>=12.7.0
