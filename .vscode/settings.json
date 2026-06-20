@@ -1,7 +1,14 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.analysis.extraPaths": ["functionapp"],
-  "azureFunctions.deploySubpath": "functionapp",
+  "python.testing.pytestEnabled": false,
+
   "azureFunctions.projectSubpath": "functionapp",
-  "azureFunctions.scmDoBuildDuringDeployment": true
+  "azureFunctions.deploySubpath": "functionapp",
+  "azureFunctions.scmDoBuildDuringDeployment": true,
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  }
 }
