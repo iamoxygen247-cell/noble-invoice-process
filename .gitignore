@@ -1,3 +1,9 @@
-scripts/invoices/
-result.json
-*.csv
+__pycache__/
+*.py[cod]
+.venv/
+functionapp/local.settings.json
+output/
+samples/
+*.key
+.DS_Store
+Thumbs.db
