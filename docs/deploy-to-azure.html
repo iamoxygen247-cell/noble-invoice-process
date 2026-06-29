@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Deploy to Azure (End-to-End)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:20px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  ul { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Deploy to Azure — End-to-End</h1>
+  <p class="sub">Noble Invoice Processor · decision-engine Function + Content Understanding analyzer</p>
+
+  <p>
+    <span class="tag">remote build: on</span>
+    <span class="tag">deploy subpath: functionapp</span>
+    <span class="tag">runtime: Python v2</span>
+  </p>
+
+  <div class="note">
+    <strong>Two things deploy separately.</strong> The <strong>Function code</strong> (the 8-digit
+    PO/job <em>gate</em> rides along with it) and the <strong>CU analyzer</strong> (the 8-digit
+    <em>prompt</em> — a data-plane change that must be re-provisioned). Do both.
+    Your <code>.vscode/settings.json</code> sets <code>scmDoBuildDuringDeployment: true</code>, so
+    Azure rebuilds from <code>requirements.txt</code> server-side (the new <code>tzdata</code>
+    installs automatically). <code>local.settings.json</code> is <strong>never</strong> deployed —
+    the app reads its config from Azure <em>Application Settings</em>.
+  </div>
+
+  <p>Replace these placeholders throughout:
+    <span class="ph">&lt;APP&gt;</span> (Function App name),
+    <span class="ph">&lt;RG&gt;</span> (resource group),
+    <span class="ph">&lt;HOST&gt;</span> (default host name),
+    <span class="ph">&lt;KEY&gt;</span> (function key).
+  </p>
+
+  <h2><span class="num">0</span>Pre-flight (local)</h2>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
+
+# 1. Confirm the offline suite is green
+.\.venv\Scripts\python.exe -m pytest          # expect: 8 passed
+
+# 2. Confirm auth + subscription
+az account show --query name -o tsv           # -> dev-Document Intelligence
+
+# 3. Find your Function App name + resource group
+az functionapp list --query "[].{name:name, rg:resourceGroup, state:state}" -o table</code></pre>
+  <p>Note the <span class="ph">&lt;APP&gt;</span> and <span class="ph">&lt;RG&gt;</span> from step 3.</p>
+
+  <h2><span class="num">1</span>Re-provision the CU analyzer (the 8-digit prompt)</h2>
+  <p>Editing <code>analyzers\create-generalinvoice-analyzer.json</code> changes nothing live. Push it to CU:</p>
+  <pre><code>.\.venv\Scripts\python.exe scripts\create_analyzer.py</code></pre>
+  <p>Expect <code>Done. analyzer_id=generalinvoice…</code>. Auth uses your <code>az login</code>; your
+     identity needs <strong>Cognitive Services User</strong> on <code>invoice-processing-dev-resource</code>.
+     This overwrites the live <code>generalinvoice</code> analyzer (<code>allow_replace=True</code>).</p>
+
+  <h2><span class="num">2</span>Deploy the Function code</h2>
+  <h3>Option A — Core Tools (CLI)</h3>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\functionapp"
+func azure functionapp publish &lt;APP&gt; --build remote</code></pre>
+  <h3>Option B — VS Code</h3>
+  <p>Azure extension → <strong>Workspace</strong> → <strong>Deploy to Function App…</strong> → pick
+     <span class="ph">&lt;APP&gt;</span>. It uses <code>deploySubpath: functionapp</code> automatically;
+     confirm the overwrite prompt.</p>
+  <p>Either way, wait for the upload + remote build to finish and the <code>process_invoice</code> function to be listed.</p>
+
+  <h2><span class="num">3</span>Confirm Azure App Settings + identity (critical)</h2>
+  <p>Because <code>local.settings.json</code> is not deployed, verify these exist on <span class="ph">&lt;APP&gt;</span>:</p>
+  <pre><code>az functionapp config appsettings list -g &lt;RG&gt; -n &lt;APP&gt; `
+  --query "[?contains(name,'AZURE_') || name=='FIELD_CONFIDENCE_THRESHOLD' || name=='FUNCTIONS_WORKER_RUNTIME'].{name:name}" -o table</code></pre>
+  <table>
+    <tr><th>Setting</th><th>Value</th></tr>
+    <tr><td><code>AZURE_CU_ENDPOINT</code></td><td><code>https://invoice-processing-dev-resource.services.ai.azure.com/</code></td></tr>
+    <tr><td><code>AZURE_CU_GENERAL_ANALYZER_ID</code></td><td><code>generalinvoice</code></td></tr>
+    <tr><td><code>AZURE_CU_ANALYZER_ID</code></td><td><code>invoicerouter</code></td></tr>
+    <tr><td><code>AZURE_CU_API_VERSION</code></td><td><code>2025-11-01</code></td></tr>
+    <tr><td><code>AZURE_STORAGE_ACCOUNT</code></td><td><code>stinvoicedevwestus</code></td></tr>
+    <tr><td><code>AZURE_TABLES_TABLE</code></td><td><code>InvoiceExtractProcessLog</code></td></tr>
+    <tr><td><code>AZURE_CLIENT_ID</code></td><td>user-assigned managed identity's client id</td></tr>
+    <tr><td><code>FIELD_CONFIDENCE_THRESHOLD</code></td><td><code>0.73</code></td></tr>
+  </table>
+  <p>Set a missing one:</p>
+  <pre><code>az functionapp config appsettings set -g &lt;RG&gt; -n &lt;APP&gt; --settings "AZURE_STORAGE_ACCOUNT=stinvoicedevwestus"</code></pre>
+  <div class="warn">
+    <strong>Identity / RBAC</strong> — the part <code>az login</code> can't simulate (production runs as the
+    <em>managed identity</em>, not you). The app's identity <code>id-invoice-processing-dev</code> must have
+    <strong>Cognitive Services User</strong> on the CU resource and <strong>Storage Table Data Contributor</strong>
+    on <code>stinvoicedevwestus</code>. Leave <code>AZURE_CU_KEY</code> and
+    <code>AZURE_TABLES_CONNECTION_STRING</code> unset to stay keyless. <strong>Do not</strong> copy local's
+    <code>AzureWebJobsStorage=UseDevelopmentStorage=true</code> to Azure — keep the platform's real storage connection.
+  </div>
+
+  <h2><span class="num">4</span>Get the base URL + function key</h2>
+  <pre><code># Base URL
+az functionapp show -g &lt;RG&gt; -n &lt;APP&gt; --query "defaultHostName" -o tsv   # -> &lt;APP&gt;.azurewebsites.net
+
+# Function key (route auth_level is FUNCTION)
+az functionapp keys list -g &lt;RG&gt; -n &lt;APP&gt; --query "functionKeys.default" -o tsv</code></pre>
+  <p>Call these <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span>.</p>
+
+  <h2><span class="num">5</span>End-to-end smoke test the deployed Function</h2>
+  <p>Use the dedicated deployed-function tester (<code>scripts\verify_fn.py</code>, stdlib only):</p>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\scripts"
+
+# 1. Validation path (no Azure data touched) -> expect HTTP 400
+python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --bad-payload
+
+# 2. Real invoice -> expect HTTP 200 + a routingDecision, writes a ledger row
+python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf"
+
+# 3. 8-digit PO rule end-to-end: a non-8-digit PO should now route to REVIEW_B4_CRITICAL_FIELD
+python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\landscaping.pdf"
+
+# 4. Re-post the same source id -> alreadyProcessed:true (gate A1)
+python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf" --source-id &lt;SID_FROM_STEP_2&gt;</code></pre>
+  <p>Add <code>--insecure</code> to any call if a corporate proxy intercepts TLS. Watch for
+     <code>--&gt; routingDecision: …</code> and no <code>ledgerWriteError</code>.
+     A <code>502</code> = CU/role issue; <code>500</code> = storage/role issue (Phase 3).</p>
+
+  <h2><span class="num">6</span>Confirm the ledger write in Azure</h2>
+  <pre><code>az storage entity query --account-name stinvoicedevwestus --table-name InvoiceExtractProcessLog `
+  --auth-mode login --num-results 5 `
+  --query "items[].{rk:RowKey, status:Status, decision:RoutingDecision}" -o table</code></pre>
+  <p>Expect rows with <code>Status=Extracted</code> and the routing decision from your test posts.</p>
+
+  <div class="ok">
+    <strong>Recommended order:</strong> <code>pytest</code> green →
+    <code>create_analyzer.py</code> (analyzer prompt) →
+    <code>func … publish</code> (code + gate) →
+    verify App Settings / roles →
+    <code>verify_fn.py</code> smoke tests (incl. the 8-digit case) →
+    confirm ledger rows.
+  </div>
+
+  <footer>
+    Generated for the Noble Invoice Processor repo. The 8-digit PO/job enforcement lives in the gate
+    (commit <code>66a66ca</code>) and the analyzer prompt (commit <code>5cffe99</code>); both must be deployed
+    for the rule to be fully live. Source-control push is independent of deploy.
+  </footer>
+
+</div>
+</body>
+</html>

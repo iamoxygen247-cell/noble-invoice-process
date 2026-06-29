@@ -10,3 +10,8 @@ Thumbs.db
 .code-workspace
 out/
 
+# Azurite local emulator artifacts
+__azurite_db*.json
+__blobstorage__/
+__queuestorage__/
+
