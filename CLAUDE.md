@@ -63,3 +63,32 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## 5. Learn From Mistakes and Self-Correct
+
+**Treat mistakes as feedback. Do not repeat known failures.**
+
+When an implementation, command, test, assumption, or explanation turns out to be wrong:
+
+1. Identify the mistake clearly.
+2. Explain why it happened.
+3. State the corrected rule or approach.
+4. Apply the correction before continuing.
+5. If the lesson is reusable, propose where it should be documented.
+
+Do not silently continue after a mistake. Stop and self-correct.
+
+Use this format:
+
+```text
+Mistake:
+[What was wrong]
+
+Cause:
+[Why the mistake happened]
+
+Correction:
+[What should be done instead]
+
+Reusable lesson:
+[Should this update CLAUDE.md, a rule file, docs/ai/troubleshooting.md, or stay temporary?]
