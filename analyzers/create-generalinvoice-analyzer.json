@@ -33,7 +33,7 @@
       "po_or_job_number": {
         "type": "string",
         "method": "extract",
-        "description": "Purchase order, job, work order, project, or reference number. May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Job Number, Work Order, WO, Project No., Site Ref, Customer Ref, or Reference. If both PO and Job exist, return PO number only. Return null if none is present."
+        "description": "Purchase order, job, work order, project, or reference number. It is exactly 8 digits long and entirely numeric (digits 0-9 only; no letters, spaces, dashes, or other punctuation). May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Job Number, Work Order, WO, Project No., Site Ref, Customer Ref, or Reference. Prefer a candidate that is exactly 8 digits; ignore candidates that contain letters or are not exactly 8 digits long. Return the 8 digits only, preserving any leading zeros. If both PO and Job exist, return PO number only. Return null if no 8-digit numeric value is present."
       },
       "gst_amount": {
         "type": "number",
