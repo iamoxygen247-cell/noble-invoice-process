@@ -60,9 +60,6 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
 ## 5. Learn From Mistakes and Self-Correct
 
@@ -92,3 +89,7 @@ Correction:
 
 Reusable lesson:
 [Should this update CLAUDE.md, a rule file, docs/ai/troubleshooting.md, or stay temporary?]
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and repeated mistakes become documented rules instead of recurring failures.
