@@ -12,7 +12,8 @@ Per request it runs gate **A1** (item-id idempotency), writes the ledger row
 `Received`, calls **Content Understanding** with the document **bytes** (binary
 transport — no Blob, no SAS), applies the routing gates via `gates.py` — **B2**
 (router/effective category `other` → reject), **B4** (a critical field for the
-resolved bill-type bucket is missing/empty/low-confidence → review), and a
+resolved bill-type bucket is missing, empty, low-confidence, or fails its format
+rule — e.g. `po_or_job_number` must be exactly 8 digits — → review), and a
 no-child-extraction review — using the bill-type policy in `field_policy.py`,
 writes `Extracted` + the routing decision, and returns the decision.
 

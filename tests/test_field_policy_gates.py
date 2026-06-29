@@ -69,7 +69,7 @@ def commercial_fields(**overrides):
         "vendor_name": fstr("Bob's Plumbing Ltd.", 0.97),
         "service_address": fstr("123 Main St, Vancouver BC", 0.95),
         "total_invoice_amount": fnum(105.0, 0.96),
-        "po_or_job_number": fstr("JOB-4471", 0.91),
+        "po_or_job_number": fstr("00471234", 0.91),
         "gst_amount": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
         "payment_due_date": fdate("2026-05-31", 0.94),
@@ -216,6 +216,20 @@ def test_commercial_routing():
     r = ev(commercial_fields(total_invoice_amount=fnum(105.0, 0.72)))
     check("conf == 0.72 fails", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
 
+    # po_or_job_number format: exactly 8 numeric digits (analyzer prompt + B4 gate)
+    r = ev(commercial_fields(po_or_job_number=fstr("12345678", 0.95)))
+    check("commercial 8-digit PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    r = ev(commercial_fields(po_or_job_number=fstr("00471234", 0.95)))
+    check("commercial 8-digit PO with leading zero -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    r = ev(commercial_fields(po_or_job_number=fstr("JOB-4471", 0.95)))
+    check("commercial alphanumeric PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+    check("PO format review reason names the field",
+          any("po_or_job_number" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+    r = ev(commercial_fields(po_or_job_number=fstr("1234567", 0.95)))
+    check("commercial 7-digit PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+    r = ev(commercial_fields(po_or_job_number=fstr("123456789", 0.95)))
+    check("commercial 9-digit PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+
 
 # --- municipal routing -------------------------------------------------------
 
@@ -238,6 +252,12 @@ def test_municipal_routing():
     # municipal with garbled GST present but low conf -> STILL happy (gst not critical for municipal)
     r = ev(municipal_fields(gst_amount=fnum(99.0, 0.10)))
     check("municipal low-conf GST -> still happy (gst not critical here)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+    # po format is enforced only where po is critical (commercial); a municipal
+    # bill with a malformed po is unaffected (po is not in its critical set)
+    r = ev(municipal_fields(po_or_job_number=fstr("JOB-4471", 0.95)))
+    check("municipal malformed PO -> still happy (po not critical here)",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
 
 
@@ -315,8 +335,22 @@ def test_response_shape():
     check("routingDecision in reduced enum", r["routingDecision"] in allowed)
 
 
+def test_field_format_rules():
+    print("\n[field_policy: per-field format rules]")
+    vr = field_policy.format_violation_reason
+    check("8-digit po ok", vr("po_or_job_number", "12345678") is None)
+    check("leading-zero 8-digit po ok", vr("po_or_job_number", "00471234") is None)
+    check("7-digit po violates", vr("po_or_job_number", "1234567") is not None)
+    check("9-digit po violates", vr("po_or_job_number", "123456789") is not None)
+    check("alphanumeric po violates", vr("po_or_job_number", "JOB-4471") is not None)
+    check("empty po is not a format violation", vr("po_or_job_number", "") is None)
+    check("None po is not a format violation", vr("po_or_job_number", None) is None)
+    check("field without a rule is always ok", vr("vendor_name", "anything") is None)
+
+
 def main():
     test_policy_constants_and_buckets()
+    test_field_format_rules()
     test_date_defaulting_and_derivation()
     test_commercial_routing()
     test_municipal_routing()

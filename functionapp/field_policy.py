@@ -28,6 +28,7 @@ Design rules (kept deliberately, not by default):
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -93,6 +94,32 @@ def critical_fields(bucket: str) -> Tuple[str, ...]:
     if bucket == COMMERCIAL:
         return BASE_CRITICAL + COMMERCIAL_DELTA
     return BASE_CRITICAL
+
+
+# --- per-field format rules --------------------------------------------------
+
+# Exact-format rules applied to a non-empty extracted value: field -> (pattern,
+# human hint). A *critical* field whose value fails its pattern is treated as a
+# critical-field failure by the B4 gate (routes to review). Empty/missing values
+# are handled by the gate's presence check, not here. po_or_job_number is an
+# 8-digit, all-numeric identifier (matched as text so leading zeros are kept).
+FIELD_FORMATS: Dict[str, Tuple["re.Pattern[str]", str]] = {
+    "po_or_job_number": (re.compile(r"\d{8}"), "exactly 8 digits"),
+}
+
+
+def format_violation_reason(field: str, value: Any) -> Optional[str]:
+    """Return a short hint when ``value`` violates ``field``'s format rule, else
+    None. A field with no rule, or an empty/None value, is never a violation
+    here -- presence and confidence are the gate's responsibility."""
+    rule = FIELD_FORMATS.get(field)
+    if rule is None or value is None:
+        return None
+    pattern, hint = rule
+    text = str(value).strip()
+    if text == "" or pattern.fullmatch(text):
+        return None
+    return hint
 
 
 # --- date handling -----------------------------------------------------------

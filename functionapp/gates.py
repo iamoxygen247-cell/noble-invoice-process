@@ -232,6 +232,11 @@ def evaluate_b4(
         elif confidence < threshold:
             review = True
             reasons.append(f"{name} confidence {confidence:.3f} < {threshold:.2f}")
+        else:
+            format_hint = field_policy.format_violation_reason(name, value)
+            if format_hint is not None:
+                review = True
+                reasons.append(f"{name} must be {format_hint}")
     return review, reasons
 
 
