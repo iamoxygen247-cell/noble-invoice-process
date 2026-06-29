@@ -103,8 +103,11 @@ except ImportError as exc:  # pragma: no cover - configuration error
 _GATES_SOURCE: Optional[str] = None
 try:
     import gates as _gates
+    import field_policy as _field_policy
 
-    CRITICAL_FIELDS = list(_gates.CRITICAL_FIELDS)
+    # Critical-field policy moved to field_policy (bill-type buckets). Use the
+    # commercial superset (base + delta) for the scorecard's static gate column.
+    CRITICAL_FIELDS = list(_field_policy.critical_fields("commercial"))
     FIELD_PRINT_ORDER = list(_gates.FIELD_PRINT_ORDER)
     _GATES_SOURCE = getattr(_gates, "__file__", "gates")
 except Exception:  # ImportError or attribute drift
