@@ -7,11 +7,11 @@
     "estimateFieldSourceAndConfidence": true,
     "contentCategories": {
       "general_invoice": {
-        "description": "Commercial billing documents from vendors, tradespeople, insurers or utilities requesting payment for goods or services. Includes printed, digitally generated, scanned, and handwritten invoices.",
+        "description": "Any document that requests payment of a stated amount. Includes commercial invoices and bills from vendors, tradespeople, contractors, landscapers, insurers, and utility providers, AND government or municipal charge notices such as business license renewal fees, permit fees, and other city-issued bills. The defining feature is a request to pay an amount, whether the issuer is a private business or a government body. Includes printed, digitally generated, scanned, and handwritten documents.",
         "analyzerId": "generalinvoice"
       },
       "other": {
-        "description": "Any document that does not match the above category. Use for contracts, statements, letters, or any non-invoice document."
+        "description": "Any document that is not a request for payment: contracts, account statements with no amount due, letters, notices, marketing, or any non-billing document."
       }
     }
   },

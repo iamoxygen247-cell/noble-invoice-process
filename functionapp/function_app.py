@@ -1,43 +1,36 @@
 """
 function_app.py — Noble invoice decision engine (Azure Functions, Python v2 model).
 
-One HTTP-triggered function. The Logic App calls it after fetching the SharePoint
-file; this function decides what should happen and records it on the ledger, then
-returns the decision. It does NOT write to Dataverse and does NOT write the review
-queue item — those belong to the Logic App.
+One HTTP-triggered function. The Power Automate flow calls it after fetching the
+SharePoint file; this function decides what should happen and records it on the
+ledger, then returns the decision. It does NOT write to Dataverse and does NOT
+write the review queue item -- those belong to the flow.
 
-There is NO duplicate-invoice verification anywhere in the pipeline (requirement):
-no Dataverse duplicate query, no alternate key. The only "seen before" handling is
-gate A1, which is ingestion IDEMPOTENCY — it stops the same SharePoint upload being
-processed twice when the polling trigger re-fires, overlaps, or retries. It is not
-content dedup: the same invoice re-uploaded as a NEW file (new item id), or entered
-manually into Dynamics, is not detected and will create another Dynamics row.
+The policy bucket (municipal vs commercial) and all field rules live in
+field_policy.py; the routing gates live in gates.py. This module is a thin
+orchestrator: it runs gate A1, calls CU, delegates the decision to gates.evaluate,
+persists the result, and returns it. It contains no bill-type branching.
 
 Flow per request:
   1. Gate A1 (atomic): claim the SharePoint item id in InvoiceExtractProcessLog.
-       - already decided  -> return the stored decision, skip CU
-       - claimed now       -> proceed (Received written atomically by the claim)
-       - claim lost / row in-flight (within lease) -> skip, another run owns it
-       - row stale at Received (crashed prior run) -> resume
-     Pass "reprocess": true to force a full re-run past A1.
   2. Call Content Understanding with the document bytes (binary transport).
-  3. Apply gates B2/B3/B4/GST (gates.evaluate) -> routingDecision.
-  4. Write ledger Status=Extracted + RoutingDecision + DocumentType + IsHandwritten.
-  5. Return the decision JSON.
+  3. gates.evaluate -> routingDecision, bill_type bucket, write values, ledger fields.
+  4. Write ledger Status=Extracted + decision/bucket/policy stamps.
+  5. Return the decision JSON (writeValues included for the flow to consume).
+
+There is NO duplicate-invoice verification anywhere in the pipeline (requirement).
+Gate A1 is ingestion idempotency only (same SharePoint upload not processed twice).
 
 Request body (JSON):
   {
     "sourceId":      "<SharePoint item UniqueId GUID>",   # required (A1 key / identity)
     "contentBase64": "<base64 of the PDF bytes>",          # required for binary transport
-    "fileName":      "invoice1.pdf",                       # optional (content-type hint, provenance)
+    "fileName":      "invoice1.pdf",                       # optional (content-type hint)
     "sourceFileUrl": "https://.../invoice1.pdf",           # optional (stored on the ledger)
     "url":           "https://...blob...?sas",             # optional, ad-hoc test only
     "reprocess":     false,                                # optional, bypass gate A1
-    "fieldThreshold": 0.75                                 # optional, overrides B4 threshold
+    "fieldThreshold": 0.73                                 # optional, overrides field_policy.THRESHOLD
   }
-
-Response (HTTP 200 on a normal decision): see README. When alreadyProcessed is
-true the Logic App should do nothing further (no Dataverse write, no review item).
 """
 
 from __future__ import annotations
@@ -52,6 +45,7 @@ import azure.functions as func
 import gates
 import cu_client
 import ledger
+import field_policy
 
 app = func.FunctionApp()
 
@@ -65,6 +59,8 @@ def _json(status: int, payload: dict) -> func.HttpResponse:
 
 
 def _field_threshold(body: dict) -> float:
+    """Resolve the critical-field threshold. Single source of truth is
+    field_policy.THRESHOLD; an env var or request body may override it."""
     if body.get("fieldThreshold") is not None:
         try:
             return float(body["fieldThreshold"])
@@ -76,7 +72,7 @@ def _field_threshold(body: dict) -> float:
             return float(env)
         except ValueError:
             pass
-    return gates.DEFAULT_FIELD_CONFIDENCE_THRESHOLD
+    return field_policy.THRESHOLD
 
 
 def _lease_seconds() -> int:
@@ -178,16 +174,20 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
                            "status": "Received",
                            "error": f"Content Understanding analyze failed: {exc}"})
 
-    # --- Gates ---------------------------------------------------------------
+    # --- Gates / decision ----------------------------------------------------
     result = gates.evaluate(full, field_threshold, general_analyzer_id)
 
-    # --- Ledger: Extracted + decision ---------------------------------------
+    # --- Ledger: Extracted + decision + bill-type/policy stamps ---------------
     try:
         ledger.upsert(
             table, source_id,
             Status="Extracted",
             RoutingDecision=result["routingDecision"],
             DocumentType=result["effectiveDocumentType"],
+            BillType=result.get("billType") or "",
+            PolicyBucket=result.get("policyBucket") or "",
+            PolicyVersion=result.get("policyVersion") or "",
+            DefaultedFields=",".join(result.get("defaultedFields") or []),
             IsHandwritten=result.get("isHandwritten") or "",
             FileName=file_name,
             SharePointUrl=sharepoint_url,
@@ -200,5 +200,5 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
         "alreadyProcessed": False, "skippedCU": False, "status": "Extracted",
     }
-    response.update(result)
+    response.update(result)  # includes writeValues for the Power Automate flow
     return _json(200, response)

@@ -1,6 +1,6 @@
 {
   "baseAnalyzerId": "prebuilt-document",
-  "description": "General commercial invoice extraction for vendor invoices. Extracts vendor name, invoice dates, invoice number, PO or job reference, GST amounts, total amount, service address, and operational routing fields.",
+  "description": "General vendor invoice and municipal bill extraction for vendor and city-issued billing documents.",
   "config": {
     "returnDetails": true,
     "enableOcr": true,
@@ -18,12 +18,12 @@
       "invoice_date": {
         "type": "date",
         "method": "extract",
-        "description": "Date the invoice was issued. May be labeled Invoice Date, Date, Billing Date, Issue Date, Tax Invoice Date, or Statement Date. Return the date printed on the invoice, not the payment due date, service date, or delivery date."
+        "description": "Date the invoice was issued. May be labeled Invoice Date, Date, Billing Date, Issue Date, Tax Invoice Date, Statement Date, or Notice Date. Return the issue date, not the due date, service date, or delivery date."
       },
       "payment_due_date": {
         "type": "date",
         "method": "extract",
-        "description": "Date when payment is due. May be labeled Due Date, Payment Due Date, Payable By, Due On, Terms Due Date, or Balance Due Date. Return only an explicitly printed calendar date. Do not infer a due date from invoice date, service date, statement date, balance due, amount due, payment terms, or total due. If no due date is printed, return null."
+        "description": "Date payment is due. May be labeled Due Date, Payment Due Date, Payable By, Due On, or Balance Due Date. Return only an explicitly printed calendar date. Do not infer from invoice date, terms, or amount. If none is printed, return null."
       },
       "invoice_number": {
         "type": "string",
@@ -33,54 +33,44 @@
       "po_or_job_number": {
         "type": "string",
         "method": "extract",
-        "description": "Purchase order, job, work order, project, site reference, or reference number associated with the invoice. May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Work Order, WO, Project No., Project, Site Ref, Customer Ref, or Reference. If both PO and Job numbers exist, return both separated by a semicolon. Return null if no PO, job, work order, project, or reference number is present."
+        "description": "Purchase order, job, work order, project, or reference number. May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Job Number, Work Order, WO, Project No., Site Ref, Customer Ref, or Reference. If both PO and Job exist, return PO number only. Return null if none is present."
       },
       "gst_amount": {
         "type": "number",
         "method": "extract",
-        "description": "Goods and Services Tax amount charged on the invoice. In this prototype, GST means Canadian GST at 5%. Prefer the amount directly associated with labels such as GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric money amount, not the GST rate. If both a GST line and a Total Tax line are shown and the amounts are the same, return the GST line amount. Use Total Tax only when there is no separate GST/G.S.T. line and no other tax types are present. Do not return the vendor GST registration number, GST account number, tax ID, subtotal, total invoice amount, balance due, line-item amount, rate, percentage, phone number, postal code, product registration number, or service license number."
-      },
-      "subtotal_before_tax": {
-        "type": "number",
-        "method": "extract",
-        "description": "Invoice subtotal before GST is added. Prefer values labeled Subtotal, Amount before GST, Total before GST, Net Amount, Pre-tax Amount, Taxable Amount, Cost of Service, or Service Amount. Do not return GST amount, Total Tax, final invoice total, Balance Due, Amount Due, Amount Paid, Rate, line item amount, or payment amount. Return null if no pre-GST subtotal is printed."
+        "description": "Canadian GST (5%) amount charged. Prefer the amount directly labeled GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric amount, not the rate. If a separate provincial sales tax (PST) line is present, return only the GST line, not PST and not Total Tax. Use Total Tax only when there is no separate GST line and no other tax types are present. Do not return the GST registration number, subtotal, total, or balance due."
       },
       "total_invoice_amount": {
         "type": "number",
         "method": "extract",
-        "description": "Final invoice amount the customer is expected to pay, including GST and all charges. Prefer values labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Please Pay Total, Please Pay, or Amount Payable. If Total and Balance Due are both present and equal, return that amount. Do not return subtotal, GST amount, total tax, amount paid, rate, line amount, cost of service, or amount before tax."
+        "description": "Final amount the recipient must pay, including all taxes and charges. Prefer values labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Amount Payable, or Please Pay. If Total and Balance Due are both present and equal, return that amount. Do not return subtotal, GST, amount paid, or a line amount."
       },
       "service_address": {
         "type": "string",
         "method": "extract",
-        "description": "Address where the work, service, delivery, repair, pest control visit, utility service, or job was performed. Prefer addresses labeled Ship To, Service Address, Service Location, Site Address, Job Address, Work Location, Property Address, Premises, Installation Address, or Service For. If both Invoice To/Bill To and Ship To/Service Address are present, return Ship To or Service Address. Do not return the vendor address. Do not return the Invoice To, Bill To, customer mailing address, remittance address, or vendor office address unless no service/site/ship-to address exists."
+        "description": "Address where the work, service, delivery, or billed property is located. Prefer Service Address, Service Location, Site Address, Job Address, Work Location, Property Address, Premises, Service For, or (for municipal bills) the assessed or billed property address. If both Bill To and a service/site address are present, return the service/site address. Do not return the vendor's own office address. Do not use the Bill To or mailing address."
       },
-      "invoice_description": {
+      "bill_type": {
         "type": "string",
-        "method": "generate",
-        "description": "Generate one short sentence describing what this invoice is for. Use the invoice line item description, Service For field, work order title, service notes, or item description. The sentence must be 15 words or fewer. When the invoice clearly represents a recurring monthly charge - for example a monthly utility bill or a monthly service contract - you may include the billing month by name (for example 'March') to indicate the period covered. Otherwise do not include any date. Never include a day number, a year, or a full calendar date. Do not include vendor name, invoice number, PO number, address, tax, total amount, payment status, or contact details. Do not mention GST. Use plain business wording. Example outputs: 'March electricity supply charges.' 'Monthly lawn maintenance service.' 'Electrical repair work.' Return an empty string if the invoice purpose cannot be determined."
+        "method": "classify",
+        "enum": ["municipal", "commercial"],
+        "description": "Classify by WHO issued the document/invoice/bill and what kind of biller they are — never by who is being billed. Municipal bill is issued by a government or municipal body — a city, town, regional district, or municipal utility. Includes utility charges billed by a municipality (water, sewer, waste, stormwater), business license and permit renewal fees, and other city-issued charges.Commercial document or invoice is issued by a private business — tradespeople and contractors (plumbing, electrical, HVAC, roofing, carpentry, restoration, general contracting, appliance repair, pest control), grounds and landscaping services, fire inspection serivce, private utility providers (private power/gas/telecom companies), insurers, and general suppliers. Tie-breakers, in order:(1) Classify by the ISSUER, never the customer. A private contractor billing a city or municipality is 'commercial'. A municipality billing a landlord or property manager is 'municipal'.\n(2) A utility billed by a MUNICIPALITY (city water/sewer/waste) is 'municipal'. The same kind of service billed by a PRIVATE company is 'commercial'.\n(3) If you cannot confirm the issuer is a government body or a city or a municipality, output 'commercial'."
       },
       "is_handwritten": {
         "type": "string",
         "method": "classify",
         "enum": ["yes", "no"],
-        "description": "Classify yes only when one or more critical AP fields are handwritten or manually filled: vendor name, invoice number, invoice date, payment due date, PO/job number, GST amount, total invoice amount, or service address. Classify no when the critical AP fields are printed, digitally generated, or clearly machine-readable, even if the document includes handwritten notes, signatures, technician notes, checkboxes, or service comments elsewhere."
+        "description": "Classify yes when any important field (vendor name, total amount, service address, GST amount, or PO/job number) appears handwritten or manually filled in. Classify no when those fields are printed or digitally generated, even if there are handwritten notes, signatures, or checkboxes elsewhere. This value is informational only."
       },
-      "vendor_category": {
+      "invoice_description": {
         "type": "string",
-        "method": "classify",
-        "enum": [
-          "utilities",
-          "landscaping",
-          "trades",
-          "other"
-        ],
-        "description": "Categorise the vendor as one of the listed values based on the type of goods or services provided on the invoice. Use utilities for electricity, gas, water, waste, telecom, or similar services. Use landscaping for lawn, grounds, tree, irrigation, or snow services. Use trades for construction, repair, plumbing, electrical, HVAC, roofing, restoration, or other skilled trade services. Use other when none of the categories clearly apply."
+        "method": "generate",
+        "description": "One short sentence (15 words or fewer) describing what this invoic is for, from the line items, Service For, or notes. Do not include vendor name, numbers, address, date, tax, or total. Do not mention GST. Examples: 'Lawn maintenance service in March.' 'Electrical repair work.' 'Monthly water utility charges in June.' 'Annual business license renewal for 2026.' Return an empty string if undeterminable."
       },
       "anomaly_flag": {
         "type": "string",
         "method": "generate",
-        "description": "Note anything unusual about this invoice: missing critical fields, invoice number absent, payment due date absent, service address absent, GST/total arithmetic inconsistent, suspiciously round amounts with no itemisation, vendor name not matching the service region, duplicate-looking line items, or invoice total lower than GST. Return an empty string if nothing unusual is detected."
+        "description": "Note genuine anomalies for a reviewer: vendor name missing, total amount missing, a total amount lower than the GST amount when GST is present, a GST amount that is clearly not about 5% of the pre-tax amount when GST is present, a suspiciously round total with no itemisation, or duplicate-looking line items. Do not flag a missing invoice number or a missing payment due date. Return an empty string if nothing is unusual."
       }
     }
   },
