@@ -7,3 +7,4 @@ samples/
 *.key
 .DS_Store
 Thumbs.db
+.code-workspace
