@@ -1,36 +1,42 @@
 """
-test_field_policy_gates.py — offline verification harness.
+test_field_policy_gates.py — offline verification suite.
 
-Encodes the agreed v8 bill-type requirements as runnable assertions over
-synthetic Content Understanding results. No Azure dependency: exercises only
-gates.py + field_policy.py, matching the "gates are offline-testable" principle.
+Encodes the agreed v8 bill-type requirements as assertions over synthetic
+Content Understanding results. No Azure dependency: exercises only gates.py +
+field_policy.py, matching the "gates are offline-testable" principle.
 
-Run: python test_field_policy_gates.py   (exit 0 = all pass)
+Run under pytest (the project standard), from the repo root:
+    .\\.venv\\Scripts\\python.exe -m pytest
+
+Or standalone:
+    .\\.venv\\Scripts\\python.exe tests\\test_field_policy_gates.py
 """
 
 from __future__ import annotations
 
+import pathlib
+import sys
 from datetime import datetime
 
-import field_policy
-import gates
+# gates.py / field_policy.py are the single source of truth and live in
+# functionapp/. Put that folder on sys.path before importing them so this suite
+# resolves the same modules the Function runs, under both pytest and a standalone
+# run. (No conftest.py: this one shim covers both runners.)
+_FUNCTIONAPP = pathlib.Path(__file__).resolve().parent.parent / "functionapp"
+if str(_FUNCTIONAPP) not in sys.path:
+    sys.path.insert(0, str(_FUNCTIONAPP))
+
+import field_policy  # noqa: E402  -- imported after the sys.path bootstrap above
+import gates  # noqa: E402
 
 THRESHOLD = field_policy.THRESHOLD  # 0.73
 FIXED_NOW = datetime(2026, 6, 29, 10, 0, 0, tzinfo=field_policy.BUSINESS_TZ)
 TODAY = "2026-06-29"
 DUE_30 = "2026-07-29"
 
-_checks = 0
-_failures: list[str] = []
-
 
 def check(label: str, cond: bool, detail: str = "") -> None:
-    global _checks
-    _checks += 1
-    if not cond:
-        _failures.append(f"FAIL: {label}" + (f"  [{detail}]" if detail else ""))
-    else:
-        print(f"  ok: {label}")
+    assert cond, f"{label}" + (f"  [{detail}]" if detail else "")
 
 
 # --- CU field / result builders ----------------------------------------------
@@ -319,12 +325,7 @@ def main():
     test_response_shape()
 
     print("\n" + "=" * 60)
-    if _failures:
-        print(f"{len(_failures)} / {_checks} checks FAILED:")
-        for f in _failures:
-            print("  " + f)
-        raise SystemExit(1)
-    print(f"ALL {_checks} CHECKS PASSED")
+    print("ALL CHECKS PASSED")
 
 
 if __name__ == "__main__":

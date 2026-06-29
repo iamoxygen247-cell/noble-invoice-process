@@ -85,7 +85,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # --- make scorecard.py (sibling) and gates.py (functionapp) importable -------
 _HERE = pathlib.Path(__file__).resolve().parent          # ...\scripts
 _REPO = _HERE.parent                                     # repo root
-for _cand in (_HERE, _REPO / "functionapp", _REPO / "noble-invoice-function"):
+for _cand in (_HERE, _REPO / "functionapp"):
     if _cand.is_dir() and str(_cand) not in sys.path:
         sys.path.insert(0, str(_cand))
 

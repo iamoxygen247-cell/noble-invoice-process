@@ -15,29 +15,38 @@ root** as the VS Code workspace.
 noble-invoice-process/
 ├─ functionapp/        # the ONLY thing that deploys to Azure (open root, deploy this)
 │  ├─ function_app.py  # HTTP-triggered v2 entry point — must stay at this folder root
-│  ├─ gates.py         # canonical routing-gate + field helpers (single source of truth)
+│  ├─ gates.py         # routing gates (B2 / B4 / no-child); imports field_policy
+│  ├─ field_policy.py  # critical-field rules, threshold, date/amount write-values (single source of truth)
 │  ├─ cu_client.py     # Content Understanding binary/url wrapper
 │  ├─ ledger.py        # InvoiceExtractProcessLog client (keying, atomic claim, upsert)
 │  ├─ host.json, requirements.txt
 │  ├─ local.settings.json.template   # copy to local.settings.json (gitignored) for local runs
 │  └─ .funcignore
 ├─ scripts/            # standalone prototype harnesses — NOT deployed
-│  ├─ step24_test.py        # CU router/extraction validation + scorecard
-│  ├─ phase3_ledger_test.py # ledger idempotency / atomic-claim validation
-│  └─ local_test.py         # posts one PDF to the running Function
+│  ├─ local_test.py            # posts one PDF to the running Function (imports functionapp/gates.py)
+│  ├─ step21_test.py           # early CU analyze probe
+│  ├─ step24_test.py           # CU router/extraction validation + scorecard
+│  ├─ phase3_ledger_test.py    # ledger idempotency / atomic-claim validation
+│  ├─ scorecard.py             # scoring helper (imported by local_test.py)
+│  ├─ model_deployment_info.py # CU analyzer/deployment probe
+│  └─ verify_fn.py             # smoke-test caller for the deployed Function
+├─ tests/              # offline pytest suite (no Azure) — run with `python -m pytest`
+│  └─ test_field_policy_gates.py  # gates.py + field_policy.py assertions
 ├─ analyzers/          # CU analyzer provisioning JSONs (generalinvoice, invoicerouter)
 ├─ docs/               # design PDFs (Design Reference, Detailed System Design, Prototype Plan)
 ├─ samples/            # real invoice PDFs — gitignored
 ├─ out/                # result.json, *_scorecard.csv, captured output — gitignored
+├─ pytest.ini          # scopes pytest collection to tests/
 ├─ .vscode/settings.json
 └─ .gitignore
 ```
 
 **Why this shape.** Only `functionapp/` is a deployable Azure Functions project, so
 `func publish` from there zips a clean unit and never ships harnesses, PDFs, or
-sample invoices. The shared logic (`gates.py`, `ledger.py`, `cu_client.py`) lives in
-exactly one place — the function — and the harnesses import it rather than carrying
-their own copies, so a threshold or gate change happens once. Do not move
+sample invoices. The shared logic (`gates.py`, `field_policy.py`, `ledger.py`,
+`cu_client.py`) lives in exactly one place — the function — and the harnesses and
+tests import it rather than carrying their own copies, so a threshold or gate
+change happens once. Do not move
 `function_app.py` into a `src/` subfolder; the host expects it at the project root.
 
 ## One-time setup
@@ -68,11 +77,25 @@ cd scripts
 python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
 ```
 
+## Run the offline tests
+
+The gate/policy suite has no Azure dependency. From the repo root:
+
+```cmd
+python -m pytest
+```
+
+`pytest.ini` scopes collection to `tests/`. The suite puts `functionapp/` on
+`sys.path` itself, so it exercises the same `gates.py` / `field_policy.py` the
+Function runs. You can also run it standalone:
+`python tests\test_field_policy_gates.py`.
+
 ## Run the harnesses
 
-The harnesses import the canonical modules from `functionapp/` via a small
-`sys.path` bootstrap at the top of each file, so the gate thresholds and ledger
-keys they use are exactly the ones the Function runs.
+`local_test.py` imports the canonical modules from `functionapp/` via a small
+`sys.path` bootstrap at the top of the file, so the gate thresholds and ledger
+keys it uses are exactly the ones the Function runs. The other harnesses are
+self-contained Azure probes (CU / Table Storage) and need live credentials.
 
 ```cmd
 cd scripts

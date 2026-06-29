@@ -10,3 +10,7 @@ azure-identity>=1.17.0
 
 # InvoiceExtractProcessLog ledger
 azure-data-tables>=12.7.0
+
+# IANA time-zone data for zoneinfo (field_policy.BUSINESS_TZ). Required on hosts
+# without a system tz database (Windows local dev); harmless on the Azure Linux host.
+tzdata>=2024.1

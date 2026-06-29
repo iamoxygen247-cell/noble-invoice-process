@@ -10,11 +10,16 @@ the v8 design.
 
 Per request it runs gate **A1** (item-id idempotency), writes the ledger row
 `Received`, calls **Content Understanding** with the document **bytes** (binary
-transport — no Blob, no SAS), applies gates **B2 / B3 / B4 / GST** via `gates.py`,
+transport — no Blob, no SAS), applies the routing gates via `gates.py` — **B2**
+(router/effective category `other` → reject), **B4** (a critical field for the
+resolved bill-type bucket is missing/empty/low-confidence → review), and a
+no-child-extraction review — using the bill-type policy in `field_policy.py`,
 writes `Extracted` + the routing decision, and returns the decision.
 
 It does **not**: write to Dataverse, write the review-queue item, or run a B1
-classifier-confidence gate (B1 does not exist at GA). **There is no
+classifier-confidence gate (B1 does not exist at GA). **B3** (handwriting) and the
+**GST-math** reconciliation gate were retired — handwriting is surfaced as advisory
+only, and GST is enforced for commercial bills via critical-field confidence. **There is no
 duplicate-invoice verification anywhere in the pipeline (requirement): no
 Dataverse duplicate query and no alternate key.** The Power Automate flow remains
 the single owner of the Dataverse write and writes the terminal `Written` +
@@ -25,12 +30,16 @@ the single owner of the Dataverse write and writes the terminal `Written` +
 | File | Role |
 |------|------|
 | `function_app.py` | HTTP entry point; orchestrates A1 → Received → CU → gates → Extracted → return |
-| `gates.py` | Field helpers, child-content selection, GST check, gate evaluator (lifted from `step24_test.py`) |
+| `gates.py` | CU-output parsing helpers, child-content selection, routing-gate evaluator (B2 / B4 / no-child); imports `field_policy` |
+| `field_policy.py` | Single source of truth for field rules: threshold, per-bucket critical fields, bill-type bucket resolution, date/amount write-values |
 | `cu_client.py` | CU binary/url analyze wrapper (same GA SDK calls as `step24_test.py`) |
 | `ledger.py` | `InvoiceExtractProcessLog` client (lifted from `phase3_ledger_test.py`) |
 | `requirements.txt`, `host.json` | Function app config |
 | `local.settings.json.template` | Copy to `local.settings.json` for local runs (do not commit secrets) |
-| `local_test.py` | Stdlib client that POSTs one PDF to the function |
+
+The PDF-posting client `local_test.py` lives in `../scripts/`, not here (it is a
+harness, not part of the deployable unit). The offline gate/policy suite is in
+`../tests/` — run it with `python -m pytest` from the repo root.
 
 ## Request / response
 
@@ -44,7 +53,7 @@ the single owner of the Dataverse write and writes the terminal `Written` +
   "sourceFileUrl": "https://.../invoice1.pdf",      // optional — stored on the ledger
   "url": "https://...blob...?sas",                  // optional — ad-hoc test only, instead of contentBase64
   "reprocess": false,                               // optional — bypass gate A1
-  "fieldThreshold": 0.75                            // optional — overrides the B4 threshold
+  "fieldThreshold": 0.75                            // optional — overrides field_policy.THRESHOLD (default 0.73)
 }
 ```
 
@@ -55,20 +64,23 @@ Response (HTTP 200 on a normal decision):
   "sourceId": "...", "partitionKey": "0f", "rowKey": "0fb9...d77",
   "alreadyProcessed": false, "skippedCU": false, "status": "Extracted",
   "routingDecision": "HAPPY_PATH_CANDIDATE",
+  "effectiveDocumentType": "general_invoice",
   "category": "general_invoice", "routerCategory": "general_invoice",
-  "analyzerUsed": "generalinvoice",
+  "routerCategoryPath": "$.contents[0].segments[0].category",
+  "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
+  "billType": "commercial", "policyBucket": "commercial", "policyVersion": "bill-type-v1",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
-  "gst": { "amount_excluding_gst_calculated": 100.0, "expected_gst_5_percent": 5.0,
-           "actual_gst": 5.0, "difference": 0.0, "gst_math_valid": true },
-  "vendorCategory": "trades", "anomalyFlag": ""
+  "writeValues": { "vendor_name": "...", "invoice_date": "2026-05-01",
+                   "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0, "...": null },
+  "defaultedFields": [], "anomalyFlag": ""
 }
 ```
 
-`routingDecision` is one of: `HAPPY_PATH_CANDIDATE`, `REVIEW_B3_HANDWRITTEN_OR_UNKNOWN`,
-`REVIEW_B4_CRITICAL_FIELD`, `REVIEW_GST_MATH`, `REJECT_B2_OTHER_CATEGORY`,
-`REVIEW_NO_CHILD_EXTRACTION`.
+`routingDecision` is one of: `HAPPY_PATH_CANDIDATE`, `REVIEW_B4_CRITICAL_FIELD`,
+`REJECT_B2_OTHER_CATEGORY`, `REVIEW_NO_CHILD_EXTRACTION`. (`REVIEW_B3_HANDWRITTEN_OR_UNKNOWN`
+and `REVIEW_GST_MATH` were retired with the B3/GST gates.)
 
 When gate A1 short-circuits, the response has `alreadyProcessed: true`,
 `skippedCU: true`, and `routingDecision` is the stored decision (or
@@ -125,7 +137,7 @@ several identities are present.
 ## Run locally
 
 ```cmd
-cd noble-invoice-function
+cd functionapp
 copy local.settings.json.template local.settings.json
 :: put the CU key in AZURE_CU_KEY (or leave blank to use your az login identity),
 :: and set AZURE_STORAGE_ACCOUNT (your az login identity needs the table role)
@@ -133,15 +145,17 @@ python -m pip install -r requirements.txt
 func start
 ```
 
-Then, in another shell:
+Then, in another shell (the client lives in `../scripts/`):
 
 ```cmd
-python local_test.py --file ".\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
+cd scripts
+python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
 :: run the same line again -> alreadyProcessed:true, skippedCU:true (gate A1)
-python local_test.py --file ".\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --reprocess
+python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --reprocess
 ```
 
-`gates.py` has no Azure dependency and can be unit-tested on its own.
+`gates.py` and `field_policy.py` have no Azure dependency; the suite in `../tests/`
+exercises them offline (`python -m pytest` from the repo root).
 
 ## Deploy
 
