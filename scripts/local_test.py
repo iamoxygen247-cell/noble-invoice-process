@@ -10,10 +10,10 @@ WHAT CHANGED vs the original local_test.py
                       each run, like step24's result.json). This is the Function's
                       DECISION, not the raw Content Understanding dump - see the note
                       at the bottom of this docstring.
-    - <scorecard>     the SAME matrix scorecard step24 writes (column 0 = field
+    - <scorecard>     the same matrix scorecard step24 writes (column 0 = field
                       labels, one column per run), reconstructed from the Function
-                      response. Supports --append-scorecard and --run-label exactly
-                      like step24.
+                      response and rendered as an HTML table. Supports
+                      --append-scorecard and --run-label exactly like step24.
 
   The matrix machinery is imported from scorecard.py (the single source shared with
   step24_test.py), so there is no second copy of that logic. The field policy
@@ -27,8 +27,11 @@ Stdlib only. Reads a PDF, base64-encodes it, and POSTs the binary-transport requ
 the Power Automate flow will send.
 
 Examples:
-  # local host (func start), random source id, writes .\out\local_result.json + .\out\local_scorecard.csv
+  # local host (func start), random source id, writes .\out\local_result.json + .\out\local_scorecard.html
   python local_test.py --file ".\samples\invoice1.pdf"
+
+  # score every top-level *.pdf in a folder as one column each (fresh table; no recursion)
+  python local_test.py --folder ".\samples"
 
   # accumulate runs as columns in the matrix (compare samples / thresholds side by side)
   python local_test.py --file ".\samples\invoice1.pdf" --append-scorecard --run-label invoice1_func
@@ -52,8 +55,9 @@ Note on "the same result" as step24:
   result.json. This script calls the FUNCTION, which returns its decision (fields are
   summarised to {value, confidence}; the routing decision and GST are already
   computed). For every router category the Function and step24 treat identically, the
-  scorecard this script writes is byte-for-byte the same format AND the same values as
-  step24's. The result JSON written here is the Function's decision, which is the more
+  scorecard this script writes carries the same values as step24's (step24 writes CSV;
+  this script writes the same matrix as HTML). The result JSON written here is the
+  Function's decision, which is the more
   useful artifact for testing the deployed path (it also carries the A1 status and
   ledger keys). If you specifically want the raw CU JSON too, the Function must echo it
   - pass --include-raw and add the one-line change described in the README/your notes;
@@ -141,7 +145,7 @@ DEFAULT_ENDPOINT = "http://localhost:7071/api/process-invoice"
 DEFAULT_FIELD_THRESHOLD = 0.75
 DEFAULT_OUT_DIR = "out"
 DEFAULT_RESULT_JSON = "local_result.json"
-DEFAULT_SCORECARD = "local_scorecard.csv"
+DEFAULT_SCORECARD = "local_scorecard.html"
 RAW_CU_KEY = "cuResult"  # key the Function would use if --include-raw is wired
 
 
@@ -183,12 +187,13 @@ def build_scorecard_pairs(
     threshold: float,
 ) -> Tuple[List[Tuple[str, str]], str]:
     """
-    Build the same (label, value) rows step24's append_scorecard builds, from the
-    Function's decision JSON. Returns (pairs, run_id).
+    Build the (label, value) scorecard rows from the Function's decision JSON. Same
+    row content as step24's append_scorecard (plus a bill_type row), but emitted in a
+    custom review order: identity + bill type + decision summary, then the key fields,
+    then the rest of the fields and router metadata. Returns (pairs, run_id).
     """
     run_id = scorecard.run_id_utc()
     fields: Dict[str, Any] = response.get("fields") or {}
-    gst: Dict[str, Any] = response.get("gst") or {}
 
     # The active critical-field set is the Function's (gates.CRITICAL_FIELDS), so the
     # scorecard's critical_fields/.gate columns stay consistent with the routing
@@ -203,24 +208,22 @@ def build_scorecard_pairs(
         else "not critical - Logic App defaults to invoice_date + 30 days"
     )
 
+    # Lead block: identity, then bill_type (a classified field, so value/.confidence/
+    # .gate), then the decision summary. routing_decision/review_reasons used to sit at
+    # the very end; they now lead and are not repeated below.
     pairs: List[Tuple[str, str]] = [
         ("run_id_utc", run_id),
         ("source", source),
         ("input_type", input_type),
-        ("router_category", str(response.get("routerCategory", ""))),
-        ("router_category_path", str(response.get("routerCategoryPath", ""))),
-        ("router_confidence_gate", "skipped - not consistently available in CU router result"),
-        ("effective_document_type", str(response.get("effectiveDocumentType", ""))),
-        ("analyzer_used", str(response.get("analyzerUsed", ""))),
-        ("critical_fields", ", ".join(CRITICAL_FIELDS)),
-        ("payment_due_date_gate", payment_due_date_gate),
     ]
-
-    ordered_field_names = FIELD_PRINT_ORDER + [n for n in fields.keys() if n not in FIELD_PRINT_ORDER]
     seen: set = set()
-    for field_name in ordered_field_names:
+
+    def emit_field(field_name: str) -> None:
+        """Append one field's value/.confidence/.gate rows (plus the description length
+        checks), at most once per field, so the lead bill_type and the main loop below
+        never emit the same field twice."""
         if field_name in seen:
-            continue
+            return
         seen.add(field_name)
 
         entry = fields.get(field_name)
@@ -240,15 +243,44 @@ def build_scorecard_pairs(
             pairs.append(("invoice_description.word_count", scorecard.csv_scalar(scorecard.count_words(value))))
             pairs.append(("invoice_description.length_gate", scorecard.invoice_description_gate(value)))
 
+    emit_field("bill_type")
+    pairs.append(("routing_decision", str(response.get("routingDecision", ""))))
+    pairs.append(("review_reasons", " | ".join(response.get("reviewReasons") or [])))
+
+    # Field rows: the requested fields first, in the requested order, then the rest of
+    # FIELD_PRINT_ORDER, then any extra fields the Function returned. bill_type is
+    # already emitted above; emit_field's `seen` guard keeps every block unique.
+    lead_fields = [
+        "vendor_name",
+        "service_address",
+        "invoice_date",
+        "payment_due_date",
+        "invoice_number",
+        "po_or_job_number",
+        "gst_amount",
+        "total_invoice_amount",
+        "is_handwritten",
+        "invoice_description",
+    ]
+    ordered_field_names = (
+        lead_fields
+        + [n for n in FIELD_PRINT_ORDER if n not in lead_fields]
+        + [n for n in fields.keys() if n not in FIELD_PRINT_ORDER and n not in lead_fields]
+    )
+    for field_name in ordered_field_names:
+        emit_field(field_name)
+
+    # Router / analyzer metadata follows the fields, since the requested sequence leads
+    # and it can no longer sit at the top.
     pairs.extend(
         [
-            ("amount_excluding_gst_calculated", scorecard.csv_scalar(gst.get("amount_excluding_gst_calculated"))),
-            ("expected_gst_5_percent", scorecard.csv_scalar(gst.get("expected_gst_5_percent"))),
-            ("actual_gst", scorecard.csv_scalar(gst.get("actual_gst"))),
-            ("gst_difference", scorecard.csv_scalar(gst.get("difference"))),
-            ("gst_math_valid", scorecard.csv_scalar(gst.get("gst_math_valid"))),
-            ("routing_decision", str(response.get("routingDecision", ""))),
-            ("review_reasons", " | ".join(response.get("reviewReasons") or [])),
+            ("router_category", str(response.get("routerCategory", ""))),
+            ("router_category_path", str(response.get("routerCategoryPath", ""))),
+            ("router_confidence_gate", "skipped - not consistently available in CU router result"),
+            ("effective_document_type", str(response.get("effectiveDocumentType", ""))),
+            ("analyzer_used", str(response.get("analyzerUsed", ""))),
+            ("critical_fields", ", ".join(CRITICAL_FIELDS)),
+            ("payment_due_date_gate", payment_due_date_gate),
         ]
     )
     return pairs, run_id
@@ -283,6 +315,15 @@ def parse_args() -> argparse.Namespace:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--file", help="Local PDF/image to send as binary (contentBase64).")
     src.add_argument("--url", help="Blob SAS URL (ad-hoc test path instead of binary).")
+    src.add_argument(
+        "--folder",
+        help=(
+            "Local folder: score every top-level *.pdf in it as one scorecard column each "
+            "(no recursion into subfolders). Each file gets its own random sourceId and a "
+            "filename column header, so --source-id/--run-label do not apply; --append-scorecard "
+            "appends the whole batch to the existing scorecard."
+        ),
+    )
 
     ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help=f"Function URL. Default: {DEFAULT_ENDPOINT}")
     ap.add_argument("--code", default="", help="Function key (?code=...) for a deployed app.")
@@ -300,7 +341,7 @@ def parse_args() -> argparse.Namespace:
 
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help=f"Output folder. Default: {DEFAULT_OUT_DIR} (relative to where you run this)")
     ap.add_argument("--result-json", default=DEFAULT_RESULT_JSON, help=f"Result JSON filename. Default: {DEFAULT_RESULT_JSON}")
-    ap.add_argument("--scorecard", default=DEFAULT_SCORECARD, help=f"Scorecard CSV filename. Default: {DEFAULT_SCORECARD}")
+    ap.add_argument("--scorecard", default=DEFAULT_SCORECARD, help=f"Scorecard HTML filename. Default: {DEFAULT_SCORECARD}")
     ap.add_argument(
         "--append-scorecard",
         action="store_true",
@@ -319,17 +360,27 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
+def run_source(
+    args: argparse.Namespace,
+    *,
+    url: str,
+    scorecard_path: pathlib.Path,
+    result_path: pathlib.Path,
+    file_path: Optional[pathlib.Path],
+    url_arg: Optional[str],
+    source_id: str,
+    append: bool,
+    run_label: Optional[str],
+) -> Tuple[bool, str, int]:
+    """POST one source (a local file or the URL), persist the decision JSON, and
+    write/append one scorecard column.
 
-    if _GATES_SOURCE is None:
-        print(
-            "[note] could not import functionapp/gates.py; using this script's built-in field policy. "
-            "If you have changed CRITICAL_FIELDS/FIELD_PRINT_ORDER in gates.py, run from the repo root so "
-            "the scorecard's gate column stays in sync."
-        )
-
-    source_id = args.source_id or str(uuid.uuid4())
+    Returns (wrote_column, status_label, exit_code):
+      - wrote_column is True only when a scorecard column was actually written (False on
+        a non-JSON response, an A1 skip, or a no-fields decision), so a folder batch can
+        decide fresh-vs-append and summarise per file.
+      - exit_code mirrors the original single-run main() semantics for the --file/--url path.
+    """
     body: Dict[str, Any] = {
         "sourceId": source_id,
         "reprocess": args.reprocess,
@@ -338,39 +389,31 @@ def main() -> int:
     if args.include_raw:
         body["includeRaw"] = True
 
-    input_type = "file" if args.file else "url"
-    if args.file:
-        path = pathlib.Path(args.file)
-        if not path.is_file():
-            raise SystemExit(f"File not found: {path}")
-        body["fileName"] = path.name
-        body["contentBase64"] = base64.b64encode(path.read_bytes()).decode("ascii")
-        source = str(path)
+    if file_path is not None:
+        input_type = "file"
+        body["fileName"] = file_path.name
+        body["contentBase64"] = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        source = str(file_path)
     else:
-        body["url"] = args.url
-        source = args.url
-
-    url = args.endpoint + (f"?code={args.code}" if args.code else "")
+        input_type = "url"
+        body["url"] = url_arg
+        source = url_arg
 
     print(f"source id: {source_id}")
     print(f"field threshold: {args.field_threshold:.2f}")
     status, payload = post_invoice(url, body)
     print(f"HTTP {status}")
 
-    out_dir = pathlib.Path(args.out_dir)
-    result_path = out_dir / args.result_json
-    scorecard_path = out_dir / args.scorecard
-
     # Parse the response. If it is not JSON (e.g. an HTML 500), persist the raw text
     # for debugging and stop - there is nothing to score.
     try:
         response: Dict[str, Any] = json.loads(payload)
     except json.JSONDecodeError:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(payload, encoding="utf-8")
         print(payload)
         print(f"\nNon-JSON response saved to {result_path}; no scorecard written.")
-        return 1
+        return False, f"non-JSON (HTTP {status})", 1
 
     print(json.dumps(response, indent=2, ensure_ascii=False))
 
@@ -396,22 +439,125 @@ def main() -> int:
             "extraction to score - no scorecard column written. Re-run with --reprocess or a fresh "
             "--source-id to score this invoice."
         )
-        return 0
+        return False, "skipped (A1)", 0
 
     if "fields" not in response:
         # An error decision (e.g. 502 CU failure, 400 bad request): no extraction.
-        print(f"\nResponse has no 'fields' (decision: {response.get('routingDecision') or response.get('error')}); no scorecard column written.")
-        return 0 if status == 200 else 1
+        decision = response.get("routingDecision") or response.get("error")
+        print(f"\nResponse has no 'fields' (decision: {decision}); no scorecard column written.")
+        return False, f"no fields ({decision})", 0 if status == 200 else 1
 
     pairs, run_id = build_scorecard_pairs(response, source, input_type, args.field_threshold)
-    column_header = scorecard.derive_column_header(args.run_label, run_id)
-    scorecard.write_scorecard_matrix(scorecard_path, pairs, column_header, append=args.append_scorecard)
+    column_header = scorecard.derive_column_header(run_label, run_id)
+    scorecard.write_scorecard_html(scorecard_path, pairs, column_header, append=append)
     print(
         f"Scorecard written to {scorecard_path}"
-        + (" (new column)" if args.append_scorecard else " (fresh matrix)")
+        + (" (new column)" if append else " (fresh table)")
         + f" - column '{column_header}'"
     )
-    return 0
+    return True, "scored", 0
+
+
+def run_folder(
+    args: argparse.Namespace,
+    *,
+    url: str,
+    scorecard_path: pathlib.Path,
+    result_path: pathlib.Path,
+) -> int:
+    """Score every top-level *.pdf in args.folder as one scorecard column each (no
+    recursion). The first column actually written overwrites to a fresh table (unless
+    --append-scorecard is set), and the rest append, so the batch forms one contiguous
+    block of columns. A failing PDF is recorded and skipped, never fatal."""
+    folder = pathlib.Path(args.folder)
+    if not folder.is_dir():
+        raise SystemExit(f"Folder not found: {folder}")
+    # iterdir() is non-recursive and is_file() excludes subdirectories, so only the
+    # folder's own *.pdf files (case-insensitive) are scored, sorted for stable columns.
+    pdfs = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+    if not pdfs:
+        raise SystemExit(f"No top-level PDF files in {folder} (subfolders are not searched).")
+
+    print(f"folder: {folder}  ({len(pdfs)} PDF{'s' if len(pdfs) != 1 else ''})")
+
+    wrote_any = False
+    results: List[Tuple[str, str]] = []
+    for pdf in pdfs:
+        print(f"\n=== {pdf.name} ===")
+        # Overwrite to a fresh table on the first column actually written (unless
+        # --append-scorecard); append thereafter. Keyed on wrote_any, not loop index,
+        # so an early file that produces no column doesn't leave the rest appending to
+        # a stale scorecard.
+        append = args.append_scorecard or wrote_any
+        try:
+            wrote, status, _code = run_source(
+                args,
+                url=url,
+                scorecard_path=scorecard_path,
+                result_path=result_path,
+                file_path=pdf,
+                url_arg=None,
+                source_id=str(uuid.uuid4()),
+                append=append,
+                run_label=pdf.name,
+            )
+        except urllib.error.URLError as exc:  # e.g. func host down - don't kill the batch
+            print(f"[error] {pdf.name}: connection failed: {exc.reason}")
+            wrote, status = False, f"connection failed: {exc.reason}"
+        wrote_any = wrote_any or wrote
+        results.append((pdf.name, status))
+
+    columns = sum(1 for _, status in results if status == "scored")
+    print("\nFolder batch summary:")
+    for name, status in results:
+        print(f"  {name}: {status}")
+    if columns:
+        print(f"\nScorecard: {scorecard_path}  ({columns} column{'s' if columns != 1 else ''})")
+    else:
+        print(f"\nNo PDF produced a scored column; {scorecard_path} left unchanged.")
+    return 0 if columns == len(pdfs) else 1
+
+
+def main() -> int:
+    args = parse_args()
+
+    if _GATES_SOURCE is None:
+        print(
+            "[note] could not import functionapp/gates.py; using this script's built-in field policy. "
+            "If you have changed CRITICAL_FIELDS/FIELD_PRINT_ORDER in gates.py, run from the repo root so "
+            "the scorecard's gate column stays in sync."
+        )
+
+    if args.folder and (args.source_id or args.run_label):
+        raise SystemExit(
+            "--source-id and --run-label cannot be combined with --folder: each PDF gets its "
+            "own random sourceId and a filename column header."
+        )
+
+    out_dir = pathlib.Path(args.out_dir)
+    result_path = out_dir / args.result_json
+    scorecard_path = out_dir / args.scorecard
+    url = args.endpoint + (f"?code={args.code}" if args.code else "")
+
+    if args.folder:
+        return run_folder(args, url=url, scorecard_path=scorecard_path, result_path=result_path)
+
+    file_path = pathlib.Path(args.file) if args.file else None
+    if file_path is not None and not file_path.is_file():
+        raise SystemExit(f"File not found: {file_path}")
+
+    _wrote, _status, exit_code = run_source(
+        args,
+        url=url,
+        scorecard_path=scorecard_path,
+        result_path=result_path,
+        file_path=file_path,
+        url_arg=args.url,
+        source_id=args.source_id or str(uuid.uuid4()),
+        append=args.append_scorecard,
+        run_label=args.run_label,
+    )
+    return exit_code
 
 
 if __name__ == "__main__":
