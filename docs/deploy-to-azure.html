@@ -101,7 +101,7 @@ func azure functionapp publish &lt;APP&gt; --build remote</code></pre>
   <h2><span class="num">3</span>Confirm Azure App Settings + identity (critical)</h2>
   <p>Because <code>local.settings.json</code> is not deployed, verify these exist on <span class="ph">&lt;APP&gt;</span>:</p>
   <pre><code>az functionapp config appsettings list -g &lt;RG&gt; -n &lt;APP&gt; `
-  --query "[?contains(name,'AZURE_') || name=='FIELD_CONFIDENCE_THRESHOLD' || name=='FUNCTIONS_WORKER_RUNTIME'].{name:name}" -o table</code></pre>
+  --query "[?contains(name,'AZURE_') || name=='FIELD_CONFIDENCE_THRESHOLD'].{name:name, value:value}" -o table</code></pre>
   <table>
     <tr><th>Setting</th><th>Value</th></tr>
     <tr><td><code>AZURE_CU_ENDPOINT</code></td><td><code>https://invoice-processing-dev-resource.services.ai.azure.com/</code></td></tr>

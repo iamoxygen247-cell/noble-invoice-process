@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(az account show --query \"{subscription:name, id:id, user:user.name}\" -o json)"
+      "PowerShell(az account show --query \"{subscription:name, id:id, user:user.name}\" -o json)",
+      "PowerShell(az functionapp config appsettings list -g $RG -n $APP --query \"[?contains\\(name,'AZURE_'\\) || name=='FIELD_CONFIDENCE_THRESHOLD' || name=='FUNCTIONS_WORKER_RUNTIME'].{name:name, value:value}\" -o table)",
+      "PowerShell($RG  = \"rg-content-understanding-dev\")",
+      "PowerShell($APP = \"func-invoiceprocess-westus\")",
+      "Read(//c/Users/georg/AppData/Local/az-truststore/**)"
     ]
   }
 }
