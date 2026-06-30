@@ -9,6 +9,7 @@ samples/
 Thumbs.db
 .code-workspace
 out/
+CLAUDE.local.md
 
 # Azurite local emulator artifacts
 __azurite_db*.json
