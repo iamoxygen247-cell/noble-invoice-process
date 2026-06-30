@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Power Automate Orchestrator (Design &amp; Build Plan)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:20px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  ul { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  ol { margin:10px 0 10px 22px; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  .diagram { background:var(--code-bg); color:var(--code-fg); padding:18px; border-radius:10px;
+             font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13px; line-height:1.45;
+             white-space:pre; overflow:auto; }
+  .lock { display:inline-block; background:var(--ok-bg); border:1px solid var(--ok-bd); color:#1c6b3f;
+          border-radius:6px; padding:1px 8px; font-size:12px; font-weight:600; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre,.diagram{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Power Automate Orchestrator — Design &amp; Build Plan</h1>
+  <p class="sub">Noble Invoice Processor · SharePoint file event &rarr; cloud flow &rarr; decision-engine Function</p>
+
+  <p>
+    <span class="tag">trigger: SharePoint file-created</span>
+    <span class="tag">flow&rarr;function: custom connector + key</span>
+    <span class="tag">scope: core slice (Phases 0&ndash;3)</span>
+  </p>
+
+  <div class="ok">
+    <strong>Decisions locked in.</strong>
+    <span class="lock">Flow &rarr; Function</span> a Power Automate <strong>custom connector</strong> holding the
+    <strong>function key</strong> in its connection (not the HTTP action; managed identity is a later upgrade).
+    <span class="lock">Scope</span> build the <strong>core slice first</strong> &mdash; SharePoint trigger &rarr;
+    call the Function &rarr; the Function writes the ledger &rarr; branch on the decision. Dataverse write +
+    review-queue item are a second pass. <span class="lock">Licensing</span> premium Power Automate license and
+    environment are ready.
+  </div>
+
+  <div class="note">
+    <strong>What is already built and is NOT touched by Power Automate.</strong> The Function is a single
+    synchronous endpoint <code>POST /api/process-invoice</code> (<code>auth_level=FUNCTION</code>). It calls
+    <strong>Content Understanding</strong> and writes the <strong>ledger</strong> rows
+    (<code>Received</code>, then <code>Extracted</code> + decision) using <em>its own</em> managed identity.
+    Gate <strong>A1</strong> already makes a double-fired trigger a no-op, so the flow needs <em>no</em> dedup logic.
+    Power Automate's only job is: catch the SharePoint event, hand the file bytes to the Function, and act on the
+    decision it returns.
+  </div>
+
+  <h2><span class="num">1</span>The big picture</h2>
+  <div class="diagram">   [User drops invoice PDF]
+            &#9474;
+            &#9660;
+ &#9484;&#9472;&#9472; SharePoint doc library &#9472;&#9472;&#9488;   (1) webhook trigger, OAuth connection
+ &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9492;&#9472;&#9510;
+                            &#9660;
+                 &#9484;&#9472;&#9472; Power Automate flow &#9472;&#9472;&#9488;   (the orchestrator)
+                 &#9474;  &bull; Get file content    &#9474;
+                 &#9474;  &bull; base64 encode       &#9474;
+                 &#9474;  &bull; call the Function    &#9474;
+                 &#9474;  &bull; branch on decision   &#9474;
+                 &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9510;
+                            &#9474;  (2) HTTPS + function key (in the connection)
+                            &#9660;
+                 &#9484;&#9472;&#9472; Azure Function &#9472;&#9472;&#9472;&#9472;&#9488;
+                 &#9474; func-invoiceprocess-     &#9474;
+                 &#9474;       westus             &#9474;
+                 &#9474; /api/process-invoice     &#9474;
+                 &#9492;&#9472;&#9510;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9510;&#9472;&#9488;
+   (3) KV key / MI &#9474;               &#9474; (4) user-assigned managed identity
+        &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
+        &#9660;                                           &#9660;
+ &#9484;&#9472; Content Understanding &#9488;          &#9484;&#9472; Table Storage (ledger) &#9472;&#9488;
+ &#9474; invoice-processing-    &#9474;          &#9474; stinvoicedevwestus        &#9474;
+ &#9474; dev-resource          &#9474;          &#9474; InvoiceExtractProcessLog  &#9474;
+ &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9510;          &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9510;
+
+ Back in the flow, on routingDecision (Phase 3 = branch only; outputs are Phase 4):
+   HAPPY_PATH_CANDIDATE  &rarr; (later) Dataverse "Add a new row" &rarr; ledger Status=Written
+   REVIEW_* / REJECT_*   &rarr; (later) SharePoint review-queue item
+   alreadyProcessed:true &rarr; do nothing</div>
+  <p>The four numbered arrows are the four <strong>trust boundaries</strong>. Each is secured by a different
+     mechanism &mdash; that is normal in Azure.</p>
+
+  <h2><span class="num">2</span>The four trust boundaries (security)</h2>
+  <p>Each arrow answers: <em>who is allowed to make this call, and how do they prove it?</em>
+     Boundaries 1&ndash;2 are <strong>Power Automate's</strong> security. Boundaries 3&ndash;4 are the
+     <strong>Function's</strong> security and are already configured.</p>
+
+  <table>
+    <tr><th>#</th><th>Hop</th><th>Mechanism</th><th>Who/what holds the secret</th></tr>
+    <tr>
+      <td>1</td><td>SharePoint &rarr; Power Automate</td>
+      <td>A Power Automate <strong>connection</strong> (OAuth on behalf of an identity). The trigger registers a
+          <strong>webhook</strong>, so SharePoint pushes the event.</td>
+      <td>The signed-in account's permission on the library <em>is</em> the boundary.</td>
+    </tr>
+    <tr>
+      <td>2</td><td>Power Automate &rarr; Function</td>
+      <td><span class="lock">chosen</span> <strong>Custom connector</strong> + the Azure <strong>function key</strong>
+          stored in the connection.</td>
+      <td>The function key (encrypted in the connection, never in run history).</td>
+    </tr>
+    <tr>
+      <td>3</td><td>Function &rarr; Content Understanding</td>
+      <td>Key via <strong>Key Vault reference</strong> (validated default), or managed identity. <em>Already wired.</em></td>
+      <td><code>AZURE_CU_KEY</code> as a Key Vault reference, or the Function's managed identity.</td>
+    </tr>
+    <tr>
+      <td>4</td><td>Function &rarr; Ledger (Table Storage)</td>
+      <td>The Function's <strong>user-assigned managed identity</strong>. <em>Already wired.</em></td>
+      <td>No secret &mdash; RBAC role on the storage account.</td>
+    </tr>
+  </table>
+
+  <h3>Boundary 1 &mdash; SharePoint &rarr; Power Automate</h3>
+  <p>Power Automate does not "have access to SharePoint" in the abstract. When you add the trigger you create a
+     <strong>connection</strong> that signs in as some account; that account's permissions on the invoice library
+     are the boundary. Use a <strong>dedicated service account</strong> (e.g. <span class="ph">svc-invoiceflow@&lt;tenant&gt;</span>)
+     granted <strong>read</strong> on only the invoice library &mdash; not your personal account, which couples the flow to
+     your password/MFA and runs with all your permissions.</p>
+
+  <h3>Boundary 2 &mdash; Power Automate &rarr; Function <span class="lock">custom connector + key</span></h3>
+  <p>The endpoint is <code>auth_level=FUNCTION</code>, so every caller must present a <strong>function key</strong>.
+     The custom connector defines the Function's API once (host, the <code>/api/process-invoice</code> path,
+     request/response shape) and keeps the key in the <strong>connection</strong> &mdash; encrypted at rest and
+     <strong>never shown in the flow's run history</strong>. The key is the secret to protect; treat it like a password.</p>
+  <div class="warn">
+    <strong>Premium licensing.</strong> The custom connector (and, later, the Dataverse connector) are
+    <strong>premium</strong> Power Automate connectors. Confirmed available &mdash; the flow's owner needs a premium
+    per-user or per-flow license. (You confirmed this is in place.)
+  </div>
+  <div class="note">
+    <strong>Production upgrade (deferred, Phase 5).</strong> Replace the key with <strong>Easy Auth (Entra)</strong> +
+    <code>auth_level=ANONYMOUS</code> and let the flow authenticate with a <strong>managed identity / federated
+    credential</strong> &mdash; secretless. Get the key path working first.
+  </div>
+
+  <h3>Boundary 3 &mdash; Function &rarr; Content Understanding <span class="tag">already wired</span></h3>
+  <p>Lives inside the Function. App setting <code>AZURE_CU_KEY</code> =
+     <code>@Microsoft.KeyVault(SecretUri=https://kv-invoice-process-dev.vault.azure.net/secrets/cu-key/)</code>
+     (the validated default), or leave it blank to use the Function's managed identity with <strong>Cognitive Services
+     User</strong> on <code>invoice-processing-dev-resource</code>. <strong>Power Automate never sees this.</strong></p>
+
+  <h3>Boundary 4 &mdash; Function &rarr; Ledger (Table Storage) <span class="tag">already wired</span></h3>
+  <p>The user-assigned identity <code>id-invoice-processing-dev</code> holds <strong>Storage Table Data Contributor</strong>
+     on <code>stinvoicedevwestus</code>; <code>AZURE_CLIENT_ID</code> tells the Function which identity to use. The Function
+     writes <code>Received</code> then <code>Extracted</code>. <strong>Power Automate never sees this.</strong></p>
+
+  <h2><span class="num">3</span>The flow, action by action</h2>
+  <p>This is the core flow (Phases 0&ndash;3). The branch in step&nbsp;6 only routes for now; the Dataverse/review
+     <em>outputs</em> are Phase&nbsp;4.</p>
+  <table>
+    <tr><th>#</th><th>Action</th><th>Detail</th></tr>
+    <tr><td>1</td><td><strong>Trigger:</strong> "When a file is created (properties only)" (SharePoint)</td>
+        <td>Point at the invoice <span class="ph">&lt;site&gt;</span> + <span class="ph">&lt;library&gt;</span>
+            (+ optional folder). "Properties only" gives metadata without downloading on the trigger.</td></tr>
+    <tr><td>2</td><td><strong>Get file content</strong> (SharePoint)</td>
+        <td>File Identifier = the trigger's file identifier. Returns the PDF bytes.</td></tr>
+    <tr><td>3</td><td><strong>Compose</strong> &mdash; <code>contentBase64</code></td>
+        <td>Expression <code>base64(body('Get_file_content'))</code>. The file-content object's <code>$content</code>
+            is already base64 in some shapes; we confirm the exact form on the first run (the one fiddly spot).</td></tr>
+    <tr><td>4</td><td><strong>Call the Function</strong> (custom connector action <code>process-invoice</code>)</td>
+        <td>Body: <code>sourceId</code> = file <strong>UniqueId</strong> (GUID), <code>contentBase64</code> = step 3,
+            <code>fileName</code> = trigger file name, <code>sourceFileUrl</code> = item link. The key is in the
+            <em>connection</em>, not the body.</td></tr>
+    <tr><td>5</td><td><strong>Read the response</strong></td>
+        <td>Pull <code>routingDecision</code>, <code>alreadyProcessed</code>, <code>writeValues</code>, <code>status</code>.</td></tr>
+    <tr><td>6</td><td><strong>Switch on <code>routingDecision</code></strong></td>
+        <td><code>alreadyProcessed == true</code> &rarr; Terminate (Succeeded).<br>
+            <code>HAPPY_PATH_CANDIDATE</code> &rarr; (Phase 4) Dataverse write.<br>
+            any <code>REVIEW_*</code> / <code>REJECT_*</code> &rarr; (Phase 4) review-queue item.<br>
+            For Phase 3, each branch just logs / Compose so we can confirm routing.</td></tr>
+  </table>
+  <div class="note">
+    <strong>The SharePoint UniqueId.</strong> The Function keys everything off the item's <strong>UniqueId</strong> (a GUID).
+    In the "properties only" trigger this is the item's <code>{Identifier}</code> / <strong>Unique Id</strong> column; we
+    confirm the exact dynamic-content field on the first build and add a "Get file properties" action only if needed.
+  </div>
+  <div class="warn">
+    <strong>Synchronous timeout.</strong> Power Automate connector actions have a ~120&nbsp;s synchronous limit.
+    CU + a Flex Consumption cold start should be well under that for small invoice PDFs. If we ever hit a timeout,
+    the fix is the async <code>202 + Location</code> polling pattern noted in <code>functionapp/README.md</code> &mdash;
+    not a flow redesign.
+  </div>
+
+  <h2><span class="num">4</span>What I need from you before building</h2>
+  <p>Config facts, not decisions:</p>
+  <table>
+    <tr><th>Item</th><th>Why</th></tr>
+    <tr><td><span class="ph">&lt;site&gt;</span> URL + <span class="ph">&lt;library&gt;</span> (+ folder)</td>
+        <td>Where invoice PDFs land &mdash; the trigger target.</td></tr>
+    <tr><td>Power Platform <span class="ph">&lt;environment&gt;</span></td>
+        <td>Where the flow + custom connector are built.</td></tr>
+    <tr><td>The <strong>function key</strong> for <code>func-invoiceprocess-westus</code></td>
+        <td>Read from the portal (Functions &rarr; App keys) or via <code>az</code>; paste into the connector
+            connection &mdash; never into a tracked file.</td></tr>
+    <tr><td>The Function's <strong>default host name</strong></td>
+        <td>The custom connector's host: <code>&lt;APP&gt;.azurewebsites.net</code>.</td></tr>
+    <tr><td>(Optional) a dedicated <strong>service account</strong></td>
+        <td>For the SharePoint connection (Boundary 1) instead of your personal account.</td></tr>
+  </table>
+  <pre><code># Read the host name and function key (run from the repo, az login first)
+az functionapp show -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "defaultHostName" -o tsv
+az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "functionKeys.default" -o tsv</code></pre>
+
+  <h2><span class="num">5</span>Build order (each phase has a verification gate)</h2>
+
+  <h3>Phase 0 &mdash; Confirm the Function is callable at all</h3>
+  <p>Before any Power Automate work, POST a sample invoice to the deployed Function with the key.
+     <strong>Verify:</strong> HTTP 200 + a <code>routingDecision</code>, and a row appears in
+     <code>InvoiceExtractProcessLog</code>. This isolates "is the Function healthy" from "is the flow wired right."</p>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\scripts"
+python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf"</code></pre>
+
+  <h3>Phase 1 &mdash; Custom connector (Boundary 2)</h3>
+  <ol>
+    <li>Power Automate &rarr; <strong>More</strong> &rarr; <strong>Custom connectors</strong> &rarr;
+        <strong>New custom connector</strong> &rarr; "Create from blank."</li>
+    <li><strong>General:</strong> Host = <code>&lt;HOST&gt;</code>; Base URL = <code>/api</code>.</li>
+    <li><strong>Security:</strong> API key; parameter name <code>x-functions-key</code>; location <strong>Header</strong>.</li>
+    <li><strong>Definition:</strong> a <code>POST</code> action <code>process-invoice</code>; request body =
+        the JSON shape (<code>sourceId</code>, <code>contentBase64</code>, <code>fileName</code>,
+        <code>sourceFileUrl</code>); response = the decision JSON.</li>
+    <li>Create a <strong>connection</strong> and paste the function key as the API key.</li>
+  </ol>
+  <p><strong>Verify:</strong> the connector's built-in <strong>Test</strong> returns 200 for a tiny payload.</p>
+
+  <h3>Phase 2 &mdash; Minimal flow (Boundaries 1 + 2)</h3>
+  <p>Trigger &rarr; Get file content &rarr; base64 Compose &rarr; call the connector. No branching yet.
+     <strong>Verify:</strong> drop a PDF in SharePoint &rarr; the flow runs &rarr; 200 &rarr; a ledger row reaches
+     <code>Extracted</code>.</p>
+
+  <h3>Phase 3 &mdash; Branching <span class="tag">end of first agreement</span></h3>
+  <p>Add the <strong>Switch</strong> on <code>routingDecision</code> + the <code>alreadyProcessed</code> Terminate.
+     Each branch just Composes/logs for now. <strong>Verify:</strong> a happy-path PDF and a review-triggering PDF each
+     take the right branch; re-dropping the same file shows <code>alreadyProcessed:true</code> (Gate A1).</p>
+
+  <div class="note">
+    <strong>Deferred to a second pass (Phase 4&ndash;5).</strong>
+    <em>Phase 4:</em> Dataverse "Add a new row" on the happy path (mapping <code>writeValues</code>), the SharePoint
+    review-queue item on review/reject, and the terminal ledger <code>Written</code> update after a Dataverse 201.
+    <em>Phase 5:</em> retry policy, failure notifications, run-history hygiene, and the move to managed-identity /
+    Easy Auth on Boundary 2.
+  </div>
+
+  <div class="ok">
+    <strong>Recommended order:</strong> Phase 0 (Function healthy) &rarr; Phase 1 (connector tests 200) &rarr;
+    Phase 2 (PDF drop &rarr; ledger <code>Extracted</code>) &rarr; Phase 3 (decision routes correctly, A1 no-op proven).
+    Stop and review, then build the Phase 4 outputs.
+  </div>
+
+  <footer>
+    Generated for the Noble Invoice Processor repo. Grounded in the deployed Function contract
+    (<code>functionapp/function_app.py</code>, <code>cu_client.py</code>, <code>ledger.py</code>). No code or flow has
+    been built yet &mdash; this is the agreed plan. Boundaries 3 &amp; 4 are already wired in the Function and are not
+    changed by Power Automate.
+  </footer>
+
+</div>
+</body>
+</html>
