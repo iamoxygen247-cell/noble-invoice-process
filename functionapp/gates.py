@@ -50,13 +50,23 @@ LINE_ITEM_ROW_THRESHOLD = 0.65  # gate B6 (advisory)
 # Display order for the raw-fields block in the response.
 FIELD_PRINT_ORDER = [
     "vendor_name",
+    "vendor_name_extract",
+    "vendor_name_generate",
     "invoice_date",
     "payment_due_date",
     "invoice_number",
     "po_or_job_number",
+    "po_or_job_number_extract",
+    "po_or_job_number_generate",
     "gst_amount",
+    "gst_amount_extract",
+    "gst_amount_generate",
     "total_invoice_amount",
+    "total_invoice_amount_extract",
+    "total_invoice_amount_generate",
     "service_address",
+    "service_address_extract",
+    "service_address_generate",
     "bill_type",
     "is_handwritten",
     "invoice_description",
@@ -198,7 +208,6 @@ def find_child_content(
 
 # --- gate B4 (critical field confidence) -------------------------------------
 
-
 def evaluate_b4(
     fields: Dict[str, Any],
     critical: Tuple[str, ...],
@@ -211,7 +220,27 @@ def evaluate_b4(
     """
     review = False
     reasons: List[str] = []
+    parsed: Optional[Dict[str, Tuple[Any, Optional[float]]]] = None
     for name in critical:
+        # Twin-resolved fields pass when their resolver says so (the raw extract/generate
+        # fields are combined, not checked field-by-field). A resolved value may still fail
+        # a format rule (e.g. po_or_job_number must be 8 digits), checked on the result.
+        if name in field_policy.TWIN_FIELDS:
+            if parsed is None:
+                parsed = parse_fields(fields)
+            value, best_conf, passed, _note, _source = field_policy.resolve_field(name, parsed, threshold)
+            extract_key, generate_key = field_policy.TWIN_FIELDS[name][:2]
+            if not passed:
+                review = True
+                reasons.append(
+                    f"{extract_key}/{generate_key} did not clear {threshold:.2f} (best {best_conf:.3f})"
+                )
+            else:
+                fmt = field_policy.format_violation_reason(name, value)
+                if fmt is not None:
+                    review = True
+                    reasons.append(f"{name} must be {fmt}")
+            continue
         field_data = fields.get(name)
         if field_data is None:
             review = True
@@ -312,6 +341,17 @@ def evaluate(
     is_handwritten_conf = get_confidence(fields.get("is_handwritten"))
 
     advisory = evaluate_b6(fields)
+    # Resolved finals (value, effective confidence, passed, note, source) for every twin
+    # field, keyed by final name. Threaded into _result so the response exposes each final
+    # as its fields.<name> entry plus a slim resolution block -- the single source of truth
+    # for the write + gate. Any disagree note is surfaced as an advisory.
+    resolutions = {
+        name: field_policy.resolve_field(name, parsed, field_threshold)
+        for name in field_policy.TWIN_FIELDS
+    }
+    for _final in resolutions.values():
+        if _final[3]:
+            advisory.append(_final[3])
     write_values, defaulted = field_policy.build_write_values(parsed, field_threshold)
 
     # B2 - category 'other' is a hard reject (no auto-write, no extraction trust).
@@ -320,7 +360,7 @@ def evaluate(
             REJECT_B2_OTHER_CATEGORY, "other", display_category, router_category,
             router_category_path, analyzer_used, child_selection, bucket, bill_type_value,
             fields, write_values, defaulted, ["B2 category is other"], advisory,
-            is_handwritten_value, is_handwritten_conf,
+            is_handwritten_value, is_handwritten_conf, resolutions,
         )
 
     # No child extraction: cannot run the critical-field gate.
@@ -330,7 +370,7 @@ def evaluate(
             router_category_path, analyzer_used, child_selection, bucket, bill_type_value,
             fields, write_values, defaulted,
             ["No generalinvoice child analyzer fields found"], advisory,
-            is_handwritten_value, is_handwritten_conf,
+            is_handwritten_value, is_handwritten_conf, resolutions,
         )
 
     # B4 - critical fields for the resolved bucket.
@@ -348,7 +388,7 @@ def evaluate(
         routing_decision, display_category, display_category, router_category,
         router_category_path, analyzer_used, child_selection, bucket, bill_type_value,
         fields, write_values, defaulted, review_reasons, advisory,
-        is_handwritten_value, is_handwritten_conf,
+        is_handwritten_value, is_handwritten_conf, resolutions,
     )
 
 
@@ -369,8 +409,27 @@ def _result(
     advisory: List[str],
     is_handwritten_value: str = "",
     is_handwritten_conf: Optional[float] = None,
+    resolutions: Optional[Dict[str, Tuple[Any, float, bool, Optional[str], str]]] = None,
 ) -> Dict[str, Any]:
-    return {
+    # fields_summary mirrors the raw CU fields (the *_extract / *_generate twins, ...). Each
+    # computed final is injected as its fields.<name> entry and surfaced in the `resolutions`
+    # map, so the response, the scorecard, and the Dynamics write all read the same resolved
+    # value/confidence/decision. value/confidence already live in fields.<name> and any
+    # disagree note in advisoryFlags, so `resolutions` carries only what that uniform shape
+    # can't: whether the field passed and which twin (extract/agreement/generate) produced it.
+    summary = fields_summary(fields)
+    resolution_out: Dict[str, Dict[str, Any]] = {}
+    for final_name, final in (resolutions or {}).items():
+        value, conf, passed, _note, source = final
+        summary[final_name] = {"value": value, "confidence": conf}
+        resolution_out[final_name] = {"passed": passed, "source": source}
+
+    # Reorder so each synthesized final sorts just before its _extract/_generate rows.
+    ordered = {name: summary[name] for name in FIELD_PRINT_ORDER if name in summary}
+    for name, entry in summary.items():
+        ordered.setdefault(name, entry)
+
+    result: Dict[str, Any] = {
         "routingDecision": routing_decision,
         "effectiveDocumentType": effective_document_type,
         "category": display_category,
@@ -385,8 +444,10 @@ def _result(
         "isHandwrittenConfidence": is_handwritten_conf,
         "reviewReasons": review_reasons,
         "advisoryFlags": advisory,
-        "fields": fields_summary(fields),
+        "fields": ordered,
+        "resolutions": resolution_out,
         "writeValues": write_values,
         "defaultedFields": defaulted,
         "anomalyFlag": get_value(fields.get("anomaly_flag")) or "",
     }
+    return result

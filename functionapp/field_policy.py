@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
@@ -52,6 +52,37 @@ DATE_FORMAT = "%Y-%m-%d"
 # never a base one. The municipal delta is intentionally empty.
 BASE_CRITICAL: Tuple[str, ...] = ("vendor_name", "service_address", "total_invoice_amount")
 COMMERCIAL_DELTA: Tuple[str, ...] = ("po_or_job_number", "gst_amount")
+
+# Vendor name is captured twice by the analyzer: an extract-method field
+# (span-grounded, so its confidence is reliable) and a generate-method twin (the
+# normalised common name). resolve_vendor combines them into the computed final
+# ``vendor_name`` -- that final is the critical field, the written value, and what
+# the vendor requirement passes on when either raw field clears the threshold.
+VENDOR_EXTRACT = "vendor_name_extract"
+VENDOR_GENERATE = "vendor_name_generate"
+VENDOR_FINAL = "vendor_name"
+
+# service_address is captured twice as well, but resolved differently: the extract
+# field is authoritative and the generate twin is a *validator*. The generate value is
+# never written; it can only rescue a below-threshold extract when the two agree.
+# See resolve_service_address.
+SERVICE_ADDRESS_EXTRACT = "service_address_extract"
+SERVICE_ADDRESS_GENERATE = "service_address_generate"
+SERVICE_ADDRESS_FINAL = "service_address"
+
+# total_invoice_amount, gst_amount and po_or_job_number are twinned too. The final keeps
+# its original name (already the critical + write name); CU now returns the raw twins.
+TOTAL_EXTRACT = "total_invoice_amount_extract"
+TOTAL_GENERATE = "total_invoice_amount_generate"
+TOTAL_FINAL = "total_invoice_amount"
+
+GST_EXTRACT = "gst_amount_extract"
+GST_GENERATE = "gst_amount_generate"
+GST_FINAL = "gst_amount"
+
+PO_EXTRACT = "po_or_job_number_extract"
+PO_GENERATE = "po_or_job_number_generate"
+PO_FINAL = "po_or_job_number"
 
 # Values handed to Power Automate to write to Dynamics. Values only; per-field
 # confidence stays in the separate raw-fields block for the review UI and audit.
@@ -189,6 +220,199 @@ def _amount_excluding_gst(total: Any, gst: Any) -> Optional[float]:
         return None
 
 
+# --- twin field resolution (extract + generate) ------------------------------
+
+# Corporate suffixes dropped before comparing the two vendor spellings, so
+# "FortisBC Energy Inc." and "FortisBC" are recognised as the same vendor.
+_VENDOR_LEGAL_SUFFIXES = frozenset(
+    {"inc", "incorporated", "ltd", "limited", "llc", "llp", "corp", "corporation", "co", "company"}
+)
+
+
+def _normalize_vendor(value: Any) -> str:
+    """Lowercase, drop punctuation, collapse whitespace, and strip trailing legal
+    suffixes so two spellings of the same vendor compare equal."""
+    if value is None:
+        return ""
+    tokens = [t for t in re.sub(r"[^\w\s]", " ", str(value).lower()).split() if t]
+    while tokens and tokens[-1] in _VENDOR_LEGAL_SUFFIXES:
+        tokens.pop()
+    return " ".join(tokens)
+
+
+def _vendor_values_consistent(a: Any, b: Any) -> bool:
+    """True when both name the same vendor: equal after normalisation, or one is
+    contained in the other (a short common name vs a longer legal name)."""
+    na, nb = _normalize_vendor(a), _normalize_vendor(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def _field_passes(value: Any, confidence: Optional[float], threshold: float) -> bool:
+    """A non-empty value whose confidence clears the threshold. Field-agnostic;
+    shared by the vendor and service-address resolvers."""
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return False
+    return confidence is not None and confidence >= threshold
+
+
+def resolve_twin(
+    parsed: Dict[str, Tuple[Any, Optional[float]]],
+    extract_key: str,
+    generate_key: str,
+    threshold: float,
+    agree_fn: "Callable[[Any, Any], bool]",
+    prefer_generate_when_agree: bool = False,
+) -> Tuple[Any, float, bool, Optional[str], str]:
+    """
+    Generic extract + generate twin resolution shared by every twin-resolved critical
+    field.
+
+    Passes when: the extract clears ``threshold`` on its own; OR the two values agree
+    (per ``agree_fn``) -- the agreement boost, corroboration even when each is individually
+    below threshold; OR the extract produced *nothing* and a confident generate
+    (>= threshold) fills it in. A generate that merely *disagrees* with a present extract
+    never passes -- the extract stays authoritative whenever it found a value.
+
+    ``prefer_generate_when_agree`` selects the value preference: True writes the clean
+    generate value when the two agree (vendor-name normalisation); False keeps the literal
+    extract value (addresses, amounts, PO -- the twin is a validator, not a value source).
+
+    Returns ``(value, effective_confidence, passed, note, source)``. ``source`` is
+    ``"generate"`` (generate carried it: both cleared and agree, or a generate rescue of an
+    absent extract), ``"agreement"`` (corroboration carried it), ``"extract"``, or
+    ``"none"``. ``note`` is a short advisory when both present values disagree.
+    """
+    e_val, e_conf = parsed.get(extract_key, (None, None))
+    g_val, g_conf = parsed.get(generate_key, (None, None))
+
+    e_pass = _field_passes(e_val, e_conf, threshold)
+    g_pass = _field_passes(g_val, g_conf, threshold)
+
+    e_present = e_val is not None and str(e_val).strip() != ""
+    g_present = g_val is not None and str(g_val).strip() != ""
+    agree = agree_fn(e_val, g_val)
+
+    # A confident generate rescues an *absent* extract (nothing to disagree with); a
+    # generate that disagrees with a *present* extract never overrides it.
+    generate_rescue = g_pass and not e_present
+    passed = e_pass or agree or generate_rescue
+
+    if prefer_generate_when_agree and agree and g_present:
+        value, source = g_val, ("generate" if (e_pass and g_pass) else "agreement")
+    elif e_pass:
+        value, source = e_val, "extract"
+    elif agree:
+        value, source = (e_val if e_present else g_val), "agreement"
+    elif generate_rescue:
+        value, source = g_val, "generate"
+    elif e_present:
+        value, source = e_val, "extract"
+    elif g_present:
+        value, source = g_val, "generate"
+    else:
+        value, source = None, "none"
+
+    if source == "agreement":
+        effective_conf = max(e_conf or 0.0, g_conf or 0.0)
+    elif source == "generate":
+        effective_conf = g_conf or 0.0
+    else:
+        effective_conf = e_conf or 0.0
+
+    note = None
+    if e_present and g_present and not agree:
+        note = f"{extract_key}/{generate_key} disagree: {e_val!r} vs {g_val!r}"
+
+    return value, effective_conf, passed, note, source
+
+
+# --- service address resolution (extract authoritative + generate validator) -
+
+
+def _normalize_address_tokens(value: Any) -> set:
+    """Lowercased, punctuation/whitespace-split token set for address comparison."""
+    if value is None:
+        return set()
+    return {t for t in re.sub(r"[^\w\s]", " ", str(value).lower()).split() if t}
+
+
+def _address_tokens_agree(a: Any, b: Any, min_overlap: float = 0.70) -> bool:
+    """
+    True when two addresses name the same place: the share of common tokens over the
+    *smaller* token set is at least ``min_overlap``. The min-set denominator makes a
+    subset (e.g. the generate value) matching part of a superset (the extract value,
+    which may include a company-name line) still agree, and is robust to word order
+    and unit formatting ("#113 - 8531 Alexandra Rd" vs "8531 Alexandra Rd Unit 113").
+    """
+    ta, tb = _normalize_address_tokens(a), _normalize_address_tokens(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / min(len(ta), len(tb)) >= min_overlap
+
+
+def _amounts_agree(a: Any, b: Any) -> bool:
+    """True when two amounts are the same money value (equal to the cent). False when
+    either is missing or non-numeric."""
+    try:
+        return abs(round(float(a), 2) - round(float(b), 2)) < 0.005
+    except (TypeError, ValueError):
+        return False
+
+
+def _po_values_agree(a: Any, b: Any) -> bool:
+    """True when the two PO/job numbers carry the same non-empty digit sequence. The
+    8-digit format itself is enforced separately on the resolved value (FIELD_FORMATS)."""
+    da = re.sub(r"\D", "", str(a)) if a is not None else ""
+    db = re.sub(r"\D", "", str(b)) if b is not None else ""
+    return da != "" and da == db
+
+
+def resolve_vendor(
+    parsed: Dict[str, Tuple[Any, Optional[float]]],
+    threshold: float = THRESHOLD,
+) -> Tuple[Any, float, bool, Optional[str], str]:
+    """vendor_name twin: prefers the clean, normalised generate name when the two agree."""
+    return resolve_twin(
+        parsed, VENDOR_EXTRACT, VENDOR_GENERATE, threshold,
+        _vendor_values_consistent, prefer_generate_when_agree=True,
+    )
+
+
+def resolve_service_address(
+    parsed: Dict[str, Tuple[Any, Optional[float]]],
+    threshold: float = THRESHOLD,
+) -> Tuple[Any, float, bool, Optional[str], str]:
+    """service_address twin: the extract is authoritative; the generate twin only validates."""
+    return resolve_twin(
+        parsed, SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, threshold,
+        _address_tokens_agree, prefer_generate_when_agree=False,
+    )
+
+
+# Every twin-resolved critical field: final name -> (extract key, generate key, agree fn,
+# prefer the clean generate value on agreement). vendor prefers the normalised generate
+# name; the rest keep the literal extract value (the twin only validates).
+TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
+    VENDOR_FINAL: (VENDOR_EXTRACT, VENDOR_GENERATE, _vendor_values_consistent, True),
+    SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, False),
+    TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, False),
+    GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, False),
+    PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, False),
+}
+
+
+def resolve_field(
+    final_name: str,
+    parsed: Dict[str, Tuple[Any, Optional[float]]],
+    threshold: float = THRESHOLD,
+) -> Tuple[Any, float, bool, Optional[str], str]:
+    """Resolve one twin-resolved critical field by its final name."""
+    extract_key, generate_key, agree_fn, prefer = TWIN_FIELDS[final_name]
+    return resolve_twin(parsed, extract_key, generate_key, threshold, agree_fn, prefer)
+
+
 # --- write-values builder ----------------------------------------------------
 
 
@@ -235,8 +459,13 @@ def build_write_values(
         else:
             write[name] = value
 
-    total = parsed.get("total_invoice_amount", (None, None))[0]
-    gst = parsed.get("gst_amount", (None, None))[0]
-    write["amount_excluding_gst"] = _amount_excluding_gst(total, gst)
+    # The twin-resolved finals are computed (not straight passthroughs), so Dynamics
+    # receives the resolved value for each. CU no longer returns these names directly.
+    for final_name in TWIN_FIELDS:
+        write[final_name] = resolve_field(final_name, parsed, threshold)[0]
+
+    # amount_excluding_gst is derived from the resolved total and gst, not the raw CU
+    # fields (which are now the *_extract / *_generate twins).
+    write["amount_excluding_gst"] = _amount_excluding_gst(write[TOTAL_FINAL], write[GST_FINAL])
 
     return write, defaulted

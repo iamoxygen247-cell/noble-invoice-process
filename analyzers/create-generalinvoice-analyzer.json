@@ -10,10 +10,15 @@
   "fieldSchema": {
     "name": "GeneralInvoiceFields",
     "fields": {
-      "vendor_name": {
+      "vendor_name_extract": {
         "type": "string",
         "method": "extract",
-        "description": "Name of the company, supplier, contractor, tradesperson, service provider, utility, or vendor issuing the invoice and requesting payment. Usually appears near the logo, top header, remittance details, or vendor contact block. Do not return the customer, Invoice To party, Bill To party, property manager, property owner, tenant, attention line, technician, or contact person."
+        "description": "Name of the company, supplier, contractor, tradesperson, service provider, utility, or vendor issuing the invoice and requesting payment, exactly as clearly printed on the document. Read it from clearly printed text — for example the remittance or payment return slip, the 'remit to' or 'make cheque payable to' line, the footer legal name or a 'does business as' clause, the vendor contact block, or a website domain — rather than a stylized logo or graphic wordmark. When the name appears both as a stylized logo and as printed body text, use the printed text. Return the printed vendor name verbatim; do not paraphrase, shorten, or invent. Do not return the customer, Invoice To party, Bill To party, property manager, property owner, tenant, attention line, technician, or contact person."
+      },
+      "vendor_name_generate": {
+        "type": "string",
+        "method": "generate",
+        "description": "Common name of the company, supplier, contractor, tradesperson, service provider, utility, or vendor issuing the invoice and requesting payment. Read the vendor name from clearly printed text — for example the remittance or payment return slip, the 'remit to' or 'make cheque payable to' line, the footer legal name or a 'does business as' clause, the vendor contact block, or a website domain — rather than a stylized logo or graphic wordmark. When the name appears both as a stylized logo and as printed body text, use the printed text. Return the short common name the vendor is known by (for example 'FortisBC', 'BC Hydro'), not the full legal-entity suffix such as 'Energy Inc.', 'Inc.', or 'Ltd'. Do not return the customer, Invoice To party, Bill To party, property manager, property owner, tenant, attention line, technician, or contact person."
       },
       "invoice_date": {
         "type": "date",
@@ -30,25 +35,45 @@
         "method": "extract",
         "description": "Unique invoice identifier assigned by the vendor for this invoice. Prefer the value in the invoice header or top-right invoice table that is directly labeled Invoice #, Invoice No., Invoice Number, Inv #, Inv No., Tax Invoice No., Bill Number, or Document Number. The invoice number is often near the invoice date. If the document includes both an invoice page and a work order page, prefer the value labeled Invoice # on the invoice page; use a standalone '#:' value on the work order page only if it matches the invoice page number. Return only the identifier value, not the label. Do not return P.O. No., PO #, PO number, job number, work order number, project number, reference number, customer number, account number, vendor GST number, tax ID, phone number, postal code, license number, product registration number, date, subtotal, GST amount, total amount, balance due, or service address."
       },
-      "po_or_job_number": {
+      "po_or_job_number_extract": {
         "type": "string",
         "method": "extract",
         "description": "Purchase order, job, work order, project, or reference number. It is exactly 8 digits long and entirely numeric (digits 0-9 only; no letters, spaces, dashes, or other punctuation). May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Job Number, Work Order, WO, Project No., Site Ref, Customer Ref, or Reference. Prefer a candidate that is exactly 8 digits; ignore candidates that contain letters or are not exactly 8 digits long. Return the 8 digits only, preserving any leading zeros. If both PO and Job exist, return PO number only. Return null if no 8-digit numeric value is present."
       },
-      "gst_amount": {
+      "po_or_job_number_generate": {
+        "type": "string",
+        "method": "generate",
+        "description": "Determine the purchase order, job, work order, project, or reference number for this invoice. It is exactly 8 digits long and entirely numeric (digits 0-9 only). May be labeled PO #, P.O. No., Purchase Order, Job #, Job No., Job Number, Work Order, WO, Project No., Site Ref, Customer Ref, or Reference. Return the 8 digits only, preserving any leading zeros. If both a PO and a Job number exist, return the PO number. Return an empty string if no 8-digit numeric value is present."
+      },
+      "gst_amount_extract": {
         "type": "number",
         "method": "extract",
         "description": "Canadian GST (5%) amount charged. Prefer the amount directly labeled GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric amount, not the rate. If a separate provincial sales tax (PST) line is present, return only the GST line, not PST and not Total Tax. Use Total Tax only when there is no separate GST line and no other tax types are present. Do not return the GST registration number, subtotal, total, or balance due."
       },
-      "total_invoice_amount": {
+      "gst_amount_generate": {
+        "type": "number",
+        "method": "generate",
+        "description": "Determine the Canadian GST (5%) amount charged on this invoice. Prefer the amount labeled GST, G.S.T., GST@5.0%, GST 5%, or Goods and Services Tax. Return the numeric amount, not the rate. If a separate provincial sales tax (PST) line is present, return only the GST line, not PST and not Total Tax. Use Total Tax only when there is no separate GST line and no other tax types are present. Do not return the GST registration number, subtotal, total, or balance due. Return an empty value if no GST is charged."
+      },
+      "total_invoice_amount_extract": {
         "type": "number",
         "method": "extract",
         "description": "Final amount the recipient must pay, including all taxes and charges. Prefer values labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Amount Payable, or Please Pay. If Total and Balance Due are both present and equal, return that amount. Do not return subtotal, GST, amount paid, or a line amount."
       },
-      "service_address": {
+      "total_invoice_amount_generate": {
+        "type": "number",
+        "method": "generate",
+        "description": "Determine the final amount the recipient must pay, including all taxes and charges. Prefer values labeled Total, Invoice Total, Amount Due, Balance Due, Total Due, Grand Total, Amount Payable, or Please Pay. If Total and Balance Due are both present and equal, return that amount. Do not return the subtotal, the GST amount, an amount already paid, or an individual line amount."
+      },
+      "service_address_extract": {
         "type": "string",
         "method": "extract",
         "description": "Address where the work, service, delivery, security monitoring, fire monitoring, repair, utility service, or billed property is located. Treat labels in this priority order: 1) SHIP TO / Ship To / Shipped To / Ship-to, especially when followed by text such as \"the Premises\", \"Premises\", \"Site\", or \"Site Location\"; 2) Service Address, Service Location, Site Address, Site Location, Job Address, Work Location, Property Address, Premises, Installation Address, or Service For; 3) for municipal bills only, the assessed or billed property address. When a document has both SOLD TO / Customer / Bill To / Invoice To and SHIP TO / Premises / Site blocks, always return the SHIP TO / Premises / Site address, not the SOLD TO or customer mailing address. For The Radius Group invoices, the service address is the address directly under SHIP TO (the \"Premises\"). In that layout, exclude the customer/company name line and return only the street, city, province/state, and postal code if printed. Example: if the block is \"SHIP TO (the Premises) / 1100289 BC LTD / 1606 Broadway W / Vancouver, BC\", return \"1606 Broadway W\\nVancouver, BC\". Do not return the vendor's own office address, remittance address, logo/header address, SOLD TO address, Invoice To address, Bill To address, customer mailing address, account owner, property manager name, or company name line."
+      },
+      "service_address_generate": {
+        "type": "string",
+        "method": "generate",
+        "description": "Determine the address where the work, service, delivery, security monitoring, fire monitoring, repair, utility service, or billed property is located, and return it as a clean address. Prioritise the SHIP TO / Ship To / Shipped To block (especially when labelled 'the Premises', 'Premises', 'Site', or 'Site Location'), then Service Address, Service Location, Site Address, Site Location, Job Address, Work Location, Property Address, Installation Address, or Service For; for municipal bills, the assessed or billed property address. When both a SOLD TO / Customer / Bill To / Invoice To block and a SHIP TO / Premises / Site block are present, always use the SHIP TO / Premises / Site location, never the SOLD TO or customer mailing address. Assemble the street, city, province/state, and postal code. Exclude the customer/company name line, the vendor's own office or remittance address, any logo or header address, the property manager name, and the account owner. Return an empty string if undeterminable."
       },
       "bill_type": {
         "type": "string",

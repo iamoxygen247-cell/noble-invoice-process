@@ -122,6 +122,29 @@ def field_gate_from_summary(field_name: str, entry: Optional[Dict[str, Any]], th
     summarised field shape {"value": ..., "confidence": ...} instead of a raw CU
     field object. Same decisions, same strings.
     """
+    # The raw extract/generate twins are not critical on their own -- the computed final
+    # (vendor_name / service_address) is. Show an informational threshold check for the
+    # twins so you can see whether each source clears the bar (esp. whether extract alone
+    # hits >=0.80, and whether the generate twin agrees), without implying review.
+    if field_name in (
+        "vendor_name_extract", "vendor_name_generate",
+        "service_address_extract", "service_address_generate",
+        "total_invoice_amount_extract", "total_invoice_amount_generate",
+        "gst_amount_extract", "gst_amount_generate",
+        "po_or_job_number_extract", "po_or_job_number_generate",
+    ):
+        if entry is None:
+            return "not returned by CU"
+        value = entry.get("value")
+        confidence = entry.get("confidence")
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            return "empty"
+        if confidence is None:
+            return "no confidence"
+        if isinstance(confidence, (int, float)) and confidence < threshold:
+            return f"warning: {confidence:.3f} < {threshold:.2f}"
+        return "pass"
+
     if field_name not in CRITICAL_FIELDS:
         if field_name == "payment_due_date":
             return "not critical - Logic App defaults to invoice_date + 30 days"
@@ -197,9 +220,20 @@ def build_scorecard_pairs(
         pairs.append(
             (f"{field_name}.confidence", "MISSING" if confidence is None else f"{float(confidence):.3f}")
         )
-        pairs.append(
-            (f"{field_name}.gate", field_gate_from_summary(field_name, entry, threshold))
-        )
+        # For the twin-resolved finals the authoritative pass/fail lives in the resolutions
+        # map: a below-threshold field can still pass via the extract+generate agreement
+        # rule, so a confidence-derived gate would wrongly show REVIEW. Prefer the resolution
+        # and surface which source produced the value.
+        resolutions = response.get("resolutions") or {}
+        resolution = resolutions.get(field_name) if isinstance(resolutions, dict) else None
+        resolution = resolution if isinstance(resolution, dict) else None
+        if resolution is not None and resolution.get("passed") is True:
+            gate = "pass"
+        else:
+            gate = field_gate_from_summary(field_name, entry, threshold)
+        pairs.append((f"{field_name}.gate", gate))
+        if resolution is not None:
+            pairs.append((f"{field_name}.source", str(resolution.get("source") or "")))
 
         if field_name == "invoice_description":
             pairs.append(("invoice_description.word_count", scorecard.csv_scalar(scorecard.count_words(value))))
@@ -214,13 +248,23 @@ def build_scorecard_pairs(
     # already emitted above; emit_field's `seen` guard keeps every block unique.
     lead_fields = [
         "vendor_name",
+        "vendor_name_extract",
+        "vendor_name_generate",
         "service_address",
+        "service_address_extract",
+        "service_address_generate",
         "invoice_date",
         "payment_due_date",
         "invoice_number",
         "po_or_job_number",
+        "po_or_job_number_extract",
+        "po_or_job_number_generate",
         "gst_amount",
+        "gst_amount_extract",
+        "gst_amount_generate",
         "total_invoice_amount",
+        "total_invoice_amount_extract",
+        "total_invoice_amount_generate",
         "is_handwritten",
         "invoice_description",
     ]
