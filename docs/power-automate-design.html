@@ -59,7 +59,8 @@
     <span class="tag">trigger: SharePoint file-created</span>
     <span class="tag">flow&rarr;function: custom connector + key</span>
     <span class="tag">scope: core slice (Phases 0&ndash;3)</span>
-    <span class="tag">steps: click-by-click, validated</span>
+    <span class="tag">steps: click-by-click, new designer</span>
+    <span class="tag">UI verified against MS Learn, July 2026</span>
   </p>
 
   <div class="ok">
@@ -209,7 +210,8 @@
             <code>contentBase64</code> = step 3, <code>fileName</code> = file name, <code>sourceFileUrl</code> = item link.
             The key is in the <em>connection</em>, not the body.</td></tr>
     <tr><td>5</td><td><strong>Read the response</strong></td>
-        <td>Pull <code>routingDecision</code>, <code>alreadyProcessed</code>, <code>writeValues</code>, <code>status</code>.</td></tr>
+        <td>Pull <code>routingDecision</code>, <code>alreadyProcessed</code>, <code>writeValues</code>, <code>status</code>
+            (and check <code>ledgerWriteError</code> &mdash; see the response contract below).</td></tr>
     <tr><td>6</td><td><strong>Condition + Switch</strong></td>
         <td><code>alreadyProcessed == true</code> &rarr; Terminate (Succeeded).<br>
             else Switch on <code>routingDecision</code>: <code>HAPPY_PATH_CANDIDATE</code> &rarr; (Phase 4) Dataverse;
@@ -228,10 +230,40 @@
   </div>
   <div class="warn">
     <strong>Synchronous timeout.</strong> Power Automate connector actions have a ~120&nbsp;s synchronous limit.
-    CU + a Flex Consumption cold start should be well under that for small invoice PDFs. If we ever hit a timeout,
+    The Function caps its own Content Understanding call at 120&nbsp;s (<code>AZURE_CU_TIMEOUT_SECONDS</code>) and CU +
+    a Flex Consumption cold start should be well under that for small invoice PDFs. If we ever hit a timeout,
     the fix is the async <code>202 + Location</code> polling pattern noted in <code>functionapp/README.md</code> &mdash;
     not a flow redesign.
   </div>
+
+  <h3>The Function's response contract (what the flow reads)</h3>
+  <p>Updated for the July&nbsp;2026 validation hardening of <code>function_app.py</code>:</p>
+  <table>
+    <tr><th>Field / status</th><th>Meaning for the flow</th></tr>
+    <tr><td><code>200</code> + <code>alreadyProcessed: true</code></td>
+        <td>Gate A1 short-circuit &mdash; this SharePoint item was already handled (or another run is in flight).
+            CU did not run. <strong>Terminate (Succeeded)</strong>; do not write anything.</td></tr>
+    <tr><td><code>200</code> + <code>status: "Extracted"</code></td>
+        <td>Normal decision. Branch on <code>routingDecision</code>; <code>writeValues</code> carries the clean
+            field set for the (Phase&nbsp;4) Dataverse write.</td></tr>
+    <tr><td><code>200</code> + <code>status: "Received"</code> + <code>ledgerWriteError</code></td>
+        <td>CU ran and the decision is present, but the ledger row could <em>not</em> be stamped
+            <code>Extracted</code> &mdash; the row's true state is <code>Received</code>. Treat as a failure:
+            route to review / alert rather than writing to Dynamics, or the ledger and Dynamics will disagree.</td></tr>
+    <tr><td><code>400</code></td>
+        <td>The request itself was bad &mdash; missing/invalid <code>sourceId</code>, <code>contentBase64</code>
+            not valid base64 / empty, or <code>fieldThreshold</code> outside (0,&nbsp;1]. Validation runs
+            <em>before</em> any ledger write, so a 400 <strong>never claims the A1 slot</strong>: fix the flow
+            and re-run &mdash; the same file processes normally with no lease lock-out.</td></tr>
+    <tr><td><code>502</code></td>
+        <td>Content Understanding genuinely failed (or timed out at 120&nbsp;s). The row stays at
+            <code>Received</code> and the Function resumes it on a retry once the A1 lease
+            (<code>A1_LEASE_SECONDS</code>, default 600&nbsp;s) expires.</td></tr>
+    <tr><td><code>routingDecision</code> values</td>
+        <td><code>HAPPY_PATH_CANDIDATE</code> &middot; <code>REVIEW_B4_CRITICAL_FIELD</code> &middot;
+            <code>REJECT_B2_OTHER_CATEGORY</code> &middot; <code>REVIEW_NO_CHILD_EXTRACTION</code>
+            (plus <code>PROCESSING_IN_PROGRESS</code> / a prior decision echoed on an A1 skip).</td></tr>
+  </table>
 
   <h2><span class="num">4</span>What I need from you before building</h2>
   <p>Config facts, not decisions:</p>
@@ -242,12 +274,30 @@
     <tr><td>Power Platform <span class="ph">&lt;environment&gt;</span></td>
         <td>Where the flow + custom connector are built (custom connectors are environment-scoped).</td></tr>
     <tr><td>The <strong>function key</strong> <span class="ph">&lt;KEY&gt;</span></td>
-        <td>Read via <code>az</code> (below) or the portal; paste into the connector connection &mdash; never into a tracked file.</td></tr>
+        <td>Read via the Azure portal or <code>az</code> (both below); paste into the connector connection &mdash; never into a tracked file.</td></tr>
     <tr><td>The Function's <strong>default host name</strong> <span class="ph">&lt;HOST&gt;</span></td>
         <td>The custom connector's host.</td></tr>
     <tr><td>(Optional) a dedicated <strong>service account</strong></td>
         <td>For the SharePoint connection (Boundary 1) instead of your personal account.</td></tr>
   </table>
+  <h4>Get <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span> &mdash; Azure portal (recommended if <code>az</code> hits TLS-inspection errors)</h4>
+  <ol class="steps">
+    <li>Go to <strong>portal.azure.com</strong> &rarr; search <strong>Function App</strong> &rarr; open
+        <code>func-invoiceprocess-westus</code>.</li>
+    <li><strong>Overview</strong> shows the <strong>Default domain</strong> &mdash; that is <span class="ph">&lt;HOST&gt;</span>
+        (e.g. <code>func-invoiceprocess-westus.azurewebsites.net</code>).</li>
+    <li>For the key, either scope works with <code>auth_level=FUNCTION</code>:
+      <ul>
+        <li><strong>Least privilege (recommended):</strong> on the <strong>Overview</strong> page open the
+            <strong>Functions</strong> tab &rarr; select <code>process_invoice</code> &rarr; <strong>Function keys</strong>
+            tab &rarr; next to <code>default</code> click <strong>Show value</strong> &rarr; copy. This key opens only
+            this one endpoint.</li>
+        <li><strong>App-wide:</strong> left menu &rarr; expand <strong>Functions</strong> &rarr; <strong>App keys</strong>
+            &rarr; under <em>Host keys (all functions)</em> copy <code>default</code>. Works for every function in the app
+            &mdash; broader than needed. Never use <code>_master</code>.</li>
+      </ul></li>
+  </ol>
+  <h4>Same thing via <code>az</code> (returns the app-wide default host key)</h4>
   <pre><code># Read the host name and function key (run from the repo, az login first)
 az functionapp show -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "defaultHostName" -o tsv
 az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "functionKeys.default" -o tsv</code></pre>
@@ -265,9 +315,8 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
         <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
 az functionapp show -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "defaultHostName" -o tsv
 az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-westus --query "functionKeys.default" -o tsv</code></pre></li>
-    <li>POST a real sample invoice to the deployed Function:
-        <pre><code>cd scripts
-python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf"</code></pre>
+    <li>POST a real sample invoice to the deployed Function (from the repo root, using the project venv):
+        <pre><code>.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\bchydro.pdf"</code></pre>
         Add <code>--insecure</code> if a corporate proxy intercepts TLS.</li>
   </ol>
   <div class="ok">
@@ -288,10 +337,16 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
   <ol class="steps">
     <li>Go to <strong>make.powerautomate.com</strong>. Top-right environment picker &rarr; confirm you are in
         <span class="ph">&lt;environment&gt;</span>.</li>
-    <li>Left nav &rarr; <strong>&hellip; More</strong> &rarr; <strong>Discover all</strong> &rarr; under <em>Data</em>
-        choose <strong>Custom connectors</strong> (pin it for next time).</li>
-    <li>Top-right &rarr; <strong>+ New custom connector</strong> &rarr; <strong>Create from blank</strong>. Name it
-        <code>Noble Invoice Function</code> &rarr; <strong>Continue</strong>.</li>
+    <li>Open the custom-connector list. Microsoft's current docs route this through solutions:
+        left pane &rarr; <strong>Solutions</strong> &rarr; open (or create) an unmanaged solution &rarr;
+        <strong>New custom connector</strong> dropdown &rarr; <strong>Create from blank</strong>.
+        <br><span style="color:var(--muted);font-size:13px;">The classic path still works too:
+        left nav &rarr; <strong>&hellip; More</strong> &rarr; <strong>Discover all</strong> &rarr;
+        <strong>Custom connectors</strong> &rarr; <strong>+ New custom connector</strong> &rarr;
+        <strong>Create from blank</strong>. Either way you land in the same five-section wizard
+        (General &middot; Security &middot; Definition &middot; Code &middot; Test); the Code section is optional
+        and we skip it.</span></li>
+    <li>Name it <code>Noble Invoice Function</code> &rarr; <strong>Continue</strong>.</li>
   </ol>
 
   <h4>B · General tab</h4>
@@ -308,6 +363,8 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
     <li><strong>Parameter name:</strong> <code>x-functions-key</code> (exact, lowercase &mdash; this is the header
         Azure Functions reads).</li>
     <li><strong>Parameter location:</strong> <code>Header</code>.</li>
+    <li>Top of the wizard &rarr; <strong>Create connector</strong>. (The connector now exists; from here the button
+        reads <strong>Update connector</strong> after each further change.)</li>
   </ol>
 
   <h4>D · Definition tab &mdash; add the action</h4>
@@ -328,16 +385,22 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
   "routingDecision": "HAPPY_PATH_CANDIDATE",
   "alreadyProcessed": false,
   "status": "Extracted",
+  "ledgerWriteError": "",
   "writeValues": {}
-}</code></pre></li>
-    <li>Top-right &rarr; <strong>Create connector</strong>.</li>
+}</code></pre>
+        The <em>Validation</em> area at the bottom shows a green check when the definition is consistent.</li>
+    <li>Top-right &rarr; <strong>Update connector</strong>.</li>
   </ol>
 
   <h4>E · Test tab &mdash; prove the key + reachability</h4>
   <ol class="steps">
-    <li><strong>+ New connection</strong> &rarr; paste <span class="ph">&lt;KEY&gt;</span> &rarr;
-        <strong>Create connection</strong>. Back on Test, refresh and select it.</li>
-    <li>Send a deliberately empty body <code>{}</code> (clear the test fields) &rarr; <strong>Test operation</strong>.</li>
+    <li><strong>+ New connection</strong> &rarr; paste <span class="ph">&lt;KEY&gt;</span> into the
+        <em>Function key</em> field &rarr; <strong>Create connection</strong>.
+        <br><span style="color:var(--muted);font-size:13px;">Microsoft's docs recommend waiting a few minutes after
+        creating an API-key connector before testing &mdash; the connection can take a moment to become usable.</span></li>
+    <li>Back on the <strong>Test</strong> tab, click the <strong>refresh</strong> icon next to the connection list and
+        select the new connection.</li>
+    <li>Leave every request field <em>empty</em> (a deliberately empty body) &rarr; <strong>Test operation</strong>.</li>
   </ol>
   <div class="ok">
     <strong>Verify:</strong> you get <code>HTTP 400</code> with a message like <code>request body must be JSON</code> /
@@ -352,60 +415,99 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
 
   <!-- ===================== PHASE 2 ===================== -->
   <h3>Phase 2 &mdash; Build the minimal flow (Boundaries 1 + 2)</h3>
+  <div class="note">
+    <strong>You'll be in the new designer.</strong> It is the default (a <em>New designer</em> toggle at the top right
+    switches back to classic). The mechanics used below: click a card on the canvas and its settings open in the
+    <strong>configuration pane on the left</strong>; add steps with the <strong>+</strong> button between cards &rarr;
+    <strong>Add an action</strong>; inside any input field the <strong>lightning-bolt</strong> button inserts
+    <em>dynamic content</em> (outputs of earlier steps), the <strong><em>fx</em></strong> button inserts an
+    <em>expression</em>, and typing <code>/</code> in a field opens the same picker.
+  </div>
 
   <h4>A · Trigger</h4>
   <ol class="steps">
-    <li><strong>make.powerautomate.com</strong> &rarr; <strong>+ Create</strong> &rarr;
-        <strong>Automated cloud flow</strong>. Name <code>Noble Invoice &ndash; Process</code>.</li>
-    <li>Search the trigger <strong>When a file is created (properties only)</strong> (SharePoint) &rarr; select &rarr;
-        <strong>Create</strong>. If prompted, sign the SharePoint connection in as the service account.</li>
-    <li>On the trigger: <strong>Site Address</strong> = <span class="ph">&lt;site&gt;</span>;
-        <strong>Library Name</strong> = <span class="ph">&lt;library&gt;</span>. Leave <em>Folder</em> blank for the whole library.</li>
+    <li><strong>make.powerautomate.com</strong> &rarr; left pane <strong>+ Create</strong> &rarr;
+        <strong>Automated cloud flow</strong>. Flow name <code>Noble Invoice &ndash; Process</code>.</li>
+    <li>In "Choose your flow's trigger" search <code>file created</code> &rarr; pick
+        <strong>When a file is created (properties only)</strong> (SharePoint) &rarr; <strong>Create</strong>.
+        <br><span style="color:var(--muted);font-size:13px;">Do <em>not</em> pick "When a file is created in a folder"
+        &mdash; Microsoft lists that trigger as <strong>deprecated</strong>.</span></li>
+    <li>If prompted, sign the SharePoint connection in &mdash; ideally as the service account (Boundary 1), not your
+        personal account.</li>
+    <li>Click the trigger card; in the left configuration pane set
+        <strong>Site Address</strong> = <span class="ph">&lt;site&gt;</span> (pick from the dropdown, or
+        <em>Enter custom value</em> and paste the URL) and <strong>Library Name</strong> = <span class="ph">&lt;library&gt;</span>.
+        <em>Folder</em> (under <strong>Advanced parameters</strong>) stays blank for the whole library.</li>
   </ol>
 
   <h4>B · Get file content</h4>
   <ol class="steps">
-    <li><strong>+ New step</strong> &rarr; search SharePoint &rarr; <strong>Get file content</strong>.</li>
-    <li><strong>Site Address</strong> = same <span class="ph">&lt;site&gt;</span>. Click <strong>File Identifier</strong>
-        &rarr; Dynamic content &rarr; pick <span class="field">Identifier</span> (from the trigger).</li>
+    <li>Click <strong>+</strong> under the trigger &rarr; <strong>Add an action</strong> &rarr; search
+        <code>get file content</code> &rarr; pick <strong>Get file content</strong> (SharePoint) &mdash; the one
+        <em>without</em> "using path".</li>
+    <li>In the pane: <strong>Site Address</strong> = same <span class="ph">&lt;site&gt;</span>. Click into
+        <strong>File Identifier</strong> &rarr; lightning-bolt &rarr; under the trigger's outputs pick
+        <span class="field">Identifier</span> (use the search box or <em>See more</em> if it isn't listed).</li>
   </ol>
 
   <h4>C · base64 (Compose)</h4>
   <ol class="steps">
-    <li><strong>+ New step</strong> &rarr; <strong>Compose</strong> (Data Operation). Rename it (&hellip; menu &rarr; Rename)
-        to <code>contentBase64</code>.</li>
-    <li>Click <strong>Inputs</strong> &rarr; <strong>Expression</strong> tab &rarr; paste
-        <code>body('Get_file_content')?['$content']</code> &rarr; <strong>OK</strong>.
-        <br><span style="color:var(--muted);font-size:13px;">If you renamed "Get file content", match the name in the
-        expression (spaces become underscores).</span></li>
+    <li><strong>+</strong> &rarr; <strong>Add an action</strong> &rarr; search <code>compose</code> &rarr;
+        <strong>Compose</strong> (Data Operations).</li>
+    <li>Rename it so the later expressions read well: with the card selected, click its name
+        (<em>Compose</em>) at the top of the configuration pane and type <code>contentBase64</code>.</li>
+    <li>Click into <strong>Inputs</strong> &rarr; <strong><em>fx</em></strong> button &rarr; paste
+        <code>body('Get_file_content')?['$content']</code> &rarr; <strong>Add</strong>.
+        <br><span style="color:var(--muted);font-size:13px;">Why: "Get file content" outputs a binary object
+        <code>{"$content-type": "application/pdf", "$content": "&lt;base64&gt;"}</code> on the wire; this expression
+        extracts the ready-made base64 string. Do <em>not</em> wrap it in <code>base64()</code> &mdash; that
+        double-encodes. If you renamed the "Get file content" action, match its name in the expression
+        (spaces become underscores).</span></li>
   </ol>
 
   <h4>D · Call the connector</h4>
   <ol class="steps">
-    <li><strong>+ New step</strong> &rarr; <strong>Custom</strong> tab &rarr; <strong>Noble Invoice Function</strong>
-        &rarr; <strong>Process invoice</strong>. Pick the connection that holds the key.</li>
-    <li>Fill the body:
+    <li><strong>+</strong> &rarr; <strong>Add an action</strong> &rarr; in the search box type
+        <code>process invoice</code> (or <code>Noble Invoice Function</code>) &rarr; pick the
+        <strong>Process invoice</strong> action under your custom connector. If asked, select the connection created in
+        Phase 1E (it holds the key).</li>
+    <li>Keep the action's default name <code>Process invoice</code> &mdash; Phase 3's expressions reference it as
+        <code>body('Process_invoice')</code>.</li>
+    <li>Fill the body (lightning-bolt for each):
       <ul>
         <li><code>sourceId</code> = <span class="field">Identifier</span> (trigger) &mdash; the stable idempotency key</li>
-        <li><code>contentBase64</code> = <strong>Outputs</strong> of the <code>contentBase64</code> Compose</li>
+        <li><code>contentBase64</code> = <span class="field">Outputs</span> of the <code>contentBase64</code> Compose</li>
         <li><code>fileName</code> = <span class="field">File name with extension</span> (trigger)</li>
         <li><code>sourceFileUrl</code> = <span class="field">Link to item</span> (trigger)</li>
       </ul>
     </li>
-    <li><strong>Save.</strong></li>
+    <li><strong>Save</strong> (command bar, top right). A green "Your flow is ready to go" confirms it saved clean.</li>
   </ol>
   <div class="ok">
-    <strong>Verify:</strong> upload a PDF into <span class="ph">&lt;library&gt;</span> &rarr; open
-    <em>My flows &rarr; Noble Invoice &rarr; run history</em> &rarr; the <strong>Process invoice</strong> action shows
-    <code>200</code> and a <code>routingDecision</code>. Then confirm the ledger row reached <code>Extracted</code>:
+    <strong>Verify:</strong> upload a PDF into <span class="ph">&lt;library&gt;</span> &rarr; left pane
+    <strong>My flows</strong> &rarr; open the flow &rarr; <strong>28-day run history</strong> &rarr; open the newest run
+    &rarr; click the <strong>Process invoice</strong> card and expand its <em>Outputs</em>: status <code>200</code> and a
+    <code>routingDecision</code> in the body. (The trigger can take a minute or two to fire after the upload &mdash; the
+    SharePoint "properties only" triggers poll.) Then confirm the ledger row reached <code>Extracted</code>, either in the
+    portal &mdash; storage account <code>stinvoicedevwestus</code> &rarr; <strong>Storage browser</strong> &rarr;
+    <strong>Tables</strong> &rarr; <code>InvoiceExtractProcessLog</code> &mdash; or via <code>az</code>:
     <pre><code>az storage entity query --account-name stinvoicedevwestus --table-name InvoiceExtractProcessLog `
   --auth-mode login --num-results 5 `
   --query "items[].{rk:RowKey, status:Status, decision:RoutingDecision}" -o table</code></pre>
   </div>
   <div class="warn">
-    <strong>If the action returns <code>502</code> after a real upload:</strong> Phase 0 already proved CU works, so suspect
-    the <code>contentBase64</code> expression. The Function 502s if it can't base64-decode the body. Re-check the Compose
-    expression is exactly <code>body('Get_file_content')?['$content']</code>.
+    <strong>If the Process invoice action fails after a real upload</strong> (Phase 0 already proved the Function itself
+    works, so suspect the flow's inputs):
+    <ul>
+      <li><code>400 contentBase64 is not valid base64</code> &mdash; the Compose expression isn't extracting the raw
+          base64 string. Re-check it is exactly <code>body('Get_file_content')?['$content']</code>. These 400s are
+          harmless: validation runs before any ledger write, so fixing the flow and re-uploading (or resubmitting the
+          run) processes the same file normally &mdash; no lock-out.</li>
+      <li><code>502 Content Understanding analyze failed</code> on content that Phase 0 handled fine &mdash; classic
+          sign of <strong>double-encoded</strong> base64 (e.g. wrapping the expression in <code>base64()</code>):
+          it decodes "successfully" into garbage bytes that CU then rejects. Remove the extra <code>base64()</code>.</li>
+      <li><code>401</code> &mdash; the connection's key is wrong; recreate the connection in Phase 1E.</li>
+    </ul>
   </div>
 
   <!-- ===================== PHASE 3 ===================== -->
@@ -413,21 +515,27 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
 
   <h4>A · Already-processed short-circuit</h4>
   <ol class="steps">
-    <li>After <strong>Process invoice</strong> &rarr; <strong>+ New step</strong> &rarr; <strong>Control</strong> &rarr;
-        <strong>Condition</strong>.</li>
-    <li>Left value (Expression): <code>body('Process_invoice')?['alreadyProcessed']</code> · operator
-        <strong>is equal to</strong> · right value (Expression): <code>true</code>.</li>
-    <li><strong>If yes</strong> &rarr; Add an action &rarr; <strong>Control &rarr; Terminate</strong> &rarr;
-        Status <code>Succeeded</code>. (A re-fired trigger ends cleanly as a no-op.)</li>
+    <li>Click <strong>+</strong> under <strong>Process invoice</strong> &rarr; <strong>Add an action</strong> &rarr;
+        search <code>condition</code> &rarr; <strong>Condition</strong> (Control).</li>
+    <li>In the condition row: click the left <em>Choose a value</em> field &rarr; <strong><em>fx</em></strong> &rarr;
+        <code>body('Process_invoice')?['alreadyProcessed']</code> &rarr; <strong>Add</strong>. Operator
+        <strong>is equal to</strong>. Right field &rarr; <strong><em>fx</em></strong> &rarr; <code>true</code>
+        (the expression <code>true</code>, not the text) &rarr; <strong>Add</strong>.</li>
+    <li>In the <strong>True</strong> branch on the canvas &rarr; <strong>+</strong> &rarr; <strong>Add an action</strong>
+        &rarr; <strong>Terminate</strong> (Control) &rarr; Status <code>Succeeded</code>.
+        (A re-fired trigger ends cleanly as a no-op.)</li>
   </ol>
 
-  <h4>B · Switch on the decision (inside "If no")</h4>
+  <h4>B · Switch on the decision (inside the "False" branch)</h4>
   <ol class="steps">
-    <li>In the <strong>If no</strong> branch &rarr; Add an action &rarr; <strong>Control &rarr; Switch</strong>.</li>
-    <li><strong>On</strong> (Expression): <code>body('Process_invoice')?['routingDecision']</code>.</li>
-    <li><strong>Case 1</strong> equals <code>HAPPY_PATH_CANDIDATE</code> &rarr; add a <strong>Compose</strong>
-        "HAPPY &mdash; would write Dataverse (Phase 4)".</li>
-    <li><strong>Case 2</strong> equals <code>REVIEW_B4_CRITICAL_FIELD</code> &rarr; Compose
+    <li>In the <strong>False</strong> branch &rarr; <strong>+</strong> &rarr; <strong>Add an action</strong> &rarr;
+        <strong>Switch</strong> (Control).</li>
+    <li><strong>On</strong> field &rarr; <strong><em>fx</em></strong> &rarr;
+        <code>body('Process_invoice')?['routingDecision']</code> &rarr; <strong>Add</strong>.</li>
+    <li><strong>Case</strong> equals <code>HAPPY_PATH_CANDIDATE</code> &rarr; inside it add a <strong>Compose</strong>
+        with Inputs "HAPPY &mdash; would write Dataverse (Phase 4)".</li>
+    <li>Add a <strong>Case</strong> (the <strong>+</strong> next to the existing case) equals
+        <code>REVIEW_B4_CRITICAL_FIELD</code> &rarr; Compose
         "REVIEW &mdash; would write review item (Phase 4)". (Optionally add cases
         <code>REJECT_B2_OTHER_CATEGORY</code>, <code>REVIEW_NO_CHILD_EXTRACTION</code>.)</li>
     <li><strong>Default</strong> &rarr; Compose "REVIEW/REJECT &mdash; would write review item (Phase 4)".</li>
@@ -461,10 +569,19 @@ python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file
 
   <footer>
     Generated for the Noble Invoice Processor repo. Grounded in the deployed Function contract
-    (<code>functionapp/function_app.py</code>, <code>cu_client.py</code>, <code>ledger.py</code>). The base64
-    (<code>$content</code>) and File-Identifier-vs-UniqueId details were verified against current Microsoft / SharePoint
-    connector documentation. No flow has been built yet &mdash; this is the agreed, click-by-click plan. Boundaries 3 &amp; 4
-    are already wired in the Function and are not changed by Power Automate.
+    (<code>functionapp/function_app.py</code>, <code>cu_client.py</code>, <code>ledger.py</code>) including the
+    July&nbsp;2026 validation hardening (400s before any ledger write; <code>status: Received</code> +
+    <code>ledgerWriteError</code> on a failed ledger stamp; 120&nbsp;s CU timeout). No flow has been built yet &mdash;
+    this is the agreed, click-by-click plan. Boundaries 3&nbsp;&amp;&nbsp;4 are already wired in the Function and are not
+    changed by Power Automate.
+    <br><br>
+    <strong>Revised 2026-07-02.</strong> UI steps verified against Microsoft Learn:
+    <a href="https://learn.microsoft.com/en-us/connectors/custom-connectors/define-blank">Create a custom connector from scratch</a> ·
+    <a href="https://learn.microsoft.com/en-us/power-automate/flows-designer">Explore the cloud flows designer</a> ·
+    <a href="https://learn.microsoft.com/en-us/azure/azure-functions/function-keys-how-to">Work with access keys in Azure Functions</a> ·
+    <a href="https://learn.microsoft.com/en-us/connectors/sharepointonline/">SharePoint connector reference</a>
+    (confirms "When a file is created (properties only)" / "Get file content"; "When a file is created in a folder"
+    is deprecated).
   </footer>
 
 </div>

@@ -177,6 +177,14 @@ Machine-specific paths, personal environment values, or local workflow notes sho
 
 ---
 
+## Generated Documents and Reports
+
+Do not publish plans, reviews, or reports to externally hosted pages (e.g. claude.ai Artifacts). All generated deliverables must stay on this machine.
+
+Write HTML or Markdown deliverables into the `docs/` folder of this repo (the existing convention: `docs/power-automate-design.html`, `docs/deploy-to-azure.html`) and reference them by file path.
+
+---
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

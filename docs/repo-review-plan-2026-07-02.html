@@ -1,0 +1,358 @@
+<title>Noble Invoice — Repo Review &amp; Cleanup Plan</title>
+<style>
+  :root {
+    --paper: #FBFAF8;
+    --ink: #212832;
+    --muted: #5C6572;
+    --line: #E5E2DA;
+    --accent: #2F5D50;
+    --accent-soft: #EDF3F0;
+    --crit: #A63A2B;
+    --crit-soft: #F9EEEC;
+    --high: #96660F;
+    --high-soft: #F8F1E2;
+    --med: #44607E;
+    --med-soft: #EDF1F6;
+    --low: #6E7681;
+    --low-soft: #F0F1F2;
+    --mono: "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    padding: 2.5rem 1.25rem 5rem;
+    font-size: 15.5px;
+  }
+  main { max-width: 56rem; margin: 0 auto; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+  h1 { font-size: 1.9rem; font-weight: 650; letter-spacing: -0.015em; margin: 0.4rem 0 0.6rem; }
+  h2 { font-size: 1.25rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+  h3 { font-size: 1.02rem; font-weight: 650; margin: 0 0 0.3rem; }
+  p { margin: 0.55rem 0; max-width: 70ch; }
+  section { margin-top: 3rem; }
+  .eyebrow {
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); margin: 0;
+  }
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem;
+    color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem;
+  }
+  .meta-row span strong { color: var(--ink); font-weight: 600; }
+  .banner {
+    margin-top: 1.5rem; padding: 0.8rem 1.1rem;
+    background: var(--accent-soft); border: 1px solid #CBDDD5; border-radius: 6px;
+    color: #274B41; font-size: 0.92rem; max-width: none;
+  }
+  .banner strong { font-weight: 650; }
+
+  /* chips */
+  .chip {
+    display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px;
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .chip.crit { background: var(--crit-soft); color: var(--crit); }
+  .chip.high { background: var(--high-soft); color: var(--high); }
+  .chip.med  { background: var(--med-soft);  color: var(--med); }
+  .chip.low  { background: var(--low-soft);  color: var(--low); }
+  .chip.keep { background: var(--accent-soft); color: var(--accent); }
+  .chip.remove { background: var(--crit-soft); color: var(--crit); }
+  .chip.prune { background: var(--high-soft); color: var(--high); }
+
+  /* finding cards */
+  .finding {
+    border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px;
+    background: #fff; padding: 0.95rem 1.15rem; margin-top: 0.9rem;
+  }
+  .finding.crit { border-left-color: var(--crit); }
+  .finding.high { border-left-color: var(--high); }
+  .finding.med  { border-left-color: var(--med); }
+  .finding.low  { border-left-color: var(--low); }
+  .finding .head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+  .finding .id { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+  .finding p { font-size: 0.92rem; }
+  .finding .fix { color: #274B41; }
+  .finding .fix::before { content: "Proposed fix — "; font-weight: 650; color: var(--accent); }
+  .finding .scenario::before { content: "Failure scenario — "; font-weight: 650; color: var(--muted); }
+
+  code {
+    font-family: var(--mono); font-size: 0.84em;
+    background: #F1EFE9; border-radius: 4px; padding: 0.06em 0.32em;
+  }
+  pre {
+    background: #23282F; color: #DCE1E8; border-radius: 6px;
+    padding: 0.8rem 1rem; font-size: 0.82rem; line-height: 1.55;
+    overflow-x: auto; margin: 0.7rem 0;
+  }
+  pre code { background: none; padding: 0; color: inherit; font-size: 1em; }
+  pre .cmt { color: #8B949E; }
+
+  .table-wrap { overflow-x: auto; margin-top: 0.9rem; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; background: #fff; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; vertical-align: top; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: none; }
+  thead th {
+    font-size: 0.72rem; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--muted); font-weight: 650; background: #F6F4EF;
+  }
+  td.mono, .mono { font-family: var(--mono); font-size: 0.83rem; }
+
+  .phase {
+    border: 1px solid var(--line); border-radius: 6px; background: #fff;
+    padding: 1.1rem 1.3rem; margin-top: 1rem;
+  }
+  .phase .phead { display: flex; align-items: baseline; gap: 0.75rem; }
+  .phase .pnum {
+    font-family: var(--mono); font-weight: 650; color: var(--accent);
+    font-size: 0.85rem; letter-spacing: 0.05em;
+  }
+  .phase ul { margin: 0.5rem 0 0.25rem; padding-left: 1.2rem; font-size: 0.92rem; }
+  .phase li { margin: 0.3rem 0; max-width: 75ch; }
+  .verify { font-size: 0.8rem; font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-top: 0.9rem; }
+
+  .decision {
+    border: 1px solid #D9CEB8; background: #FBF6EA; border-radius: 6px;
+    padding: 1rem 1.25rem; margin-top: 1rem;
+  }
+  .decision h3 { color: #6E5510; }
+  .decision ol { margin: 0.5rem 0 0.2rem; padding-left: 1.25rem; font-size: 0.93rem; }
+  .decision li { margin: 0.45rem 0; max-width: 75ch; }
+
+  .ok-list { margin: 0.6rem 0 0; padding-left: 1.2rem; font-size: 0.92rem; }
+  .ok-list li { margin: 0.3rem 0; max-width: 75ch; }
+  ul { max-width: 75ch; }
+  footer { margin-top: 3.5rem; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+</style>
+
+<main>
+<header>
+  <p class="eyebrow">Repo review · noble-invoice-process</p>
+  <h1>Script cleanup &amp; hardening plan</h1>
+  <div class="meta-row">
+    <span>Date <strong>July 2, 2026</strong></span>
+    <span>Branch <strong>main</strong> (clean)</span>
+    <span>Baseline <strong>21 / 21 offline tests pass</strong></span>
+    <span>Scope <strong>scripts/ · functionapp/ · docs · configs</strong></span>
+  </div>
+  <div class="banner">
+    <strong>Plan only — no changes have been made.</strong> Everything below is a proposal for your review.
+    One finding (a committed API key) needs action in the Azure portal regardless of what you approve here.
+  </div>
+</header>
+
+<!-- ============================== SCRIPTS ============================== -->
+<section>
+  <p class="eyebrow">Part 1</p>
+  <h2>scripts/ — what can be removed</h2>
+  <p>Six Python files live in <code>scripts/</code>. Two can go, three stay, and one stays but carries ~150 lines of dead code left behind when <code>step24_test.py</code> was deleted (commit <code>1414f19</code> “cleanup old files”).</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Script</th><th>Verdict</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">model_deployment_info.py</td>
+          <td><span class="chip remove">Remove</span></td>
+          <td>One-off 17-line probe that prints CU service defaults. Nothing references it, and it contains a <strong>hardcoded live API key</strong> committed to GitHub (see finding S1). If the probe is ever needed again it’s a two-liner against <code>cu_client</code>’s env-based auth.</td>
+        </tr>
+        <tr>
+          <td class="mono">phase3_ledger_test.py</td>
+          <td><span class="chip remove">Remove</span></td>
+          <td>Phase-3 validation harness whose logic was lifted verbatim into <code>functionapp/ledger.py</code> (its own docstring says so). The Function + offline suite now cover this behavior. Only unique leftover is the <code>--show-stuck</code> live-table query — see Decision&nbsp;2 if you want to keep that.</td>
+        </tr>
+        <tr>
+          <td class="mono">scorecard.py</td>
+          <td><span class="chip prune">Keep, prune</span></td>
+          <td>Both harnesses still use the HTML scorecard half. But the entire CSV-matrix half (<code>write_scorecard_matrix</code>, <code>read_all_rows</code>, <code>write_rows_atomic</code>, the legacy vertical-format parsers) had exactly one consumer — the deleted <code>step24_test.py</code>. Confirmed unused by grep across the repo. Prune it and the stale “imported by step24_test.py” docstring.</td>
+        </tr>
+        <tr>
+          <td class="mono">create_analyzer.py</td>
+          <td><span class="chip keep">Keep</span></td>
+          <td>The only way to push <code>analyzers/*.json</code> definitions to Content Understanding. Actively needed.</td>
+        </tr>
+        <tr>
+          <td class="mono">local_test.py</td>
+          <td><span class="chip keep">Keep</span></td>
+          <td>Primary local harness; imported by <code>tests/test_harness_scorecard.py</code>. (Has one config drift — finding H1.)</td>
+        </tr>
+        <tr>
+          <td class="mono">verify_fn.py</td>
+          <td><span class="chip keep">Keep</span></td>
+          <td>Deployed-function harness; also imported by the test suite. Same H1 drift.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================== FINDINGS ============================== -->
+<section>
+  <p class="eyebrow">Part 2</p>
+  <h2>Findings across the repo</h2>
+  <p>Ordered by severity. Each has a concrete failure scenario and a proposed fix; nothing is applied yet.</p>
+
+  <div class="finding crit">
+    <div class="head"><span class="chip crit">Critical</span><h3>S1 · Live Azure key committed and pushed to GitHub</h3></div>
+    <p><span class="mono">scripts/model_deployment_info.py:6</span> hardcodes a Content Understanding API key. The file is tracked at HEAD and the key pattern appears in <strong>20+ commits</strong> of history on <span class="mono">origin</span> (github.com/iamoxygen247-cell/noble-invoice-process). Commit <code>ba6c735</code> (“replaced key with identity”) shows earlier scripts also carried keys, so history is contaminated beyond this one file. This directly contradicts the repo’s own CLAUDE.md secrets rule and the README security section. I could not confirm repo visibility from this machine (TLS interception blocks the GitHub API) — treat the key as compromised either way.</p>
+    <p class="scenario">Anyone with repo access (or the public, if the repo is public) can call the CU resource on your subscription — quota burn, data exposure, cost.</p>
+    <p class="fix">(a) Regenerate <strong>both</strong> keys on the CU resource in the Azure portal — this is the only step that actually revokes access; (b) update the gitignored <code>local.settings.json</code> and the deployed Function app setting with the new key; (c) delete the file; (d) optionally purge history — see Decision&nbsp;1.</p>
+  </div>
+
+  <div class="finding high">
+    <div class="head"><span class="chip high">High</span><h3>F1 · A malformed request locks out its invoice for 10 minutes</h3></div>
+    <p>In <span class="mono">functionapp/function_app.py</span>, the check that the body carries <code>contentBase64</code> or <code>url</code> happens <em>after</em> gate A1 claims the ledger row (claim at line 144, transport check at line 162–168). The 400 response leaves the row at <code>Received</code> with no decision.</p>
+    <p class="scenario">The Power Automate flow sends a request with a missing/misnamed content field → 400. The flow fixes the payload and retries → A1 sees an in-flight row inside the lease window and returns HTTP 200 with <code>PROCESSING_IN_PROGRESS</code> / <code>alreadyProcessed: true</code>. The invoice silently goes unprocessed for up to <code>A1_LEASE_SECONDS</code> (default 600s), and the flow may treat it as done.</p>
+    <p class="fix">Validate the body — sourceId, transport field present, base64 decodes, bytes non-empty — <em>before</em> the A1 claim. Bad requests then 400 without ever touching the ledger.</p>
+  </div>
+
+  <div class="finding high">
+    <div class="head"><span class="chip high">High</span><h3>F2 · Invalid base64 is misreported as a CU failure (502)</h3></div>
+    <p><code>base64.b64decode(content_b64)</code> runs inside the try/except that maps every error to <em>“Content Understanding analyze failed”</em> (<span class="mono">function_app.py:161–175</span>). Worse, the default <code>validate=False</code> silently strips illegal characters, so corrupted input often decodes into garbage bytes that get sent to CU. There is also no guard for zero-byte content.</p>
+    <p class="scenario">The flow passes a truncated or double-encoded payload → the caller sees “502 CU analyze failed” and debugs the wrong layer (per the project’s own debugging-discipline rule, the failing layer should be identified precisely).</p>
+    <p class="fix">Decode with <code>validate=True</code> in the validation block (with F1), return 400 “contentBase64 is not valid base64” / “content is empty”, and keep 502 exclusively for genuine CU failures.</p>
+  </div>
+
+  <div class="finding high">
+    <div class="head"><span class="chip high">High</span><h3>H1 · Test harnesses silently test a different threshold than production</h3></div>
+    <p><code>DEFAULT_FIELD_THRESHOLD = 0.75</code> is hardcoded in <span class="mono">local_test.py:146</span> and <span class="mono">verify_fn.py:108</span> and is <em>always</em> sent as <code>fieldThreshold</code>, overriding the Function. But the single source of truth is <code>field_policy.THRESHOLD = 0.73</code> — which is what production sees, since the Power Automate flow sends no override. <code>local.settings.json.template</code> also says <code>0.75</code>.</p>
+    <p class="scenario">A field extracted at confidence 0.74 shows <code>REVIEW</code> in every harness scorecard but auto-writes (<code>HAPPY_PATH</code>) in production — test results systematically misrepresent deployed behavior, in the exact confidence band being tuned.</p>
+    <p class="fix">Both harnesses already import <code>field_policy</code>; default the CLI threshold to <code>field_policy.THRESHOLD</code> (keeping the static fallback when the import fails), and fix the template to 0.73. <code>--field-threshold</code> still overrides explicitly.</p>
+  </div>
+
+  <div class="finding med">
+    <div class="head"><span class="chip med">Medium</span><h3>F3 · fieldThreshold accepts nonsense values without complaint</h3></div>
+    <p><code>_field_threshold</code> (<span class="mono">function_app.py:61–75</span>) accepts any float — <code>0</code>, <code>-3</code>, <code>99</code> — and silently swallows unparseable values with no log line.</p>
+    <p class="scenario">A flow variable bug sends <code>fieldThreshold: 0</code> → every invoice becomes <code>HAPPY_PATH_CANDIDATE</code> and auto-writes to Dynamics with unvetted fields. Nothing in the response or logs flags it.</p>
+    <p class="fix">Reject values outside <code>(0, 1]</code> with a 400; log a warning when falling back from an unparseable value.</p>
+  </div>
+
+  <div class="finding med">
+    <div class="head"><span class="chip med">Medium</span><h3>F4 · No timeout on the Content Understanding call</h3></div>
+    <p><code>poller.result()</code> in <span class="mono">cu_client.py:115,127</span> waits indefinitely. A hung CU operation holds the invocation until the platform kills it, and the claimed row blocks reprocessing until the A1 lease expires.</p>
+    <p class="fix">Pass a timeout (e.g. <code>poller.result(timeout=120)</code>) so a hung analysis returns a clean 502 within the function’s lifetime.</p>
+  </div>
+
+  <div class="finding med">
+    <div class="head"><span class="chip med">Medium</span><h3>F5 · Response claims “Extracted” even when the ledger write failed</h3></div>
+    <p>When the post-CU ledger upsert fails (<span class="mono">function_app.py:181–197</span>), the response sets <code>ledgerWriteError</code> but still reports <code>"status": "Extracted"</code> — the ledger actually says <code>Received</code>.</p>
+    <p class="scenario">The flow writes to Dynamics based on the decision, the ledger never records <code>Extracted</code>/decision stamps, and the row later resurfaces as “stuck” or gets resumed after the lease — a duplicate CU run for an invoice already written.</p>
+    <p class="fix">Report the truth: keep the decision payload but set status to reflect the failed write (e.g. <code>"status": "Received"</code> + <code>ledgerWriteError</code>), and document that the flow should route it to review. Exact contract is Decision&nbsp;3.</p>
+  </div>
+
+  <div class="finding med">
+    <div class="head"><span class="chip med">Medium</span><h3>D1 · .funcignore doesn’t exclude .venv / .python_packages</h3></div>
+    <p><span class="mono">functionapp/.funcignore</span> excludes tests and settings but not <code>.venv/</code> or <code>.python_packages/</code> — and <code>functionapp/.venv</code> exists on this machine. A <code>func publish</code> can package hundreds of MB of interpreter into the upload (remote build then ignores it, but upload time and package bloat are real).</p>
+    <p class="fix">Add <code>.venv/</code>, <code>.python_packages/</code>, and <code>__azurite_db*</code> patterns to <code>.funcignore</code>.</p>
+  </div>
+
+  <div class="finding low">
+    <div class="head"><span class="chip low">Low</span><h3>D2 · README documents scripts that no longer exist</h3></div>
+    <p><span class="mono">README.md</span> lists <code>step21_test.py</code> and <code>step24_test.py</code> in the layout and tells readers to run <code>step24_test.py</code>; both were deleted in <code>1414f19</code>. It also omits <code>create_analyzer.py</code> and <code>tests/test_harness_scorecard.py</code>, and its Security section (“never in a tracked .py”) is contradicted by S1. Long step24-comparison docstrings in <code>local_test.py</code> describe a divergence (<code>CATEGORY_CRITICAL_FIELDS</code>) that no longer exists.</p>
+    <p class="fix">Update README layout + harness examples + security note alongside the removals; trim the stale step24 docstring passages in files already being touched. No churn elsewhere.</p>
+  </div>
+
+  <div class="finding low">
+    <div class="head"><span class="chip low">Low</span><h3>L1 · Accepted-risk items — flag, don’t fix now</h3></div>
+    <p>Three things reviewed and judged not worth changing at prototype volume, listed so they’re on the record:
+    (a) <code>ledger.upsert</code> is a read-modify-write without ETag concurrency — the A1 insert claim covers the race that matters;
+    (b) <code>ExpiresAt</code> is decorative — Table Storage has no native TTL, so ledger rows accumulate until a cleanup job exists;
+    (c) <code>cu_client</code> builds a new client + credential per request — a modest cold-path latency cost.
+    (d) <code>.gitignore</code> has a dead <code>.code-workspace</code> entry (the workspace file is intentionally tracked).</p>
+  </div>
+</section>
+
+<!-- ============================== REVIEWED OK ============================== -->
+<section>
+  <p class="eyebrow">Part 3</p>
+  <h2>Reviewed and sound — no action proposed</h2>
+  <ul class="ok-list">
+    <li><strong>Gate logic</strong> (<code>gates.py</code>, <code>field_policy.py</code>): B2/B4/no-child routing, bucket fail-safe to commercial, twin extract/generate resolution, date defaulting — all covered by the 21-test offline suite, which passes.</li>
+    <li><strong>Gate A1 atomicity</strong>: the insert-based claim in <code>ledger.py</code> correctly wins concurrent races; stale-lease resume logic is sound.</li>
+    <li><strong>Secrets hygiene elsewhere</strong>: <code>local.settings.json</code> is gitignored and untracked; the template ships empty key fields; Azurite artifacts, <code>out/</code>, and <code>samples/</code> are ignored properly.</li>
+    <li><strong>Analyzer definitions</strong>: <code>analyzers/*.json</code> field names match exactly what <code>gates.py</code>/<code>field_policy.py</code> consume (all five twin pairs, <code>bill_type</code>, router categories <code>general_invoice</code>/<code>other</code>).</li>
+    <li><strong>Harness duplication</strong> between <code>local_test.py</code> and <code>verify_fn.py</code> is deliberate and guarded by <code>test_harness_scorecard.py</code>, which parametrizes over both — leaving as is.</li>
+  </ul>
+</section>
+
+<!-- ============================== PLAN ============================== -->
+<section>
+  <p class="eyebrow">Part 4</p>
+  <h2>Execution plan</h2>
+  <p>Four phases, smallest-risk first. Each ends with a verification gate; I stop and report if one fails.</p>
+
+  <div class="phase">
+    <div class="phead"><span class="pnum">PHASE 1</span><h3>Revoke the key (portal — you or me via az, your call)</h3></div>
+    <ul>
+      <li>Regenerate <strong>both</strong> keys on the <code>invoice-processing-dev-resource</code> CU resource.</li>
+      <li>Update <code>AZURE_CU_KEY</code> in the deployed Function app settings and in the local gitignored <code>local.settings.json</code>.</li>
+    </ul>
+    <p class="verify">Verify</p>
+    <pre><code><span class="cmt"># old key must now fail; new key must work end to end</span>
+.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://&lt;app&gt;.azurewebsites.net" --key "&lt;FUNC_KEY&gt;" --file ".\samples\invoice1.pdf" --insecure</code></pre>
+  </div>
+
+  <div class="phase">
+    <div class="phead"><span class="pnum">PHASE 2</span><h3>Script removals &amp; dead-code prune</h3></div>
+    <ul>
+      <li>Delete <code>scripts/model_deployment_info.py</code> and <code>scripts/phase3_ledger_test.py</code>.</li>
+      <li>Prune the unused CSV-matrix half of <code>scripts/scorecard.py</code>; fix its stale docstring.</li>
+      <li>Update <code>README.md</code>: layout tree, harness examples, security section.</li>
+      <li>Optionally purge history (Decision 1).</li>
+    </ul>
+    <p class="verify">Verify</p>
+    <pre><code>.\.venv\Scripts\python.exe -m pytest        <span class="cmt"># 21 tests still pass</span>
+git grep -c "JQQJ99" HEAD; echo done        <span class="cmt"># no key at HEAD</span></code></pre>
+  </div>
+
+  <div class="phase">
+    <div class="phead"><span class="pnum">PHASE 3</span><h3>Function hardening (F1–F5)</h3></div>
+    <ul>
+      <li>Move transport validation (content present, base64 <code>validate=True</code>, non-empty bytes) ahead of the A1 claim; return 400s with layer-accurate messages.</li>
+      <li>Range-check <code>fieldThreshold</code> to (0, 1]; log fallbacks.</li>
+      <li>Add <code>poller.result(timeout=120)</code> in <code>cu_client.py</code>.</li>
+      <li>Make the ledger-write-failure response status truthful (per Decision 3).</li>
+      <li>Add offline tests for the new validation paths where the fake-table pattern allows.</li>
+    </ul>
+    <p class="verify">Verify</p>
+    <pre><code>.\.venv\Scripts\python.exe -m pytest
+<span class="cmt"># then live, against func start:</span>
+.\.venv\Scripts\python.exe scripts\local_test.py --file ".\samples\invoice1.pdf"
+<span class="cmt"># bad-payload paths: expect 400s, and NO Received row left in the ledger</span></code></pre>
+  </div>
+
+  <div class="phase">
+    <div class="phead"><span class="pnum">PHASE 4</span><h3>Consistency sweep</h3></div>
+    <ul>
+      <li>Harness threshold defaults from <code>field_policy.THRESHOLD</code> (H1); template → 0.73.</li>
+      <li><code>.funcignore</code>: add <code>.venv/</code>, <code>.python_packages/</code> (D1).</li>
+      <li>Redeploy and re-run <code>verify_fn.py --folder</code> against the deployed app as the final end-to-end gate.</li>
+    </ul>
+    <p class="verify">Verify</p>
+    <pre><code>.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://&lt;app&gt;.azurewebsites.net" --key "&lt;FUNC_KEY&gt;" --folder ".\samples" --insecure</code></pre>
+  </div>
+</section>
+
+<!-- ============================== DECISIONS ============================== -->
+<section>
+  <p class="eyebrow">Part 5</p>
+  <h2>Decisions I need from you</h2>
+  <div class="decision">
+    <h3>Before I start</h3>
+    <ol>
+      <li><strong>Git history purge?</strong> Rotating the key (Phase 1) is mandatory and sufficient to revoke access. Scrubbing history (<code>git filter-repo</code> + force-push) additionally removes the dead key strings but rewrites every commit hash. My recommendation: <em>rotate only</em> if the repo is private; purge as well if it is (or ever was) public.</li>
+      <li><strong>Keep a stuck-row probe?</strong> <code>phase3_ledger_test.py --show-stuck</code> is the only tool that lists in-flight/stuck ledger rows. I recommend removing the file anyway (Azure Storage Explorer / <code>az storage entity query</code> covers it); say the word if you’d rather I keep a slim <code>show_stuck.py</code>.</li>
+      <li><strong>Ledger-write-failure contract (F5):</strong> prefer <code>"status": "Received"</code> + <code>ledgerWriteError</code> (truthful, flow routes to review), or keep <code>"Extracted"</code> and only document the field? I recommend the truthful status.</li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  Review performed July 2, 2026 against main @ d59e200 · baseline: 21/21 offline tests passing · no working-tree changes made.
+</footer>
+</main>
