@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gate B6 — Service Address Matching · Design Rev 1.1</title>
+<style>
+  :root{
+    --ink:#1c2330;
+    --ink-soft:#4a5568;
+    --paper:#fafbfd;
+    --panel:#ffffff;
+    --line:#d8dee9;
+    --accent:#0f5c8c;
+    --accent-soft:#e3eef6;
+    --ok:#1d7a4f;
+    --warn:#a05a00;
+    --bad:#a02c2c;
+    --amend:#5b3d8f;
+    --amend-soft:#ede7f6;
+    --mono:"Consolas","SF Mono","Cascadia Code",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 "Segoe UI",system-ui,-apple-system,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:48px 32px 96px}
+  header{border-bottom:3px solid var(--accent);padding-bottom:24px;margin-bottom:40px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:30px;margin:8px 0 4px;font-weight:650;letter-spacing:-.01em}
+  .meta{font-family:var(--mono);font-size:13px;color:var(--ink-soft)}
+  h2{font-size:20px;margin:48px 0 12px;font-weight:650;border-left:4px solid var(--accent);padding-left:12px}
+  h3{font-size:16px;margin:24px 0 8px;font-weight:650}
+  p{margin:8px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--accent-soft);padding:1px 5px;border-radius:3px}
+  pre{background:#10202e;color:#dbe7f0;padding:16px 20px;border-radius:6px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55}
+  pre code{background:none;padding:0;color:inherit}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14.5px;background:var(--panel)}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft);font-weight:650}
+  .tag{display:inline-block;font-family:var(--mono);font-size:12px;padding:1px 8px;border-radius:3px;font-weight:600}
+  .tag.ok{background:#e2f3ea;color:var(--ok)}
+  .tag.warn{background:#f7ecd9;color:var(--warn)}
+  .tag.bad{background:#f8e3e3;color:var(--bad)}
+  .tag.amend{background:var(--amend-soft);color:var(--amend)}
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:20px 24px;margin:16px 0;font-family:var(--mono);font-size:13.5px;line-height:1.7;white-space:pre;overflow-x:auto;color:var(--ink)}
+  .callout{background:var(--accent-soft);border-left:4px solid var(--accent);padding:12px 16px;margin:16px 0;border-radius:0 4px 4px 0}
+  .callout.risk{background:#f8e3e3;border-left-color:var(--bad)}
+  .callout.amend{background:var(--amend-soft);border-left-color:var(--amend)}
+  ul,ol{margin:8px 0;padding-left:24px}
+  li{margin:4px 0}
+  .decided{font-family:var(--mono);font-size:12px;color:var(--ok);font-weight:700}
+  footer{margin-top:64px;padding-top:16px;border-top:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px 24px;font-size:14.5px;columns:2;column-gap:32px}
+  .toc a{color:var(--accent);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Noble Invoice Extractor · Design Document</div>
+  <h1>Gate B6 — Service Address Matching Against the Dataverse Property Master</h1>
+  <div class="meta">Rev 1.1 (consolidated) · Status: DESIGN — awaiting approval before implementation · Target: pipeline v9 · 2026-07-01<br>
+  Supersedes Rev 1.0. Incorporates amendments A1–A5 from the real-invoice sample stress test (§10) of the same date.</div>
+</header>
+
+<div class="toc">
+  <strong>Contents</strong><br>
+  1 · <a href="#s1">Problem &amp; algorithm class</a><br>
+  2 · <a href="#s2">Decisions locked</a><br>
+  3 · <a href="#s3">Architecture</a><br>
+  4 · <a href="#s4">Canonicalization spec</a><br>
+  5 · <a href="#s5">Blocking, filtering, scoring</a><br>
+  6 · <a href="#s6">Routing decision &amp; thresholds</a><br>
+  7 · <a href="#s7">Pipeline placement &amp; enum</a><br>
+  8 · <a href="#s8">Response contract</a><br>
+  9 · <a href="#s9">Deployment changes</a><br>
+  10 · <a href="#s10">Worked examples (real samples)</a><br>
+  11 · <a href="#s11">Test plan</a><br>
+  12 · <a href="#s12">Risks &amp; open items</a><br>
+  13 · <a href="#s13">Amendment log</a>
+</div>
+
+<h2 id="s1">1 · Problem and algorithm class</h2>
+<p>The CU extractor produces a <code>service_address</code> string per invoice. It must be resolved to a Dataverse property record (~50,000 managed properties: houses and condo units) so the invoice write carries the correct property lookup. Extracted addresses frequently omit postal code and city, vary in abbreviation and word order, and include Vancouver-specific forms (unit-hyphen-civic prefixes, civic ranges, <code>HSE</code> designators, French Quebec formats).</p>
+<p><strong>Rejected approaches, for the record:</strong> text embeddings (underweight digits — <code>123 Main</code> and <code>125 Main</code> embed nearly identically; a confident wrong-property auto-write is worse than a review exception); LLM-as-matcher (non-deterministic, violates the scorecard-validation discipline protecting the auto-write path); Dataverse relevance search (edit-distance fuzziness treats digit substitutions as minor; index behavior not versioned with code, not offline-testable); libpostal (~2&nbsp;GB model data — deployment size and cold-start cost on Flex Consumption, overkill for a bounded reference set).</p>
+<p><strong>Chosen approach:</strong> deterministic <em>normalize → block → filter → score</em> record linkage against a snapshot of the property master, implemented as a new gate in the existing gate layer. Pure Python, no Azure dependencies in the matching logic, fixture-testable offline, thresholds governed by <code>POLICY_VERSION</code>.</p>
+
+<h2 id="s2">2 · Decisions locked</h2>
+<table>
+  <tr><th>Item</th><th>Decision</th></tr>
+  <tr><td>Algorithm class</td><td>Deterministic normalize → block → filter → score. <span class="decided">AGREED</span></td></tr>
+  <tr><td>Routing enum</td><td>New fifth value: <code>REVIEW_B6_ADDRESS_MATCH</code>. <span class="decided">AGREED</span></td></tr>
+  <tr><td>Geography</td><td>Canadian addresses only, including Quebec French formats. <span class="decided">AGREED</span></td></tr>
+  <tr><td>Output contract</td><td>Matched Dataverse property record ID in the Function response; Power Automate uses it in the Dataverse write. <span class="decided">AGREED</span></td></tr>
+  <tr><td>Reference set</td><td>~50,000 properties; condo unit numbers present and clean in Dynamics. <span class="decided">CONFIRMED</span></td></tr>
+  <tr><td>Amendments A1–A5</td><td>Compound splitter, range disambiguation + range expansion, unit-designator table + soft designators, directional hard filter, province stripping. Derived from four real invoice samples (§10). <span class="tag amend">REV 1.1</span></td></tr>
+</table>
+
+<h2 id="s3">3 · Architecture</h2>
+<p>50K rules out fetch-per-invocation from Dataverse (latency, throttling) and row-by-row Table Storage reads at load (~50 paged round trips). It does <em>not</em> rule out in-memory matching: ~50K canonicalized records is 10–15&nbsp;MB. The design splits into an offline snapshot pipeline and a runtime gate with a per-instance memory cache.</p>
+<div class="flow">┌─ SNAPSHOT PIPELINE (nightly, timer trigger) ──────────────────────────┐
+│                                                                       │
+│  Dataverse property table ──paged fetch──► address_norm.py            │
+│  (~50K records)                            canonicalize + index keys  │
+│                                            RANGE EXPANSION (A2)       │
+│                                                │                      │
+│                                                ▼                      │
+│                     stinvoicedevwestus / blob container               │
+│                     property-snapshot/current.json.gz                 │
+│                     (~2–4 MB gz; metadata: version, count,            │
+│                      POLICY_VERSION of normalization rules)           │
+└───────────────────────────────────────────────────────────────────────┘
+
+┌─ RUNTIME (per invoice, inside func-invoiceprocess-westus) ────────────┐
+│                                                                       │
+│  CU extraction ─► existing gates ─► HAPPY_PATH_CANDIDATE only         │
+│                                          │                            │
+│                                          ▼                            │
+│  B6: COMPOUND SPLIT (A1) ─► normalize each component (address_norm)   │
+│      │                                                                │
+│      ├─ BLOCK   exact street_number / range overlap → candidates      │
+│      ├─ FILTER  unit rules (exact-or-nothing on numeric digits;       │
+│      │          soft designators A3) + directional hard filter (A4)   │
+│      ├─ SCORE   rapidfuzz token_set_ratio on street name;             │
+│      │          city / postal as confirmers only, never required      │
+│      └─ ROUTE   MATCHED ─► attach property_id ─► Dataverse write      │
+│                 else    ─► REVIEW_B6_ADDRESS_MATCH (+ reason code)    │
+│                                                                       │
+│  Snapshot cache: module-level; TTL 15 min; etag HEAD check on expiry  │
+└───────────────────────────────────────────────────────────────────────┘</div>
+
+<h3>3.1 · Snapshot pipeline</h3>
+<ul>
+  <li><strong>Owner:</strong> new timer-triggered function <code>sync_property_snapshot</code> in the same Function App (nightly, 09:00 UTC = 01:00 PST). Keeping it in-app means <code>address_norm.py</code> is one shared module used identically at snapshot build and at runtime — the two sides cannot drift, which is the classic failure mode of record-linkage systems.</li>
+  <li><strong>Dataverse access:</strong> reuses the access path B5 already exercises. Paged fetch: record ID, address line(s), unit field, city, postal code.</li>
+  <li><strong>Output:</strong> one gzipped JSON blob <code>property-snapshot/current.json.gz</code> in a new blob container in <code>stinvoicedevwestus</code>. Table Storage remains ledger-only. Each record: raw source values + canonical components + block keys. Blob metadata: <code>snapshot_version</code> (UTC timestamp), <code>record_count</code>, <code>POLICY_VERSION</code> of the normalization rules that produced it.</li>
+  <li><strong>Sanity gate on write:</strong> refuse to overwrite if the new record count drops &gt;5% vs. the previous snapshot (protects against a partial Dataverse fetch silently shrinking the reference set). Failure leaves the previous snapshot in place, logs an error.</li>
+</ul>
+
+<h3>3.2 · Runtime cache</h3>
+<ul>
+  <li>Module-level cache: parsed snapshot + blocking index, built once per instance. TTL 900&nbsp;s; on expiry, blob <code>HEAD</code> compares etag; reload only on change. Within one invocation the snapshot is fixed — an invoice is never matched against two snapshot versions.</li>
+  <li><strong>Snapshot unavailable at cold start → fail the invocation (HTTP 500).</strong> Power Automate retry policy handles it. Do <em>not</em> route to review: that floods the queue with exceptions that have nothing to do with the invoice. Infrastructure failure ≠ document exception.</li>
+  <li>Ledger records <code>snapshot_version</code> per invoice — every match decision is reconstructable against the exact reference set it used.</li>
+</ul>
+
+<h2 id="s4">4 · Canonicalization spec (<code>address_norm.py</code>)</h2>
+<p>Rule-based, pure Python, table-driven. Output components per address component:</p>
+<pre><code>{
+  "unit":            "501" | "HSE" | null,   # numeric units and designator-only units (A3)
+  "unit_is_soft":    true | false,           # true when unit is a designator with no number (A3)
+  "civic_start":     6682,                   # integer; exact-match key, never fuzzy
+  "civic_end":       6690,                   # == civic_start unless a civic range (A2)
+  "street_name":     "FRASER",               # canonical tokens, type/directional stripped out
+  "street_type":     "ST" | null,            # Canada Post canonical abbreviation
+  "directional":     "W" | null,             # N,S,E,W,NE,NW,SE,SW (French mapped: O→W …)
+  "city":            "VANCOUVER" | null,
+  "postal":          "V6B1A1" | null         # A1A1A1, space stripped
+}</code></pre>
+
+<h3>4.1 · Rules</h3>
+<ol>
+  <li><strong>Case / accents / punctuation:</strong> uppercase; strip accents (<code>MONTRÉAL → MONTREAL</code>); collapse punctuation and whitespace. Commas are treated as component separators, not address separators.</li>
+  <li><strong>Compound splitter <span class="tag amend">A1</span>:</strong> before parsing, split the string on <code>&amp;</code>, word-bounded <code>AND</code>, and <code>;</code> into sub-address components. Each component is parsed independently. Matching semantics in §5.5.</li>
+  <li><strong>Province stripping <span class="tag amend">A5</span>:</strong> trailing two-letter province tokens (<code>BC, AB, SK, MB, ON, QC, NB, NS, PE, NL, YT, NT, NU</code>) are recognized and removed before city extraction.</li>
+  <li><strong>Unit extraction — suffix forms:</strong> <code>UNIT 501</code>, <code>#501</code>, <code>APT 501</code>, <code>SUITE 501</code>, <code>STE 501</code>, <code>APP 501</code>, <code>BUREAU 501</code> → <code>unit=501</code>.</li>
+  <li><strong>Unit extraction — designator table <span class="tag amend">A3</span>:</strong> <code>HSE</code> (house), <code>BSMT</code>, <code>MAIN</code>, <code>LWR/LOWER</code>, <code>UPPR/UPPER</code>, <code>PH</code>, <code>TH</code>, <code>RM</code>, <code>FL</code>. A designator followed by a number → normal unit (<code>PH 2 → unit=PH2</code>). A designator with <em>no</em> number → <code>unit=&lt;designator&gt;</code>, <code>unit_is_soft=true</code>. <code>HSE</code> is BC/Vancouver practice for distinguishing the principal house from a secondary/laneway unit at the same civic number.</li>
+  <li><strong>Hyphen disambiguation <span class="tag amend">A2</span> — the same surface form means two things.</strong> Canada Post places a unit number before the civic number with a hyphen (<code>501-123 MAIN ST</code> = unit 501 at 123 Main); civic <em>ranges</em> (<code>6682-6690 FRASER ST</code> = building spanning 6682–6690) use an identical hyphen. Rule, applied when both segments are numeric and a street token follows:
+    <ul>
+      <li><em>Range</em> iff first &lt; second AND (second − first) ≤ 30 AND same parity → <code>civic_start/civic_end</code> set to the pair, no unit.</li>
+      <li><em>Unit–civic</em> iff first &gt; second, OR delta &gt; 30, OR parity differs → <code>unit=first</code>, <code>civic_start=civic_end=second</code>.</li>
+      <li><em>Ambiguous</em> (e.g. <code>101-105 MAIN</code>: ascending, delta 4, same parity — could be either): heuristic says range; if the resulting parse yields zero candidates, the parser retries under the unit–civic interpretation; if <em>both</em> interpretations yield candidates for different properties → review, <code>UNPARSEABLE_ADDRESS</code>. Never guess between two live interpretations.</li>
+      <li>Non-numeric first segment: designator table (rule 5) or, if unrecognized, review <code>UNPARSEABLE_ADDRESS</code>.</li>
+    </ul></li>
+  <li><strong>Street type table:</strong> Canada Post canonical abbreviations both directions — <code>STREET/ST</code>, <code>AVENUE/AVE/AV</code>, <code>BOULEVARD/BLVD/BOUL</code>, <code>DRIVE/DR</code>, <code>CRESCENT/CRES</code>, <code>ROAD/RD</code>, <code>PLACE/PL</code>, <code>COURT/CRT/CT</code>, <code>TERRACE/TER</code>, <code>WAY</code>, <code>LANE</code>, plus French types <code>RUE</code>, <code>CHEMIN/CH</code>, <code>CÔTE</code>, <code>MONTÉE</code>, <code>RANG</code>. Street type is nullable (<code>BROADWAY</code> has none).</li>
+  <li><strong>French word order:</strong> Quebec places the type before the name (<code>123 RUE PRINCIPALE</code>). Parser recognizes type-first and type-last patterns; both emit identical components.</li>
+  <li><strong>Directionals:</strong> English <code>N/S/E/W</code> + combos; French <code>O/OUEST→W</code>, <code>E/EST→E</code>, <code>N/NORD→N</code>, <code>S/SUD→S</code>. Prefix (<code>W BROADWAY</code>) and suffix (<code>BROADWAY W</code>) forms both emit <code>directional=W</code> — storage as a separate component makes word order irrelevant.</li>
+  <li><strong>Postal:</strong> validate <code>[A-Z]\d[A-Z]\s?\d[A-Z]\d</code>; store space-stripped; anything else → <code>null</code>. Never guess.</li>
+  <li><strong>Ordinals:</strong> <code>1ST/1ERE/1RE → 1</code>, <code>2ND/2E → 2</code>, <code>51ST → 51</code>, etc., so <code>E 51ST AVE</code> and <code>EAST 51 AVENUE</code> canonicalize identically.</li>
+</ol>
+<div class="callout">Every rule above is table-driven data inside <code>address_norm.py</code>, versioned under <code>POLICY_VERSION</code> in <code>field_policy.py</code>. A rule change bumps the version; a snapshot whose metadata carries a different <code>POLICY_VERSION</code> than the running code fails loudly at load and forces a resync — rule versions are never silently mixed.</div>
+
+<h2 id="s5">5 · Blocking, filtering, scoring</h2>
+
+<h3>5.1 · Blocking index (built at snapshot load)</h3>
+<pre><code>index:      dict[civic_number → list[property]]     # primary block, exact integer key
+multi_unit: dict[(civic_number, street_name) → count of managed units]</code></pre>
+<p><strong>Range expansion <span class="tag amend">A2</span>:</strong> a master record stored as a civic range (<code>6682-6690 FRASER ST</code>) is indexed under <em>every</em> same-parity civic number in the range (6682, 6684, 6686, 6688, 6690 → same property). Tenant invoices routinely cite their storefront number, not the building's full range; without expansion, <code>6684 FRASER ST</code> would find nothing. Invoice-side ranges block on <code>civic_start</code>; a candidate qualifies when the integer ranges overlap.</p>
+<p>At 50K properties a common civic number yields at worst a few hundred candidates — microseconds of scoring. <strong>Digits are never fuzzy-matched.</strong> <code>123 MAIN ST</code> can never match <code>125 MAIN ST</code>; a wrong-property auto-write is strictly worse than a review exception.</p>
+
+<h3>5.2 · Candidate filtering — unit rules (incl. <span class="tag amend">A3</span>)</h3>
+<table>
+  <tr><th>Invoice unit</th><th>Candidate situation</th><th>Outcome</th></tr>
+  <tr><td>Numeric present (e.g. 501)</td><td>Candidate unit differs</td><td>Candidate <strong>excluded</strong> (exact-or-nothing)</td></tr>
+  <tr><td>Numeric present</td><td>Candidate unit matches</td><td>Kept → scoring</td></tr>
+  <tr><td>Designator-only, soft (e.g. <code>HSE</code>)</td><td>Master uses designators → exact match required</td><td>Match/exclude on designator equality</td></tr>
+  <tr><td>Designator-only, soft</td><td>Candidate unit null, <strong>sole</strong> record at that civic address</td><td>Kept → scoring (blank-unit master record <em>is</em> the house)</td></tr>
+  <tr><td>Designator-only, soft</td><td>Multiple records at that civic address</td><td><span class="tag warn">REVIEW · AMBIGUOUS_UNIT</span></td></tr>
+  <tr><td>Absent</td><td>Matched building has <strong>&gt;1 managed unit</strong></td><td><span class="tag warn">REVIEW · AMBIGUOUS_UNIT</span> — never best-guess a condo unit</td></tr>
+  <tr><td>Absent</td><td>Single property at that civic address</td><td>Kept → scoring</td></tr>
+</table>
+
+<h3>5.3 · Candidate filtering — directional hard filter <span class="tag amend">A4</span></h3>
+<p>Directionals are digit-class signals, not fuzzy text: <code>E 51ST</code> and <code>W 51ST</code> are opposite ends of the city, yet <code>token_set_ratio("BROADWAY W","BROADWAY E") ≈ 90</code> — above the review floor and near the accept threshold. Rule: <strong>when both sides carry a directional and they differ → exclude the candidate outright.</strong> Either side missing a directional → no penalty (confirmer philosophy preserved). This removes directionals from the fuzzy-score surface entirely.</p>
+
+<h3>5.4 · Scoring</h3>
+<ul>
+  <li><code>rapidfuzz.fuzz.token_set_ratio(invoice.street_name_full, candidate.street_name_full)</code> where <code>street_name_full</code> = canonical name + type tokens (directionals excluded — they are handled by A4). Score 0–100. rapidfuzz is C/Python, deterministic, version-pinned, offline-testable.</li>
+  <li><strong>Confirmers, never requirements</strong> (this is what makes missing city/postal a non-event): postal exact match → +4; city exact match → +2; postal <em>present on both sides and mismatched</em> → −15 (hard contradiction). Capped at 100.</li>
+  <li>Candidates sorted by <code>(score DESC, property_id ASC)</code> — the tiebreak makes ordering fully deterministic.</li>
+</ul>
+
+<h3>5.5 · Compound semantics <span class="tag amend">A1</span></h3>
+<p>When the splitter (rule 4.1-2) yields multiple components (<code>6682-6690 FRASER ST <b>&amp;</b> 707 E 51ST AVE</code> — a two-frontage corner building), each component runs the full block → filter → score pass independently. Decision:</p>
+<ul>
+  <li>All components parse AND all resolve (per §6 accept criteria) AND all agree on one <code>property_id</code> → <span class="tag ok">MATCHED</span> to that property.</li>
+  <li>Components resolve to <em>different</em> properties → <span class="tag warn">REVIEW · COMPOUND_MISMATCH</span> (reviewer decides: shared-service invoice, or which property).</li>
+  <li>Any component fails to parse or resolve → <span class="tag warn">REVIEW</span> with that component's reason. Agreement cannot be confirmed, so no match is issued. Conservative by construction.</li>
+</ul>
+
+<h2 id="s6">6 · Routing decision and thresholds</h2>
+<table>
+  <tr><th>Condition</th><th>Decision</th><th>Reason code</th></tr>
+  <tr><td>Civic number unparseable / both hyphen interpretations live</td><td><span class="tag warn">REVIEW_B6</span></td><td><code>UNPARSEABLE_ADDRESS</code></td></tr>
+  <tr><td>No candidate ≥ <code>B6_REVIEW_FLOOR</code></td><td><span class="tag warn">REVIEW_B6</span></td><td><code>NO_CANDIDATE</code></td></tr>
+  <tr><td>Best ≥ <code>B6_ACCEPT_SCORE</code> <em>and</em> margin over runner-up ≥ <code>B6_MARGIN</code> (or sole candidate) <em>and</em> unit + directional filters satisfied <em>and</em> compound components agree</td><td><span class="tag ok">MATCHED</span></td><td>—</td></tr>
+  <tr><td>Best ≥ <code>B6_ACCEPT_SCORE</code>, margin &lt; <code>B6_MARGIN</code></td><td><span class="tag warn">REVIEW_B6</span></td><td><code>AMBIGUOUS_MULTI</code></td></tr>
+  <tr><td>Best in gray band [<code>B6_REVIEW_FLOOR</code>, <code>B6_ACCEPT_SCORE</code>)</td><td><span class="tag warn">REVIEW_B6</span></td><td><code>LOW_SCORE</code></td></tr>
+  <tr><td>Unit absent or soft in a multi-unit / multi-record situation (§5.2)</td><td><span class="tag warn">REVIEW_B6</span></td><td><code>AMBIGUOUS_UNIT</code></td></tr>
+  <tr><td>Compound components resolve to different properties <span class="tag amend">A1</span></td><td><span class="tag warn">REVIEW_B6</span></td><td><code>COMPOUND_MISMATCH</code></td></tr>
+</table>
+<p>Constants in <code>field_policy.py</code> (engineering priors; validated per O2 before go-live; adjustable only with a <code>POLICY_VERSION</code> bump):</p>
+<pre><code>B6_ACCEPT_SCORE       = 92
+B6_REVIEW_FLOOR       = 80
+B6_MARGIN             = 5
+B6_RANGE_MAX_SPAN     = 30      # hyphen range heuristic (A2)
+B6_SNAPSHOT_TTL_SECS  = 900</code></pre>
+
+<h2 id="s7">7 · Pipeline placement and enum</h2>
+<ul>
+  <li>Routing enum becomes five values: <code>HAPPY_PATH_CANDIDATE</code>, <code>REVIEW_B4_CRITICAL_FIELD</code>, <code>REJECT_B2_OTHER_CATEGORY</code>, <code>REVIEW_NO_CHILD_EXTRACTION</code>, <code>REVIEW_B6_ADDRESS_MATCH</code>.</li>
+  <li>B6 runs <strong>only</strong> on documents that survive existing gates as <code>HAPPY_PATH_CANDIDATE</code> — no value in matching addresses on documents already headed to review or rejection.</li>
+  <li>Gate layer stays free of Azure service dependencies: <code>gates.py</code> receives the candidate list and snapshot metadata as plain inputs; blob load and cache live in <code>property_reference.py</code>, mirroring how B5's Dataverse query sits outside the pure gate logic.</li>
+  <li><strong>Approval path:</strong> for invoices that entered review, the human reviewer confirms or selects the property in the review UI — B6 is not re-run at approval (the human decision supersedes the score). B5 dedup re-run at approval is unchanged.</li>
+</ul>
+
+<h2 id="s8">8 · Function response contract (additive)</h2>
+<pre><code>"property_match": {
+  "status": "MATCHED" | "REVIEW",
+  "reason": null | "NO_CANDIDATE" | "LOW_SCORE" | "AMBIGUOUS_MULTI"
+                 | "AMBIGUOUS_UNIT" | "UNPARSEABLE_ADDRESS"
+                 | "COMPOUND_MISMATCH",
+  "property_id": "guid-or-null",
+  "score": 96,
+  "snapshot_version": "2026-07-01T09:00:12Z",
+  "candidates": [                      // top 3, only when status = REVIEW
+    { "property_id": "...", "score": 88, "display_address": "..." }
+  ]
+}</code></pre>
+<ul>
+  <li>Power Automate uses <code>property_id</code> as the lookup value in the Dataverse invoice write on the happy path.</li>
+  <li><code>candidates</code> pre-populates the reviewer's pick-list in the SharePoint queue — the human disambiguates from a shortlist instead of searching 50K properties. Deterministic output, not an LLM assist.</li>
+  <li>Ledger gains: <code>b6_status</code>, <code>b6_reason</code>, <code>matched_property_id</code>, <code>b6_score</code>, <code>snapshot_version</code>.</li>
+</ul>
+
+<h2 id="s9">9 · Deployment changes</h2>
+<table>
+  <tr><th>#</th><th>Change</th><th>Notes</th></tr>
+  <tr><td>1</td><td>Blob container <code>property-snapshot</code> in <code>stinvoicedevwestus</code></td><td>Table Storage remains ledger-only</td></tr>
+  <tr><td>2</td><td>RBAC: <code>Storage Blob Data Contributor</code> for UAMI <code>id-invoice-processing-dev</code> scoped to the container</td><td>New role assignment — UAMI currently holds Table Data Contributor + Cognitive Services User only</td></tr>
+  <tr><td>3</td><td><code>requirements.txt</code>: add pinned <code>rapidfuzz</code></td><td>Exact version pin; scoring determinism depends on it</td></tr>
+  <tr><td>4</td><td>New files: <code>address_norm.py</code>, <code>property_reference.py</code>; timer function <code>sync_property_snapshot</code> registered in <code>function_app.py</code></td><td><code>function_app.py</code> stays thin — orchestration only</td></tr>
+  <tr><td>5</td><td><code>field_policy.py</code>: B6 constants (§6) + <code>POLICY_VERSION</code> bump</td><td></td></tr>
+  <tr><td>6</td><td>Power Automate: consume <code>property_match</code> in the Dataverse write branch; review flow surfaces <code>candidates</code></td><td>Fits the existing next-phase flow build-out</td></tr>
+</table>
+
+<h2 id="s10">10 · Worked examples — four real extracted service addresses</h2>
+<p>These four samples (2026-07-01) drove amendments A1–A5. Verdicts shown under Rev 1.0 (as originally spec'd) and Rev 1.1 (as amended). All four strings enter the test fixtures verbatim (§11).</p>
+<table>
+  <tr><th>Extracted address</th><th>Rev 1.0 outcome</th><th>Rev 1.1 outcome</th><th>Trace</th></tr>
+  <tr>
+    <td><code>6682-6690 Fraser Street &amp; 707 E 51st Avenue</code></td>
+    <td><span class="tag warn">REVIEW</span> (no compound handling; hyphen rule <em>misparsed</em> range as unit 6682 @ civic 6690)</td>
+    <td><span class="tag ok">MATCHED</span> if both components resolve to one property (two-frontage corner building as a single record); else <span class="tag warn">REVIEW · COMPOUND_MISMATCH</span></td>
+    <td>A1 splits on <code>&amp;</code>. A2 classifies 6682-6690 as a range (ascending, delta 8, even/even). Component 2 parses via ordinal rule (51ST→51) + directional E. Both matched independently; property_id agreement required.</td>
+  </tr>
+  <tr>
+    <td><code>HSE-8667 Cartier St, Vancouver</code></td>
+    <td><span class="tag warn">REVIEW</span> (<code>HSE</code> not in unit token table → unresolvable hyphen form)</td>
+    <td><span class="tag ok">MATCHED</span> if 8667 Cartier is a sole master record (soft-designator compatibility); <span class="tag warn">REVIEW · AMBIGUOUS_UNIT</span> if house + laneway suite are separate records</td>
+    <td>A3: <code>HSE</code> → soft unit. Blocks on 8667; Vancouver +2 confirmer; postal absent → no effect. Soft unit compatible with blank-unit sole record; multiple records at civic → review, preserving the never-guess guarantee.</td>
+  </tr>
+  <tr>
+    <td><code>3237 Matapan Crescent</code></td>
+    <td><span class="tag ok">MATCHED</span></td>
+    <td><span class="tag ok">MATCHED</span></td>
+    <td>Textbook happy path. No city/postal — confirmers only, so absence is a non-event. 3237 / MATAPAN / CRES; token_set_ratio 100; single dwelling, no unit ambiguity. Fails only if the property isn't managed (NO_CANDIDATE → review, which is correct behavior).</td>
+  </tr>
+  <tr>
+    <td><code>1606 Broadway W Vancouver, BC</code></td>
+    <td><span class="tag ok">MATCHED</span> / <span class="tag warn">REVIEW</span> (data-dependent; directional near-miss risk noted)</td>
+    <td><span class="tag ok">MATCHED</span> if single whole-building record; <span class="tag warn">REVIEW · AMBIGUOUS_UNIT</span> if master holds multiple units at 1606 W Broadway — both outcomes intended</td>
+    <td>A5 strips <code>BC</code>; city VANCOUVER +2. Directional-as-component makes <code>Broadway W</code> ≡ <code>W Broadway</code>. A4 removes the ~90-scoring <code>Broadway E</code> near-miss class from the score surface entirely. Commercial block + no invoice unit → multi-unit guard decides.</td>
+  </tr>
+</table>
+<p>Net: Rev 1.0 scored 1 match, 1 conditional, 2 reviews on this sample; Rev 1.1 scores 3 likely matches, 1 legitimately conditional. All amendments live in <code>address_norm.py</code> and the candidate filter — pure Python, offline-testable, architecturally neutral.</p>
+
+<h2 id="s11">11 · Test plan</h2>
+<ol>
+  <li><strong>Fixture snapshot:</strong> synthetic <code>property-snapshot</code> JSON in <code>scripts/fixtures/</code> — engineered to include multi-unit condo buildings, near-miss civic numbers (123 vs 125), the same street name in two cities, civic-range commercial records, HSE/laneway pairs at one civic number, opposite-directional street pairs, French Quebec addresses, ordinal streets.</li>
+  <li><strong><code>test_address_norm.py</code>:</strong> table-driven canonicalization — every abbreviation, unit suffix form, designator, hyphen classification (range / unit–civic / ambiguous-with-retry), compound split, province strip, French pattern, ordinal, postal validation. The four §10 strings verbatim. Target ≈ 80–100 checks.</li>
+  <li><strong><code>test_gate_b6.py</code>:</strong> end-to-end match cases against the fixture snapshot — one per routing-table row (§6), plus: missing postal (must match), postal contradiction (must penalize), margin tie (must review), unit-absent multi-unit (must review), 123-vs-125 (must NOT match), directional contradiction (must exclude, A4), storefront-number-within-master-range (must match, A2), compound agree / compound disagree (A1), soft-designator sole-record / multi-record (A3).</li>
+  <li><strong>Determinism check:</strong> run the full case set twice; assert byte-identical results including candidate ordering.</li>
+  <li><strong>Scorecard:</strong> extend <code>step24_scorecard.csv</code> with B6 outcome columns. Split to note: <em>B6 itself is deterministic</em> — no multi-run sampling needed — but the CU-extracted <code>service_address</code> feeding it is not, so end-to-end match-rate measurement stays on the multi-run column-append protocol.</li>
+  <li>All offline, no Azure dependencies, following the <code>test_field_policy_gates.py</code> pattern. Harness passes before any threshold is considered validated.</li>
+</ol>
+
+<h2 id="s12">12 · Risks and open items</h2>
+<div class="callout risk"><strong>R1 — Reference data quality is the ceiling.</strong> Unit numbers confirmed clean; street-name consistency across 50K records is not. Step 0 of implementation: run <code>address_norm.py</code> over the full Dynamics export and report canonicalization failures and intra-master duplicates <em>before</em> tuning thresholds. If two master records canonicalize identically, no matcher can distinguish them. The §10 exercise is the proof of value: four real strings surfaced five amendments no synthetic fixture would have produced.</div>
+<ul>
+  <li><strong>O1 — Dataverse field mapping and conventions (sharpened by §10):</strong> (a) which columns hold address line 1/2, unit, city, postal; (b) does the master store civic <em>ranges</em> for commercial buildings (drives A2 range expansion); (c) does it use <code>HSE</code>-style designators on houses with secondary/laneway units (drives A3 soft-match semantics). Conventions (b) and (c) decide the outcome for half of the real sample.</li>
+  <li><strong>O2 — Threshold calibration:</strong> 92 / 80 / 5 / span-30 are engineering priors. Validate against a labeled sample (~100 real invoices with known correct property) via the scorecard before go-live; adjust with a policy version bump.</li>
+  <li><strong>O3 — Snapshot cadence:</strong> nightly assumed. If properties onboard mid-day with same-day invoices expected, supplement the timer with an on-demand resync trigger (HTTP endpoint, function-key protected).</li>
+</ul>
+
+<h2 id="s13">13 · Amendment log</h2>
+<table>
+  <tr><th>Rev</th><th>Date</th><th>Change</th><th>Driver</th></tr>
+  <tr><td>1.0</td><td>2026-07-01</td><td>Initial B6 design: snapshot architecture, canonicalization, block/filter/score, routing, contract, test plan.</td><td>50K reference set confirmed; new enum value agreed; Canadian scope confirmed.</td></tr>
+  <tr><td>1.1 · A1</td><td>2026-07-01</td><td>Compound-address splitter (<code>&amp;</code> / <code>AND</code> / <code>;</code>); all-components-agree match semantics; new reason code <code>COMPOUND_MISMATCH</code>.</td><td>Sample 1 (Fraser &amp; E 51st): no compound handling existed.</td></tr>
+  <tr><td>1.1 · A2</td><td>2026-07-01</td><td>Hyphen disambiguation heuristic (range vs unit–civic: ascending + delta ≤ 30 + same parity); retry-under-alternate-interpretation with review on double-live ambiguity; master-side civic range expansion in the snapshot index.</td><td>Sample 1: Rev 1.0 rule misparsed <code>6682-6690</code> as unit 6682 @ civic 6690.</td></tr>
+  <tr><td>1.1 · A3</td><td>2026-07-01</td><td>Unit designator table (<code>HSE, BSMT, MAIN, LWR, UPPR, PH, TH, RM, FL</code>); designator-only units are soft — exact where master uses designators, compatible with a sole blank-unit record, review on multi-record civic addresses.</td><td>Sample 2 (HSE-8667 Cartier): <code>HSE</code> unrecognized → false review.</td></tr>
+  <tr><td>1.1 · A4</td><td>2026-07-01</td><td>Directional hard filter: both sides present + differ → exclude candidate; directionals removed from the fuzzy-score surface.</td><td>Sample 4 counterfactual: <code>BROADWAY W</code> vs <code>BROADWAY E</code> scores ≈90 under token_set_ratio — digit-class signal handled as fuzzy text.</td></tr>
+  <tr><td>1.1 · A5</td><td>2026-07-01</td><td>Province token stripping (13 two-letter codes) before city extraction.</td><td>Sample 4 (<code>… Vancouver, BC</code>): province handling was implied, not specified.</td></tr>
+</table>
+
+<footer>Noble Invoice Extractor · Gate B6 design Rev 1.1 · additive to v8 architecture · normalization rules, thresholds, designator tables, and enum changes all governed by POLICY_VERSION in field_policy.py · supersedes Rev 1.0</footer>
+
+</div>
+</body>
+</html>
