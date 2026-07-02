@@ -109,3 +109,26 @@ through the truststore bootstrap above) and set it as `AZURE_CU_KEY` in the giti
 `functionapp/local.settings.json`. Local storage: run **Azurite** and set both
 `AzureWebJobsStorage` and `AZURE_TABLES_CONNECTION_STRING` to `UseDevelopmentStorage=true` so
 the ledger stays local (CU has no emulator, so analyze calls still hit the real dev resource).
+
+---
+
+## `scripts/create_analyzer.py`: `DefaultAzureCredential failed` / `CERTIFICATE_VERIFY_FAILED`
+
+**Symptoms (this dev machine):** a bare
+`.\.venv\Scripts\python.exe scripts\create_analyzer.py` fails twice over: every
+`DefaultAzureCredential` chain entry is unavailable (the `AzureCliCredential` leg dies on the
+TLS-inspection `CERTIFICATE_VERIFY_FAILED` above), and even with a key the direct CU HTTPS call
+hits the same SSL failure in the venv Python.
+
+**Fix (verified 2026-07-02):** run it with key auth + the truststore bootstrap in one go —
+load `AZURE_CU_KEY` from the gitignored `functionapp/local.settings.json` into the environment,
+and inject truststore before the script runs:
+
+```powershell
+$s = Get-Content functionapp\local.settings.json -Raw | ConvertFrom-Json
+$env:AZURE_CU_KEY = $s.Values.AZURE_CU_KEY
+.\.venv\Scripts\python.exe -c "import truststore; truststore.inject_into_ssl(); import runpy, sys; sys.argv = ['create_analyzer.py']; runpy.run_path('scripts/create_analyzer.py', run_name='__main__')"
+```
+
+Expected output ends with `status=ContentAnalyzerStatus.READY`. Remember: editing
+`analyzers/*.json` changes nothing in the service until this script is run.

@@ -133,9 +133,11 @@ def critical_fields(bucket: str) -> Tuple[str, ...]:
 # human hint). A *critical* field whose value fails its pattern is treated as a
 # critical-field failure by the B4 gate (routes to review). Empty/missing values
 # are handled by the gate's presence check, not here. po_or_job_number is an
-# 8-digit, all-numeric identifier (matched as text so leading zeros are kept).
+# 8-digit, all-numeric identifier that always starts with 110 or 330 (Noble's
+# PO/job numbering scheme) -- matched as text, never parsed as a number.
+_PO_EXACT = re.compile(r"(?:110|330)\d{5}")
 FIELD_FORMATS: Dict[str, Tuple["re.Pattern[str]", str]] = {
-    "po_or_job_number": (re.compile(r"\d{8}"), "exactly 8 digits"),
+    "po_or_job_number": (_PO_EXACT, "exactly 8 digits starting with 110 or 330"),
 }
 
 
@@ -151,6 +153,39 @@ def format_violation_reason(field: str, value: Any) -> Optional[str]:
     if text == "" or pattern.fullmatch(text):
         return None
     return hint
+
+
+# Contiguous 8-digit 110/330 run not embedded in a longer digit run, so a
+# 9-digit artifact like 330001022 never yields a false 33000102.
+_PO_CONTIGUOUS = re.compile(r"(?<!\d)(?:110|330)\d{5}(?!\d)")
+# Maximal run of digits separated by single spaces/tabs (OCR sometimes spaces
+# digits out, e.g. "1102 4580"). Matched as whole runs so adjacent numbers
+# ("11024580 5.00") are judged together and rejected, never merged into a hit.
+_PO_SPACED_RUN = re.compile(r"\d(?:[ \t]?\d)*")
+
+
+def find_po_candidates(text: Optional[str]) -> List[str]:
+    """Distinct PO/job-number candidates found in free document text, in order
+    of first appearance. A candidate is an 8-digit 110/330 number, either
+    contiguous or with spaces/tabs between the digits (normalised to contiguous
+    digits). Used to rescue a PO the analyzer missed from the OCR markdown."""
+    if not text:
+        return []
+    seen: set = set()
+    out: List[str] = []
+    for m in _PO_CONTIGUOUS.finditer(text):
+        v = m.group()
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    for m in _PO_SPACED_RUN.finditer(text):
+        run = m.group()
+        if " " in run or "\t" in run:
+            digits = re.sub(r"\s", "", run)
+            if _PO_EXACT.fullmatch(digits) and digits not in seen:
+                seen.add(digits)
+                out.append(digits)
+    return out
 
 
 # --- date handling -----------------------------------------------------------

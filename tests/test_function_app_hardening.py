@@ -85,7 +85,7 @@ def commercial_fields():
         "vendor_name_extract": fstr("Bob's Plumbing Ltd.", 0.97),
         "service_address_extract": fstr("123 Main St, Vancouver BC", 0.95),
         "total_invoice_amount_extract": fnum(105.0, 0.96),
-        "po_or_job_number_extract": fstr("00471234", 0.91),
+        "po_or_job_number_extract": fstr("11024580", 0.91),
         "gst_amount_extract": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
         "invoice_number": fstr("INV-2201", 0.92),

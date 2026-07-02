@@ -54,14 +54,17 @@ def fdate(value, conf):
     return {"valueDate": value, "confidence": conf}
 
 
-def cu_result(fields, category="general_invoice", analyzer="generalinvoice"):
-    """contents[0] = router result (segment category); contents[1] = child fields."""
-    return {
-        "contents": [
-            {"segments": [{"category": category}]},
-            {"analyzerId": analyzer, "category": category, "fields": fields},
-        ]
-    }
+def cu_result(fields, category="general_invoice", analyzer="generalinvoice",
+              markdown=None, router_markdown=None):
+    """contents[0] = router result (segment category); contents[1] = child fields.
+    markdown / router_markdown attach OCR markdown to the child / router entry."""
+    router = {"segments": [{"category": category}]}
+    child = {"analyzerId": analyzer, "category": category, "fields": fields}
+    if router_markdown is not None:
+        router["markdown"] = router_markdown
+    if markdown is not None:
+        child["markdown"] = markdown
+    return {"contents": [router, child]}
 
 
 def commercial_fields(**overrides):
@@ -69,7 +72,7 @@ def commercial_fields(**overrides):
         "vendor_name_extract": fstr("Bob's Plumbing Ltd.", 0.97),
         "service_address_extract": fstr("123 Main St, Vancouver BC", 0.95),
         "total_invoice_amount_extract": fnum(105.0, 0.96),
-        "po_or_job_number_extract": fstr("00471234", 0.91),
+        "po_or_job_number_extract": fstr("11024580", 0.91),
         "gst_amount_extract": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
         "payment_due_date": fdate("2026-05-31", 0.94),
@@ -216,11 +219,11 @@ def test_commercial_routing():
     r = ev(commercial_fields(total_invoice_amount_extract=fnum(105.0, 0.72)))
     check("conf == 0.72 fails", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
 
-    # po_or_job_number format: exactly 8 numeric digits (analyzer prompt + B4 gate)
-    r = ev(commercial_fields(po_or_job_number_extract=fstr("12345678", 0.95)))
-    check("commercial 8-digit PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
-    r = ev(commercial_fields(po_or_job_number_extract=fstr("00471234", 0.95)))
-    check("commercial 8-digit PO with leading zero -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    # po_or_job_number format: exactly 8 digits starting 110/330 (analyzer prompt + B4 gate)
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("11024580", 0.95)))
+    check("commercial 110-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("33001022", 0.95)))
+    check("commercial 330-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
     r = ev(commercial_fields(po_or_job_number_extract=fstr("JOB-4471", 0.95)))
     check("commercial alphanumeric PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
     check("PO format review reason names the field",
@@ -229,6 +232,9 @@ def test_commercial_routing():
     check("commercial 7-digit PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
     r = ev(commercial_fields(po_or_job_number_extract=fstr("123456789", 0.95)))
     check("commercial 9-digit PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("12345678", 0.95)))
+    check("commercial 8-digit PO without 110/330 prefix -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
 
 
 # --- municipal routing -------------------------------------------------------
@@ -354,14 +360,41 @@ def test_response_shape():
 def test_field_format_rules():
     print("\n[field_policy: per-field format rules]")
     vr = field_policy.format_violation_reason
-    check("8-digit po ok", vr("po_or_job_number", "12345678") is None)
-    check("leading-zero 8-digit po ok", vr("po_or_job_number", "00471234") is None)
-    check("7-digit po violates", vr("po_or_job_number", "1234567") is not None)
-    check("9-digit po violates", vr("po_or_job_number", "123456789") is not None)
+    check("110-prefixed 8-digit po ok", vr("po_or_job_number", "11024580") is None)
+    check("330-prefixed 8-digit po ok", vr("po_or_job_number", "33001022") is None)
+    check("8-digit po without 110/330 prefix violates", vr("po_or_job_number", "12345678") is not None)
+    check("leading-zero 8-digit po violates (not 110/330)", vr("po_or_job_number", "00471234") is not None)
+    check("7-digit po violates", vr("po_or_job_number", "1102458") is not None)
+    check("9-digit po violates (0008's label artifact)", vr("po_or_job_number", "330001022") is not None)
+    check("spaced po violates on the resolved value", vr("po_or_job_number", "1102 4580") is not None)
     check("alphanumeric po violates", vr("po_or_job_number", "JOB-4471") is not None)
     check("empty po is not a format violation", vr("po_or_job_number", "") is None)
     check("None po is not a format violation", vr("po_or_job_number", None) is None)
     check("field without a rule is always ok", vr("vendor_name", "anything") is None)
+
+
+def test_find_po_candidates():
+    print("\n[field_policy: OCR-text PO candidate scanner]")
+    find = field_policy.find_po_candidates
+    check("labeled Job# found", find("Job# 11024580") == ["11024580"])
+    check("bare # next to customer name found",
+          find("NOBLE & ASSOCIATES PROPERTY MANAGEMENT # 11022266") == ["11022266"])
+    check("bracketed duplicates dedupe to one",
+          find("[Job# 11024565] work done ... [Job# 11024565]") == ["11024565"])
+    check("9-digit label artifact skipped, true value found (0008 shape)",
+          find("Customer PO No. : 330001022\nSouth Fraser Plaza - Contract #33001022") == ["33001022"])
+    check("spaced digits normalised", find("PO 1102 4580 due") == ["11024580"])
+    check("spaced 9-digit run rejected", find("ref 3300 01022 x") == [])
+    check("table pipes bound the run", find("| PO | 33001022 | $105.00 |") == ["33001022"])
+    check("adjacent amount not merged in (contiguous still wins)",
+          find("11024580 5.00") == ["11024580"])
+    check("two distinct candidates in order of appearance",
+          find("Job# 11024580 and PO 33001022") == ["11024580", "33001022"])
+    check("wrong prefix ignored", find("Invoice 12345678") == [])
+    check("phone number ignored", find("call 604 330 1022 now") == [])
+    check("10 contiguous digits ignored", find("GST 1102458012") == [])
+    check("empty text -> no candidates", find("") == [])
+    check("None text -> no candidates", find(None) == [])
 
 
 def test_vendor_extract_generate_twin():
@@ -591,8 +624,8 @@ def test_amount_and_po_twins():
 
     # po: both present and agree on 8 digits (below threshold) -> pass.
     fields = commercial_fields(
-        po_or_job_number_extract=fstr("00471234", 0.60),
-        po_or_job_number_generate=fstr("00471234", 0.60),
+        po_or_job_number_extract=fstr("11024580", 0.60),
+        po_or_job_number_generate=fstr("11024580", 0.60),
     )
     r = ev(fields)
     check("po both below + same 8 digits -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
@@ -610,19 +643,19 @@ def test_amount_and_po_twins():
     # po: extract empty, generate found a confident 8-digit value -> generate rescue (pass).
     fields = commercial_fields(
         po_or_job_number_extract=fstr("", None),
-        po_or_job_number_generate=fstr("12345678", 0.95),
+        po_or_job_number_generate=fstr("33001022", 0.95),
     )
     r = ev(fields)
     check("po extract empty + confident generate -> happy (rescue)",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("po rescue source = generate", r["resolutions"]["po_or_job_number"]["source"] == "generate")
-    check("po rescue writes the generate value", r["writeValues"]["po_or_job_number"] == "12345678",
+    check("po rescue writes the generate value", r["writeValues"]["po_or_job_number"] == "33001022",
           str(r["writeValues"].get("po_or_job_number")))
 
     # po: extract empty, generate present but LOW confidence -> review (nothing corroborates it).
     r = ev(commercial_fields(
         po_or_job_number_extract=fstr("", None),
-        po_or_job_number_generate=fstr("12345678", 0.50),
+        po_or_job_number_generate=fstr("11024580", 0.50),
     ))
     check("po extract empty + low generate -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
 
@@ -635,9 +668,89 @@ def test_amount_and_po_twins():
     check("empty po does not agree", not field_policy._po_values_agree("", "12345678"))
 
 
+def test_po_ocr_rescue():
+    print("\n[gates: PO rescue from OCR markdown]")
+
+    def ev_md(fields, **kw):
+        return gates.evaluate(cu_result(fields, **kw), THRESHOLD)
+
+    # CU twins empty + exactly one candidate in the child markdown -> rescued, happy.
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
+              markdown="Invoice 4471\nJob# 11024580\nTotal $105.00")
+    check("single OCR candidate -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("rescued value written", r["writeValues"]["po_or_job_number"] == "11024580",
+          str(r["writeValues"].get("po_or_job_number")))
+    check("fields.po carries the rescued value",
+          r["fields"]["po_or_job_number"]["value"] == "11024580", str(r["fields"].get("po_or_job_number")))
+    check("resolution source = ocr", r["resolutions"]["po_or_job_number"]["source"] == "ocr",
+          str(r["resolutions"].get("po_or_job_number")))
+    check("rescue advisory raised",
+          any("po_or_job_number rescued from OCR text: 11024580" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # markdown on the router entry only -> still found (all contents entries scanned).
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
+              router_markdown="NOBLE & ASSOCIATES PROPERTY MANAGEMENT # 11022266")
+    check("router-entry markdown also scanned", r["writeValues"]["po_or_job_number"] == "11022266",
+          str(r["writeValues"].get("po_or_job_number")))
+    check("router-entry rescue -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+    # spaced digits in the markdown normalise to the contiguous number.
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
+              markdown="PO No. 1102 4580")
+    check("spaced OCR digits rescued contiguous", r["writeValues"]["po_or_job_number"] == "11024580",
+          str(r["writeValues"].get("po_or_job_number")))
+
+    # two distinct candidates -> review, both listed for the reviewer.
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
+              markdown="Job# 11024580 ... PO 33001022")
+    check("two OCR candidates -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("review reason lists both candidates",
+          any("11024580" in x and "33001022" in x and "multiple" in x for x in r["reviewReasons"]),
+          str(r["reviewReasons"]))
+    check("no value written on ambiguity", r["writeValues"]["po_or_job_number"] in (None, ""),
+          str(r["writeValues"].get("po_or_job_number")))
+
+    # zero candidates in markdown -> review exactly as before the rescue existed.
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
+              markdown="No purchase order on this invoice. Account 99887766.")
+    check("no OCR candidate -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+    check("review reason is the twin-clear failure",
+          any("po_or_job_number_extract/po_or_job_number_generate" in x for x in r["reviewReasons"]),
+          str(r["reviewReasons"]))
+
+    # 0008 shape: CU confidently returns the 9-digit label artifact; the true
+    # 8-digit value is elsewhere in the text -> rescue overrides the bad value.
+    r = ev_md(commercial_fields(po_or_job_number_extract=fstr("330001022", 0.95)),
+              markdown="Customer PO No. : 330001022\nSouth Fraser Plaza - Contract #33001022")
+    check("format-violating CU value overridden by rescue -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("override writes the true 8-digit value", r["writeValues"]["po_or_job_number"] == "33001022",
+          str(r["writeValues"].get("po_or_job_number")))
+    check("override advisory records the discarded CU value",
+          any("330001022" in a and "rescued" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # municipal bucket: PO is not critical -> rescue never fires, no value invented.
+    r = ev_md(municipal_fields(), markdown="Job# 11024580")
+    check("municipal -> no rescue, still happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    check("municipal -> no rescued write", r["writeValues"].get("po_or_job_number") in (None, ""),
+          str(r["writeValues"].get("po_or_job_number")))
+    check("municipal -> no rescue advisory", not any("rescued from OCR" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # PO already resolved and valid -> markdown (even a different number) is ignored.
+    r = ev_md(commercial_fields(), markdown="unrelated 33001022")
+    check("valid CU value untouched by markdown", r["writeValues"]["po_or_job_number"] == "11024580",
+          str(r["writeValues"].get("po_or_job_number")))
+    check("source stays extract", r["resolutions"]["po_or_job_number"]["source"] == "extract")
+    check("no rescue advisory when CU value stands",
+          not any("rescued from OCR" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
+    test_find_po_candidates()
     test_date_defaulting_and_derivation()
     test_commercial_routing()
     test_municipal_routing()
@@ -647,6 +760,7 @@ def main():
     test_vendor_extract_generate_twin()
     test_service_address_extract_generate_twin()
     test_amount_and_po_twins()
+    test_po_ocr_rescue()
 
     print("\n" + "=" * 60)
     print("ALL CHECKS PASSED")

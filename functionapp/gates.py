@@ -206,12 +206,26 @@ def find_child_content(
     return None, "no child content with fields found"
 
 
+def collect_markdown(full: Dict[str, Any]) -> str:
+    """Concatenated OCR markdown from every contents[] entry (the analyzer runs
+    with returnDetails/enableOcr on). All entries are read because which entry
+    carries the markdown in a router+child response is not contractual."""
+    contents = full.get("contents", [])
+    if not isinstance(contents, list):
+        return ""
+    return "\n".join(
+        c["markdown"] for c in contents
+        if isinstance(c, dict) and isinstance(c.get("markdown"), str)
+    )
+
+
 # --- gate B4 (critical field confidence) -------------------------------------
 
 def evaluate_b4(
     fields: Dict[str, Any],
     critical: Tuple[str, ...],
     threshold: float,
+    resolutions: Optional[Dict[str, Tuple[Any, float, bool, Optional[str], str]]] = None,
 ) -> Tuple[bool, List[str]]:
     """
     Review if any critical field for the resolved bucket is missing, empty, or
@@ -225,10 +239,15 @@ def evaluate_b4(
         # Twin-resolved fields pass when their resolver says so (the raw extract/generate
         # fields are combined, not checked field-by-field). A resolved value may still fail
         # a format rule (e.g. po_or_job_number must be 8 digits), checked on the result.
+        # The caller may pass its precomputed (possibly rescued) resolutions; without
+        # them, each twin is resolved from the raw fields as before.
         if name in field_policy.TWIN_FIELDS:
-            if parsed is None:
-                parsed = parse_fields(fields)
-            value, best_conf, passed, _note, _source = field_policy.resolve_field(name, parsed, threshold)
+            if resolutions is not None and name in resolutions:
+                value, best_conf, passed, _note, _source = resolutions[name]
+            else:
+                if parsed is None:
+                    parsed = parse_fields(fields)
+                value, best_conf, passed, _note, _source = field_policy.resolve_field(name, parsed, threshold)
             extract_key, generate_key = field_policy.TWIN_FIELDS[name][:2]
             if not passed:
                 review = True
@@ -375,7 +394,34 @@ def evaluate(
 
     # B4 - critical fields for the resolved bucket.
     critical = field_policy.critical_fields(bucket)
-    b4_review, b4_reasons = evaluate_b4(fields, critical, field_threshold)
+
+    # PO rescue: when the twins yield no usable value (failed resolution, or a
+    # resolved value that breaks the 110/330 8-digit invariant and so is
+    # guaranteed wrong), scan the OCR markdown for the number deterministically.
+    # Exactly one distinct candidate -> auto-accept with an advisory (source
+    # "ocr", confidence 1.0: the value is a pure function of the OCR text).
+    # Multiple candidates -> surfaced as a review reason after B4 runs.
+    po_candidates: List[str] = []
+    if field_policy.PO_FINAL in critical:
+        po_value, _po_conf, po_passed, _po_note, _po_source = resolutions[field_policy.PO_FINAL]
+        if (not po_passed
+                or field_policy.format_violation_reason(field_policy.PO_FINAL, po_value) is not None):
+            po_candidates = field_policy.find_po_candidates(collect_markdown(full))
+            if len(po_candidates) == 1:
+                rescued = po_candidates[0]
+                resolutions[field_policy.PO_FINAL] = (rescued, 1.0, True, None, "ocr")
+                write_values[field_policy.PO_FINAL] = rescued
+                advisory.append(
+                    f"po_or_job_number rescued from OCR text: {rescued} "
+                    f"(CU twins resolved to {po_value!r})"
+                )
+
+    b4_review, b4_reasons = evaluate_b4(fields, critical, field_threshold, resolutions)
+    if len(po_candidates) > 1:
+        b4_reasons.append(
+            "po_or_job_number has multiple 8-digit candidates in OCR text: "
+            + ", ".join(po_candidates)
+        )
 
     if b4_review:
         routing_decision = REVIEW_B4_CRITICAL_FIELD
