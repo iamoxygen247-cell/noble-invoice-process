@@ -109,8 +109,9 @@ try:
     import gates as _gates
     import field_policy as _field_policy
 
-    # Critical-field policy moved to field_policy (bill-type buckets). Use the
-    # commercial superset (base + delta) for the scorecard's static gate column.
+    # Critical-field policy moved to field_policy (bill-type buckets). CRITICAL_FIELDS
+    # is the commercial superset (base + delta), kept as the fallback only; each run's
+    # gate column uses the bucket-aware set from active_critical_fields(response).
     CRITICAL_FIELDS = list(_field_policy.critical_fields("commercial"))
     FIELD_PRINT_ORDER = list(_gates.FIELD_PRINT_ORDER)
     _GATES_SOURCE = getattr(_gates, "__file__", "gates")
@@ -154,11 +155,35 @@ RAW_CU_KEY = "cuResult"  # key the Function would use if --include-raw is wired
 # -----------------------------------------------------------------------------
 
 
-def field_gate_from_summary(field_name: str, entry: Optional[Dict[str, Any]], threshold: float) -> str:
+def active_critical_fields(response: Dict[str, Any]) -> List[str]:
+    """
+    The critical-field set for THIS response's policy bucket, matching the
+    Function's B4 gate (municipal = base only, commercial = base + delta). The
+    bucket is read from the Function's own policyBucket (billType as a fallback
+    for older decision JSON); a missing or unknown label fail-safes to the
+    stricter commercial superset, exactly like field_policy.resolve_bucket.
+    When field_policy could not be imported, the static commercial superset is
+    all we have (the [note] at startup already said so).
+    """
+    if _GATES_SOURCE is None:
+        return list(CRITICAL_FIELDS)
+    label = response.get("policyBucket") or response.get("billType")
+    bucket = _field_policy.resolve_bucket(str(label) if label is not None else None)
+    return list(_field_policy.critical_fields(bucket))
+
+
+def field_gate_from_summary(
+    field_name: str,
+    entry: Optional[Dict[str, Any]],
+    threshold: float,
+    critical: List[str],
+) -> str:
     """
     Reproduce step24's field_gate_for_scorecard, but read from the Function's
     summarised field shape {"value": ..., "confidence": ...} instead of a raw CU
-    field object. Same decisions, same strings.
+    field object. Same decisions, same strings. ``critical`` is the response's
+    bucket-aware critical set (active_critical_fields), so a commercial-delta
+    field on a municipal bill reads not-critical instead of REVIEW.
     """
     # The raw extract/generate twins are not critical on their own -- the computed final
     # (vendor_name / service_address) is. Show an informational threshold check for the
@@ -183,9 +208,13 @@ def field_gate_from_summary(field_name: str, entry: Optional[Dict[str, Any]], th
             return f"warning: {confidence:.3f} < {threshold:.2f}"
         return "pass"
 
-    if field_name not in CRITICAL_FIELDS:
+    if field_name not in critical:
         if field_name == "payment_due_date":
             return "not critical - Logic App defaults to invoice_date + 30 days"
+        if field_name in CRITICAL_FIELDS:
+            # In the commercial superset but not this bill's bucket: the Function's
+            # B4 gate ignored it, so the scorecard must not imply review.
+            return "not critical for this bill type"
         return "not critical"
 
     if entry is None:
@@ -218,16 +247,14 @@ def build_scorecard_pairs(
     run_id = scorecard.run_id_utc()
     fields: Dict[str, Any] = response.get("fields") or {}
 
-    # The active critical-field set is the Function's (gates.CRITICAL_FIELDS), so the
-    # scorecard's critical_fields/.gate columns stay consistent with the routing
-    # decision the Function actually returned. The payment_due_date_gate row is
-    # computed the same WAY step24 computes it (from the active set), so the two match
-    # for every category the Function and step24 treat identically. See the note in the
-    # module docstring about the utilities per-category override that step24 has and the
-    # deployed gates.py does not.
+    # The active critical-field set is the one the Function's B4 gate used for THIS
+    # response (bucket-aware: municipal = base only, commercial = base + delta), so
+    # the scorecard's critical_fields/.gate rows agree with the routingDecision and
+    # reviewReasons the Function actually returned.
+    critical = active_critical_fields(response)
     payment_due_date_gate = (
         "critical for this category"
-        if "payment_due_date" in CRITICAL_FIELDS
+        if "payment_due_date" in critical
         else "not critical - Logic App defaults to invoice_date + 30 days"
     )
 
@@ -268,7 +295,7 @@ def build_scorecard_pairs(
         if resolution is not None and resolution.get("passed") is True:
             gate = "pass"
         else:
-            gate = field_gate_from_summary(field_name, entry, threshold)
+            gate = field_gate_from_summary(field_name, entry, threshold, critical)
         pairs.append((f"{field_name}.gate", gate))
         if resolution is not None:
             pairs.append((f"{field_name}.source", str(resolution.get("source") or "")))
@@ -323,7 +350,8 @@ def build_scorecard_pairs(
             ("router_confidence_gate", "skipped - not consistently available in CU router result"),
             ("effective_document_type", str(response.get("effectiveDocumentType", ""))),
             ("analyzer_used", str(response.get("analyzerUsed", ""))),
-            ("critical_fields", ", ".join(CRITICAL_FIELDS)),
+            ("policy_bucket", str(response.get("policyBucket", ""))),
+            ("critical_fields", ", ".join(critical)),
             ("payment_due_date_gate", payment_due_date_gate),
         ]
     )
