@@ -67,3 +67,45 @@ short retry loop. Heavier responses (`functionapp show`, full `list`) hit it mor
 **Alternatives that sidestep the local agent entirely:** Azure Cloud Shell or the Azure
 Portal (browser is allowlisted); or ask IT to allowlist `az`'s `python.exe` / supply the
 corporate root in a form OpenSSL accepts.
+
+---
+
+## `func start` local run: CU call fails with `CERTIFICATE_VERIFY_FAILED`, then `401`
+
+**Symptoms (this dev machine):** running the decision Function locally (`func start` +
+`scripts/local_test.py`) returns HTTP 502 with
+`Content Understanding analyze failed: [SSL: CERTIFICATE_VERIFY_FAILED] ... unable to get
+local issuer certificate`. The host, the Azurite-backed ledger, and gate A1 all work — only
+the outbound HTTPS call to Content Understanding fails.
+
+**Cause:** the same transparent TLS-inspecting agent as the `az` entry above, but here it hits
+the **Python worker** the func host spawns. The `.NET` func host trusts the agent root via
+SChannel, but the Python worker uses `certifi`, which doesn't include it. This is not
+`az`-specific — any venv-Python outbound HTTPS (the Functions worker, or the `step24`/`local_test`
+harnesses) is affected.
+
+**Fix:** make the worker verify via the Windows cert store with
+[`truststore`](https://pypi.org/project/truststore/), exactly like the `az` fix. For a local
+run, put a `sitecustomize.py` on `PYTHONPATH` (auto-loaded at interpreter startup) before
+`func start`:
+
+```python
+# sitecustomize.py — on a dir added to PYTHONPATH
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+```
+
+`import truststore` must resolve (install it into the venv, or add the staged `truststore`
+package dir to `sys.path`/`PYTHONPATH`; the staged location is in `CLAUDE.local.md`). For the
+standalone scripts, calling `truststore.inject_into_ssl()` once at startup has the same effect.
+
+**Then a `401` (invalid subscription key):** the CU key hardcoded in `scripts/step21_test.py`
+is stale/rotated. Get the current key with
+`az cognitiveservices account keys list --name <cu-account> --resource-group <rg>` (run `az`
+through the truststore bootstrap above) and set it as `AZURE_CU_KEY` in the gitignored
+`functionapp/local.settings.json`. Local storage: run **Azurite** and set both
+`AzureWebJobsStorage` and `AZURE_TABLES_CONNECTION_STRING` to `UseDevelopmentStorage=true` so
+the ledger stays local (CU has no emulator, so analyze calls still hit the real dev resource).
