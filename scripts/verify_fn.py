@@ -77,8 +77,12 @@ try:
     # gate column uses the bucket-aware set from active_critical_fields(response).
     CRITICAL_FIELDS = list(_field_policy.critical_fields("commercial"))
     FIELD_PRINT_ORDER = list(_gates.FIELD_PRINT_ORDER)
+    # Default the B4 threshold to the Function's own policy value so a default
+    # run scores exactly what production decides (the flow sends no override).
+    DEFAULT_FIELD_THRESHOLD = float(_field_policy.THRESHOLD)
     _GATES_SOURCE = getattr(_gates, "__file__", "gates")
 except Exception:  # ImportError or attribute drift
+    DEFAULT_FIELD_THRESHOLD = 0.73  # mirrors field_policy.THRESHOLD (kept in sync)
     CRITICAL_FIELDS = [
         "vendor_name",
         "invoice_number",
@@ -105,7 +109,6 @@ except Exception:  # ImportError or attribute drift
         "anomaly_flag",
     ]
 
-DEFAULT_FIELD_THRESHOLD = 0.75
 DEFAULT_OUT_DIR = "out"
 DEFAULT_RESULT_JSON = "verify_result.json"
 DEFAULT_SCORECARD = "verify_scorecard.html"
