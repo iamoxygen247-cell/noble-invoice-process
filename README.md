@@ -24,18 +24,16 @@ noble-invoice-process/
 │  └─ .funcignore
 ├─ scripts/            # standalone prototype harnesses — NOT deployed
 │  ├─ local_test.py            # posts one PDF to the running Function (imports functionapp/gates.py)
-│  ├─ step21_test.py           # early CU analyze probe
-│  ├─ step24_test.py           # CU router/extraction validation + scorecard
-│  ├─ phase3_ledger_test.py    # ledger idempotency / atomic-claim validation
-│  ├─ scorecard.py             # scoring helper (imported by local_test.py)
-│  ├─ model_deployment_info.py # CU analyzer/deployment probe
-│  └─ verify_fn.py             # smoke-test caller for the deployed Function
+│  ├─ verify_fn.py             # smoke-test caller for the deployed Function
+│  ├─ create_analyzer.py       # (re)provisions a CU analyzer from analyzers/*.json
+│  └─ scorecard.py             # scoring/output helper (imported by local_test.py and verify_fn.py)
 ├─ tests/              # offline pytest suite (no Azure) — run with `python -m pytest`
-│  └─ test_field_policy_gates.py  # gates.py + field_policy.py assertions
+│  ├─ test_field_policy_gates.py  # gates.py + field_policy.py assertions
+│  └─ test_harness_scorecard.py   # harness scorecards must agree with the Function's B4 gate
 ├─ analyzers/          # CU analyzer provisioning JSONs (generalinvoice, invoicerouter)
 ├─ docs/               # design PDFs (Design Reference, Detailed System Design, Prototype Plan)
 ├─ samples/            # real invoice PDFs — gitignored
-├─ out/                # result.json, *_scorecard.csv, captured output — gitignored
+├─ out/                # result JSON + HTML scorecards, captured output — gitignored
 ├─ pytest.ini          # scopes pytest collection to tests/
 ├─ .vscode/settings.json
 └─ .gitignore
@@ -92,15 +90,15 @@ Function runs. You can also run it standalone:
 
 ## Run the harnesses
 
-`local_test.py` imports the canonical modules from `functionapp/` via a small
-`sys.path` bootstrap at the top of the file, so the gate thresholds and ledger
-keys it uses are exactly the ones the Function runs. The other harnesses are
-self-contained Azure probes (CU / Table Storage) and need live credentials.
+`local_test.py` and `verify_fn.py` import the canonical modules from
+`functionapp/` via a small `sys.path` bootstrap at the top of each file, so the
+gate thresholds they score with are exactly the ones the Function runs.
+`verify_fn.py` and `create_analyzer.py` hit live Azure and need credentials
+(a function key / your `az login` identity).
 
 ```cmd
 cd scripts
-python step24_test.py --file "..\samples\invoice1.pdf" --run-label baseline_0.75
-python phase3_ledger_test.py --self-test --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --file-name invoice1.pdf
+python verify_fn.py --base-url "https://<function-app>.azurewebsites.net" --key "<FUNCTION_KEY>" --file "..\samples\invoice1.pdf"
 ```
 
 ## Deploy
