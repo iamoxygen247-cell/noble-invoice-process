@@ -29,6 +29,10 @@ DEFAULT_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.co
 DEFAULT_API_VERSION = "2025-11-01"
 DEFAULT_ROUTER_ANALYZER_ID = "invoicerouter"
 DEFAULT_GENERAL_ANALYZER_ID = "generalinvoice"
+# Cap on the analyze long-running operation. CU runs complete in seconds; without
+# a cap a hung LRO holds the invocation until the platform kills it and leaves the
+# A1-claimed ledger row blocking reprocessing until the lease expires.
+DEFAULT_ANALYZE_TIMEOUT_SECONDS = 120.0
 
 
 def _env(name: str, default: str) -> str:
@@ -50,6 +54,17 @@ def router_analyzer_id() -> str:
 
 def general_invoice_analyzer_id() -> str:
     return _env("AZURE_CU_GENERAL_ANALYZER_ID", DEFAULT_GENERAL_ANALYZER_ID)
+
+
+def analyze_timeout_seconds() -> float:
+    """Analyze LRO timeout, overridable via AZURE_CU_TIMEOUT_SECONDS. A missing,
+    non-numeric, or non-positive value falls back to the default."""
+    raw = _env("AZURE_CU_TIMEOUT_SECONDS", str(DEFAULT_ANALYZE_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_ANALYZE_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_ANALYZE_TIMEOUT_SECONDS
 
 
 def _build_credential():
@@ -84,6 +99,20 @@ def _as_dict(result: Any) -> Dict[str, Any]:
     return dict(result)
 
 
+def _poll_result(poller: Any) -> Dict[str, Any]:
+    """Wait for the analyze LRO with a hard cap. LROPoller.wait(timeout) returns
+    (without raising) when the timeout elapses before completion, so done() is
+    the reliable signal; raise TimeoutError so the Function returns a clean 502
+    instead of hanging until the host kills the invocation."""
+    timeout = analyze_timeout_seconds()
+    poller.wait(timeout=timeout)
+    if not poller.done():
+        raise TimeoutError(
+            f"Content Understanding analyze did not complete within {timeout:.0f}s"
+        )
+    return _as_dict(poller.result())
+
+
 def _guess_content_type(file_name: Optional[str]) -> str:
     if file_name:
         guessed, _ = mimetypes.guess_type(file_name)
@@ -112,7 +141,7 @@ def analyze_binary(content_bytes: bytes, file_name: Optional[str] = None) -> Dic
             analyzer_id=analyzer_id,
             binary_input=content_bytes,
         )
-    return _as_dict(poller.result())
+    return _poll_result(poller)
 
 
 def analyze_url(url: str) -> Dict[str, Any]:
@@ -124,4 +153,4 @@ def analyze_url(url: str) -> Dict[str, Any]:
         analyzer_id=router_analyzer_id(),
         inputs=[AnalysisInput(url=url)],
     )
-    return _as_dict(poller.result())
+    return _poll_result(poller)
