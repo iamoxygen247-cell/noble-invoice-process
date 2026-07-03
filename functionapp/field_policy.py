@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "bill-type-v1"
+POLICY_VERSION = "bill-type-v2"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -49,9 +49,11 @@ DATE_FORMAT = "%Y-%m-%d"
 
 # Base + delta. The base is verified for every bill regardless of how bill_type
 # is classified, so a misclassification can only ever drop a *delta* requirement,
-# never a base one. The municipal delta is intentionally empty.
+# never a base one. Municipal bills must carry the biller's account number and an
+# invoice/licence number; commercial bills capture both informationally only.
 BASE_CRITICAL: Tuple[str, ...] = ("vendor_name", "service_address", "total_invoice_amount")
 COMMERCIAL_DELTA: Tuple[str, ...] = ("po_or_job_number", "gst_amount")
+MUNICIPAL_DELTA: Tuple[str, ...] = ("account_number", "invoice_number")
 
 # Vendor name is captured twice by the analyzer: an extract-method field
 # (span-grounded, so its confidence is reliable) and a generate-method twin (the
@@ -84,6 +86,18 @@ PO_EXTRACT = "po_or_job_number_extract"
 PO_GENERATE = "po_or_job_number_generate"
 PO_FINAL = "po_or_job_number"
 
+# invoice_number and account_number are twinned identifiers: the extract is the
+# value as printed (spaces stripped, dashes/dots kept by the analyzer prompt) and
+# the generate twin only validates it. Both are critical for the municipal bucket
+# only; commercial bills capture them informationally.
+INVOICE_EXTRACT = "invoice_number_extract"
+INVOICE_GENERATE = "invoice_number_generate"
+INVOICE_FINAL = "invoice_number"
+
+ACCOUNT_EXTRACT = "account_number_extract"
+ACCOUNT_GENERATE = "account_number_generate"
+ACCOUNT_FINAL = "account_number"
+
 # Values handed to Power Automate to write to Dynamics. Values only; per-field
 # confidence stays in the separate raw-fields block for the review UI and audit.
 WRITE_FIELDS: Tuple[str, ...] = (
@@ -95,6 +109,7 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "invoice_number",
     "po_or_job_number",
     "gst_amount",
+    "account_number",
     "bill_type",
     "invoice_description",
 )
@@ -124,7 +139,7 @@ def critical_fields(bucket: str) -> Tuple[str, ...]:
     """The critical field set for a bucket. The only bucket-dependent rule."""
     if bucket == COMMERCIAL:
         return BASE_CRITICAL + COMMERCIAL_DELTA
-    return BASE_CRITICAL
+    return BASE_CRITICAL + MUNICIPAL_DELTA
 
 
 # --- per-field format rules --------------------------------------------------
@@ -404,6 +419,16 @@ def _po_values_agree(a: Any, b: Any) -> bool:
     return da != "" and da == db
 
 
+def _identifier_values_agree(a: Any, b: Any) -> bool:
+    """True when two identifiers (invoice/account numbers) carry the same non-empty
+    letter+digit sequence, case-insensitively. Punctuation/spacing is display
+    formatting and is ignored for agreement; the written value keeps the extract's
+    printed punctuation. Neither field has a format rule (unlike po_or_job_number)."""
+    na = re.sub(r"[^0-9a-z]", "", str(a).lower()) if a is not None else ""
+    nb = re.sub(r"[^0-9a-z]", "", str(b).lower()) if b is not None else ""
+    return na != "" and na == nb
+
+
 def resolve_vendor(
     parsed: Dict[str, Tuple[Any, Optional[float]]],
     threshold: float = THRESHOLD,
@@ -435,6 +460,8 @@ TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
     TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, False),
     GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, False),
     PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, False),
+    INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, False),
+    ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, False),
 }
 
 

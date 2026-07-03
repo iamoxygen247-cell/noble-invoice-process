@@ -113,6 +113,12 @@ try:
     # is the commercial superset (base + delta), kept as the fallback only; each run's
     # gate column uses the bucket-aware set from active_critical_fields(response).
     CRITICAL_FIELDS = list(_field_policy.critical_fields("commercial"))
+    # Union of both buckets' criticals: used only for the "not critical for this
+    # bill type" scorecard label (a field critical in some bucket but not this one).
+    ALL_BUCKET_CRITICALS = sorted(
+        set(_field_policy.critical_fields("commercial"))
+        | set(_field_policy.critical_fields("municipal"))
+    )
     FIELD_PRINT_ORDER = list(_gates.FIELD_PRINT_ORDER)
     # Default the B4 threshold to the Function's own policy value so a default
     # run scores exactly what production decides (the flow sends no override).
@@ -128,6 +134,7 @@ except Exception:  # ImportError or attribute drift
         "total_invoice_amount",
         "service_address",
     ]
+    ALL_BUCKET_CRITICALS = list(CRITICAL_FIELDS)
     FIELD_PRINT_ORDER = [
         "vendor_name",
         "invoice_date",
@@ -161,7 +168,8 @@ RAW_CU_KEY = "cuResult"  # key the Function would use if --include-raw is wired
 def active_critical_fields(response: Dict[str, Any]) -> List[str]:
     """
     The critical-field set for THIS response's policy bucket, matching the
-    Function's B4 gate (municipal = base only, commercial = base + delta). The
+    Function's B4 gate (commercial = base + commercial delta, municipal = base +
+    municipal delta). The
     bucket is read from the Function's own policyBucket (billType as a fallback
     for older decision JSON); a missing or unknown label fail-safes to the
     stricter commercial superset, exactly like field_policy.resolve_bucket.
@@ -198,6 +206,8 @@ def field_gate_from_summary(
         "total_invoice_amount_extract", "total_invoice_amount_generate",
         "gst_amount_extract", "gst_amount_generate",
         "po_or_job_number_extract", "po_or_job_number_generate",
+        "invoice_number_extract", "invoice_number_generate",
+        "account_number_extract", "account_number_generate",
     ):
         if entry is None:
             return "not returned by CU"
@@ -214,8 +224,8 @@ def field_gate_from_summary(
     if field_name not in critical:
         if field_name == "payment_due_date":
             return "not critical - Logic App defaults to invoice_date + 30 days"
-        if field_name in CRITICAL_FIELDS:
-            # In the commercial superset but not this bill's bucket: the Function's
+        if field_name in ALL_BUCKET_CRITICALS:
+            # Critical in some bucket but not this bill's: the Function's
             # B4 gate ignored it, so the scorecard must not imply review.
             return "not critical for this bill type"
         return "not critical"
@@ -321,9 +331,14 @@ def build_scorecard_pairs(
         "service_address",
         "service_address_extract",
         "service_address_generate",
+        "account_number",
+        "account_number_extract",
+        "account_number_generate",
         "invoice_date",
         "payment_due_date",
         "invoice_number",
+        "invoice_number_extract",
+        "invoice_number_generate",
         "po_or_job_number",
         "po_or_job_number_extract",
         "po_or_job_number_generate",

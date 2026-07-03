@@ -88,7 +88,7 @@ def commercial_fields():
         "po_or_job_number_extract": fstr("11024580", 0.91),
         "gst_amount_extract": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
-        "invoice_number": fstr("INV-2201", 0.92),
+        "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),

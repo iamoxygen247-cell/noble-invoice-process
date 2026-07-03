@@ -76,7 +76,7 @@ def commercial_fields(**overrides):
         "gst_amount_extract": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
         "payment_due_date": fdate("2026-05-31", 0.94),
-        "invoice_number": fstr("INV-2201", 0.92),
+        "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),
@@ -91,7 +91,10 @@ def municipal_fields(**overrides):
         "vendor_name_extract": fstr("City of Vancouver", 0.98),
         "service_address_extract": fstr("456 Oak Ave, Vancouver BC", 0.95),
         "total_invoice_amount_extract": fnum(220.0, 0.96),
-        # municipal bills usually carry no PO and no GST
+        # municipal bills usually carry no PO and no GST, but must carry the
+        # biller's account number and an invoice/licence number (municipal delta)
+        "account_number_extract": fstr("123456789012", 0.95),
+        "invoice_number_extract": fstr("BL-123456", 0.93),
         "invoice_date": fdate("2026-05-10", 0.95),
         "payment_due_date": fdate("2026-06-10", 0.94),
         "bill_type": fstr("municipal", 0.9),
@@ -117,14 +120,19 @@ def test_policy_constants_and_buckets():
           field_policy.BASE_CRITICAL == ("vendor_name", "service_address", "total_invoice_amount"))
     check("commercial delta = po + gst",
           field_policy.COMMERCIAL_DELTA == ("po_or_job_number", "gst_amount"))
+    check("municipal delta = account + invoice number",
+          field_policy.MUNICIPAL_DELTA == ("account_number", "invoice_number"))
 
     commercial = field_policy.critical_fields("commercial")
     municipal = field_policy.critical_fields("municipal")
     check("commercial critical has 5 fields incl po + gst",
           set(commercial) == {"vendor_name", "service_address", "total_invoice_amount",
                               "po_or_job_number", "gst_amount"}, str(commercial))
-    check("municipal critical = base only (no po, no gst)",
-          set(municipal) == {"vendor_name", "service_address", "total_invoice_amount"}, str(municipal))
+    check("commercial critical excludes account/invoice number",
+          "account_number" not in commercial and "invoice_number" not in commercial, str(commercial))
+    check("municipal critical = base + account + invoice number (no po, no gst)",
+          set(municipal) == {"vendor_name", "service_address", "total_invoice_amount",
+                             "account_number", "invoice_number"}, str(municipal))
 
     # resolve_bucket: only explicit 'municipal' relaxes; everything else is strict.
     check("resolve 'municipal' -> municipal", field_policy.resolve_bucket("municipal") == "municipal")
@@ -246,10 +254,10 @@ def test_municipal_routing():
     check("municipal happy path (no PO/GST present)", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("bucket resolved municipal", r["policyBucket"] == "municipal")
 
-    # municipal does NOT require PO or GST -> still happy even absent
-    r = ev(municipal_fields(invoice_number=fstr("", None)))
-    check("municipal missing invoice_number -> still happy (non-critical)",
-          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    # invoice_number is municipal-critical (bill-type-v2): absent/empty -> review
+    r = ev(municipal_fields(invoice_number_extract=fstr("", None)))
+    check("municipal missing invoice_number -> review (municipal-critical)",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
 
     # municipal base field missing -> review
     r = ev(municipal_fields(service_address_extract=fstr("", None)))
@@ -278,9 +286,9 @@ def test_default_and_residual():
     check("missing bill_type -> commercial bucket (strict)", r["policyBucket"] == "commercial")
     check("unlabeled bill lacking PO/GST -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
 
-    # DOCUMENTED RESIDUAL: a trade invoice (no PO, no GST) misclassified municipal
-    # gets the relaxed bucket and auto-writes. Defended only at the prompt layer
-    # (issuer-not-customer tie-breaker) + base+delta, never by this gate.
+    # The municipal delta narrows the old residual: a trade invoice (no PO/GST, no
+    # account or invoice number) mislabeled municipal is now caught by the delta
+    # requirement instead of auto-writing.
     trade_as_municipal = {
         "vendor_name_extract": fstr("Bob's Plumbing Ltd.", 0.97),
         "service_address_extract": fstr("123 Main St", 0.95),
@@ -289,7 +297,16 @@ def test_default_and_residual():
         "is_handwritten": fstr("no", 0.97),
     }
     r = ev(trade_as_municipal)
-    check("RESIDUAL: trade mislabeled municipal auto-writes (known, prompt-defended)",
+    check("mislabeled trade lacking account/invoice numbers -> review (delta defends)",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # REMAINING RESIDUAL: a mislabeled trade invoice that ALSO carries account- and
+    # invoice-like values still auto-writes. Defended only at the prompt layer
+    # (issuer-not-customer tie-breaker), never by this gate.
+    r = ev(dict(trade_as_municipal,
+                account_number_extract=fstr("55-1234", 0.9),
+                invoice_number_extract=fstr("INV-8801", 0.9)))
+    check("RESIDUAL: mislabeled trade WITH account+invoice numbers auto-writes (known)",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
 
 
@@ -351,6 +368,18 @@ def test_response_shape():
     check("serviceAddressResolution block present with source",
           isinstance(r["resolutions"].get("service_address"), dict) and r["resolutions"]["service_address"]["source"] == "extract",
           str(r["resolutions"].get("service_address")))
+    # invoice_number is twinned now: the final is resolved from the extract.
+    check("fields.invoice_number is the resolved final value",
+          r["fields"]["invoice_number"]["value"] == "INV-2201", str(r["fields"].get("invoice_number")))
+    check("invoiceNumberResolution source = extract",
+          r["resolutions"]["invoice_number"]["source"] == "extract", str(r["resolutions"].get("invoice_number")))
+    # account_number final + resolution are injected even when the twins are absent
+    # (this commercial fixture carries no account number).
+    check("fields.account_number final injected", "account_number" in r["fields"], str(list(r["fields"])))
+    check("accountNumberResolution present with source none (absent, non-critical here)",
+          r["resolutions"]["account_number"]["source"] == "none"
+          and r["resolutions"]["account_number"]["passed"] is False,
+          str(r["resolutions"].get("account_number")))
     # decision enum is exactly the agreed reduced set
     allowed = {gates.HAPPY_PATH_CANDIDATE, gates.REVIEW_B4_CRITICAL_FIELD,
                gates.REJECT_B2_OTHER_CATEGORY, gates.REVIEW_NO_CHILD_EXTRACTION}
@@ -371,6 +400,8 @@ def test_field_format_rules():
     check("empty po is not a format violation", vr("po_or_job_number", "") is None)
     check("None po is not a format violation", vr("po_or_job_number", None) is None)
     check("field without a rule is always ok", vr("vendor_name", "anything") is None)
+    check("account_number has no format rule", vr("account_number", "12345-001") is None)
+    check("invoice_number has no format rule", vr("invoice_number", "INV-2201") is None)
 
 
 def test_find_po_candidates():
@@ -747,6 +778,145 @@ def test_po_ocr_rescue():
           not any("rescued from OCR" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
 
 
+def test_account_number_twin():
+    print("\n[gates: account_number twin -- municipal critical, commercial informational]")
+
+    # municipal missing account entirely -> review (required for municipal).
+    fields = municipal_fields()
+    del fields["account_number_extract"]
+    r = ev(fields)
+    check("municipal missing account -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("review reason names the account twins",
+          any("account_number_extract/account_number_generate" in x for x in r["reviewReasons"]),
+          str(r["reviewReasons"]))
+
+    # municipal confident extract -> happy; printed form (dashes kept) written; source = extract.
+    r = ev(municipal_fields(account_number_extract=fstr("12345-001", 0.95)))
+    check("municipal confident extract -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("printed form (dashes kept) written", r["writeValues"]["account_number"] == "12345-001",
+          str(r["writeValues"].get("account_number")))
+    check("account source = extract", r["resolutions"]["account_number"]["source"] == "extract",
+          str(r["resolutions"].get("account_number")))
+
+    # municipal extract low + generate low but agreeing across punctuation/spacing ->
+    # happy via agreement (letters+digits comparison); the literal extract is written.
+    fields = municipal_fields(
+        account_number_extract=fstr("123456789012", 0.50),
+        account_number_generate=fstr("1234-5678-9012", 0.60),
+    )
+    r = ev(fields)
+    check("municipal low twins agreeing (punctuation ignored) -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("account source = agreement", r["resolutions"]["account_number"]["source"] == "agreement",
+          str(r["resolutions"].get("account_number")))
+    check("writes the literal extract value", r["writeValues"]["account_number"] == "123456789012",
+          str(r["writeValues"].get("account_number")))
+
+    # municipal disagreeing low twins -> review + disagree advisory.
+    fields = municipal_fields(
+        account_number_extract=fstr("123456789012", 0.50),
+        account_number_generate=fstr("999999", 0.60),
+    )
+    r = ev(fields)
+    check("municipal disagreeing low twins -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("account disagree advisory raised",
+          any("account_number" in a and "disagree" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # municipal extract absent + confident generate -> generate rescue.
+    fields = municipal_fields(account_number_extract=fstr("", None),
+                              account_number_generate=fstr("123456789012", 0.90))
+    r = ev(fields)
+    check("municipal rescue by confident generate -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("account rescue source = generate", r["resolutions"]["account_number"]["source"] == "generate",
+          str(r["resolutions"].get("account_number")))
+
+    # commercial missing account -> still happy (purely informational there).
+    r = ev(commercial_fields())
+    check("commercial without account -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("writeValues carries the account_number key (None)", "account_number" in r["writeValues"],
+          str(list(r["writeValues"])))
+
+    # commercial account present at low confidence -> still happy (never blocks), value written.
+    r = ev(commercial_fields(account_number_extract=fstr("A-778812", 0.40)))
+    check("commercial low-conf account -> still happy (never blocks)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("commercial account written to writeValues",
+          r["writeValues"]["account_number"] == "A-778812", str(r["writeValues"].get("account_number")))
+
+    # identifier agreement helper: letters+digits only, case-insensitive.
+    agree = field_policy._identifier_values_agree
+    check("spacing/dash variants agree", agree("123456789012", "1234-5678-9012"))
+    check("dot vs dash agree", agree("12345-001", "12345.001"))
+    check("case ignored", agree("AB1234", "ab-1234"))
+    check("different numbers do not agree", not agree("12345-001", "12345-002"))
+    check("empty never agrees", not agree("", "123"))
+    check("None never agrees", not agree(None, "123"))
+
+
+def test_invoice_number_twin():
+    print("\n[gates: invoice_number twin -- municipal critical, commercial informational]")
+
+    # municipal missing invoice number entirely -> review (required for municipal).
+    fields = municipal_fields()
+    del fields["invoice_number_extract"]
+    r = ev(fields)
+    check("municipal missing invoice number -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("review reason names the invoice twins",
+          any("invoice_number_extract/invoice_number_generate" in x for x in r["reviewReasons"]),
+          str(r["reviewReasons"]))
+
+    # commercial missing invoice number -> still happy (optional for commercial).
+    fields = commercial_fields()
+    del fields["invoice_number_extract"]
+    r = ev(fields)
+    check("commercial without invoice number -> happy (optional)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # municipal low twins agreeing across case/spacing -> happy via agreement;
+    # the literal extract is written.
+    fields = municipal_fields(
+        invoice_number_extract=fstr("INV-2201", 0.50),
+        invoice_number_generate=fstr("inv 2201", 0.60),
+    )
+    r = ev(fields)
+    check("municipal low twins agreeing (case/spacing ignored) -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("invoice source = agreement", r["resolutions"]["invoice_number"]["source"] == "agreement",
+          str(r["resolutions"].get("invoice_number")))
+    check("writes the literal extract value", r["writeValues"]["invoice_number"] == "INV-2201",
+          str(r["writeValues"].get("invoice_number")))
+
+    # municipal disagreeing low twins -> review.
+    fields = municipal_fields(
+        invoice_number_extract=fstr("BL-123456", 0.50),
+        invoice_number_generate=fstr("BL-999999", 0.60),
+    )
+    r = ev(fields)
+    check("municipal disagreeing low twins -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # municipal extract absent + confident generate -> generate rescue (licence number read
+    # by the reasoning twin).
+    fields = municipal_fields(invoice_number_extract=fstr("", None),
+                              invoice_number_generate=fstr("BL-123456", 0.90))
+    r = ev(fields)
+    check("municipal rescue by confident generate -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("invoice rescue source = generate", r["resolutions"]["invoice_number"]["source"] == "generate",
+          str(r["resolutions"].get("invoice_number")))
+
+    # commercial invoice number present at low confidence -> still happy, value written.
+    r = ev(commercial_fields(invoice_number_extract=fstr("INV-9944", 0.40)))
+    check("commercial low-conf invoice number -> still happy (never blocks)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("commercial invoice number written to writeValues",
+          r["writeValues"]["invoice_number"] == "INV-9944", str(r["writeValues"].get("invoice_number")))
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
@@ -760,6 +930,8 @@ def main():
     test_vendor_extract_generate_twin()
     test_service_address_extract_generate_twin()
     test_amount_and_po_twins()
+    test_account_number_twin()
+    test_invoice_number_twin()
     test_po_ocr_rescue()
 
     print("\n" + "=" * 60)

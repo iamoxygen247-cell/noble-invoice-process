@@ -13,7 +13,8 @@ Per request it runs gate **A1** (item-id idempotency), writes the ledger row
 transport — no Blob, no SAS), applies the routing gates via `gates.py` — **B2**
 (router/effective category `other` → reject), **B4** (a critical field for the
 resolved bill-type bucket is missing, empty, low-confidence, or fails its format
-rule — e.g. `po_or_job_number` must be exactly 8 digits — → review), and a
+rule — e.g. `po_or_job_number` must be exactly 8 digits; municipal bills
+additionally require `account_number` and `invoice_number` — → review), and a
 no-child-extraction review — using the bill-type policy in `field_policy.py`,
 writes `Extracted` + the routing decision, and returns the decision.
 
@@ -69,12 +70,13 @@ Response (HTTP 200 on a normal decision):
   "category": "general_invoice", "routerCategory": "general_invoice",
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
-  "billType": "commercial", "policyBucket": "commercial", "policyVersion": "bill-type-v1",
+  "billType": "commercial", "policyBucket": "commercial", "policyVersion": "bill-type-v2",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
   "writeValues": { "vendor_name": "...", "invoice_date": "2026-05-01",
-                   "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0, "...": null },
+                   "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0,
+                   "account_number": "123456789012", "...": null },
   "defaultedFields": [], "anomalyFlag": ""
 }
 ```
@@ -184,6 +186,8 @@ connection (encrypted at rest, never in run history) rather than in the flow.
 3. Branch (Condition/Switch) on `routingDecision`:
    - `HAPPY_PATH_CANDIDATE` → **Add a new row** to the Dataverse invoice table →
      on 201, update the ledger row (`Status=Written`, `DynamicsRecordId`).
+     `writeValues` now includes `account_number` (required on municipal bills,
+     optional on commercial) — map it to the matching Dataverse column.
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.

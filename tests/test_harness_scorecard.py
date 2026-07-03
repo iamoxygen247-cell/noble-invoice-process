@@ -75,7 +75,7 @@ def commercial_fields(**overrides):
         "po_or_job_number_extract": fstr("11024580", 0.91),
         "gst_amount_extract": fnum(5.0, 0.93),
         "invoice_date": fdate("2026-05-01", 0.95),
-        "invoice_number": fstr("INV-2201", 0.92),
+        "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),
@@ -89,7 +89,10 @@ def municipal_fields(**overrides):
         "vendor_name_extract": fstr("City of Vancouver", 0.98),
         "service_address_extract": fstr("456 Oak Ave, Vancouver BC", 0.95),
         "total_invoice_amount_extract": fnum(220.0, 0.96),
-        # municipal bills usually carry no PO and no GST
+        # municipal bills usually carry no PO and no GST, but must carry the
+        # biller's account number and an invoice/licence number (municipal delta)
+        "account_number_extract": fstr("123456789012", 0.95),
+        "invoice_number_extract": fstr("BL-123456", 0.93),
         "invoice_date": fdate("2026-05-10", 0.95),
         "bill_type": fstr("municipal", 0.9),
         "is_handwritten": fstr("no", 0.97),
@@ -131,10 +134,13 @@ def test_municipal_happy_path_has_no_review_gates(harness):
         "the Function said happy path, so no scorecard gate cell may show REVIEW"
     )
     assert rows["policy_bucket"] == field_policy.MUNICIPAL
-    assert rows["critical_fields"] == ", ".join(field_policy.BASE_CRITICAL)
+    assert rows["critical_fields"] == ", ".join(field_policy.critical_fields(field_policy.MUNICIPAL))
     # The commercial-delta fields are absent on this bill and must read not-critical.
     assert rows["po_or_job_number.gate"] == "not critical for this bill type"
     assert rows["gst_amount.gate"] == "not critical for this bill type"
+    # The municipal-delta fields are critical here and both clear the bar.
+    assert rows["account_number.gate"] == "pass"
+    assert rows["invoice_number.gate"] == "pass"
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
@@ -178,6 +184,19 @@ def test_commercial_missing_po_still_reviews(harness):
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
+def test_municipal_missing_account_reviews(harness):
+    fields = municipal_fields()
+    del fields["account_number_extract"]
+    decision = decision_for(fields)
+    assert decision["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD
+
+    pairs, rows = scorecard_rows(harness, decision)
+    assert review_gate_fields(pairs) == {"account_number"}
+    assert rows["account_number.gate"] == "REVIEW: empty value"
+    assert rows["policy_bucket"] == field_policy.MUNICIPAL
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
 def test_commercial_happy_path_has_no_review_gates(harness):
     decision = decision_for(commercial_fields())
     assert decision["routingDecision"] == gates.HAPPY_PATH_CANDIDATE
@@ -186,6 +205,11 @@ def test_commercial_happy_path_has_no_review_gates(harness):
     assert review_gate_fields(pairs) == set()
     assert rows["po_or_job_number.gate"] == "pass"
     assert rows["gst_amount.gate"] == "pass"
+    # The municipal-delta fields never gate a commercial bill. An absent one reads
+    # not-critical; a present one that resolves still reads pass (the resolution-first
+    # rule), which is informative and does not imply review.
+    assert rows["account_number.gate"] == "not critical for this bill type"
+    assert rows["invoice_number.gate"] == "pass"
 
 
 # --- bucket resolution fail-safe --------------------------------------------------
@@ -194,12 +218,12 @@ def test_commercial_happy_path_has_no_review_gates(harness):
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_active_critical_fields_fail_safe(harness):
     commercial_set = list(field_policy.critical_fields(field_policy.COMMERCIAL))
-    base_set = list(field_policy.BASE_CRITICAL)
+    municipal_set = list(field_policy.critical_fields(field_policy.MUNICIPAL))
 
-    assert harness.active_critical_fields({"policyBucket": "municipal"}) == base_set
+    assert harness.active_critical_fields({"policyBucket": "municipal"}) == municipal_set
     assert harness.active_critical_fields({"policyBucket": "commercial"}) == commercial_set
     # billType is the fallback for older decision JSON without policyBucket.
-    assert harness.active_critical_fields({"billType": "municipal"}) == base_set
+    assert harness.active_critical_fields({"billType": "municipal"}) == municipal_set
     # Missing or unknown bucket info fail-safes to the stricter commercial set.
     assert harness.active_critical_fields({}) == commercial_set
     assert harness.active_critical_fields({"policyBucket": "something-else"}) == commercial_set
