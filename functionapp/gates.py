@@ -231,14 +231,19 @@ def evaluate_b4(
     critical: Tuple[str, ...],
     threshold: float,
     resolutions: Optional[Dict[str, Tuple[Any, float, bool, Optional[str], str]]] = None,
-) -> Tuple[bool, List[str]]:
+) -> Tuple[bool, List[str], List[str]]:
     """
     Review if any critical field for the resolved bucket is missing, empty, or
     below the confidence threshold. The critical set is supplied by the caller
     (field_policy.critical_fields(bucket)), so this gate carries no bucket logic.
+
+    Returns (review, reasons, failed_fields): ``reasons`` are the per-field
+    diagnostics; ``failed_fields`` the failing criticals by final name, in
+    critical-set order, for the reviewer-facing summary (b4_summary).
     """
     review = False
     reasons: List[str] = []
+    failed: List[str] = []
     parsed: Optional[Dict[str, Tuple[Any, Optional[float]]]] = None
     for name in critical:
         # Twin-resolved fields pass when their resolver says so (the raw extract/generate
@@ -259,16 +264,19 @@ def evaluate_b4(
                 reasons.append(
                     f"{extract_key}/{generate_key} did not clear {threshold:.2f} (best {best_conf:.3f})"
                 )
+                failed.append(name)
             else:
                 fmt = field_policy.format_violation_reason(name, value)
                 if fmt is not None:
                     review = True
                     reasons.append(f"{name} must be {fmt}")
+                    failed.append(name)
             continue
         field_data = fields.get(name)
         if field_data is None:
             review = True
             reasons.append(f"{name} is missing")
+            failed.append(name)
             continue
         if not isinstance(field_data, dict):
             continue
@@ -279,18 +287,34 @@ def evaluate_b4(
         if is_empty_value(value):
             review = True
             reasons.append(f"{name} is empty")
+            failed.append(name)
         elif confidence is None:
             review = True
             reasons.append(f"{name} confidence is missing")
+            failed.append(name)
         elif confidence < threshold:
             review = True
             reasons.append(f"{name} confidence {confidence:.3f} < {threshold:.2f}")
+            failed.append(name)
         else:
             format_hint = field_policy.format_violation_reason(name, value)
             if format_hint is not None:
                 review = True
                 reasons.append(f"{name} must be {format_hint}")
-    return review, reasons
+                failed.append(name)
+    return review, reasons, failed
+
+
+def b4_summary(failed_fields: List[str]) -> str:
+    """The single reviewer-facing B4 message: '<field> needs attention', with
+    two fields joined by 'and' and three-plus as 'a, b and c need attention'.
+    Uniform wording for every failure cause (missing/empty/low-confidence/
+    format); the per-field diagnostics live in advisoryFlags."""
+    if not failed_fields:
+        return ""
+    if len(failed_fields) == 1:
+        return f"{failed_fields[0]} needs attention"
+    return f"{', '.join(failed_fields[:-1])} and {failed_fields[-1]} need attention"
 
 
 # --- gate B6 (line-item row confidence, advisory only) -----------------------
@@ -334,10 +358,13 @@ def evaluate(
     full: Dict[str, Any],
     field_threshold: float,
     general_invoice_analyzer_id: str = "generalinvoice",
+    file_name: str = "",
 ) -> Dict[str, Any]:
     """
     Apply the routing gates to a raw Content Understanding result and return a
     JSON-serialisable decision. Priority: B2 -> (no child) -> B4 -> happy path.
+    ``file_name`` is the SharePoint filename from the request; it feeds the
+    municipal invoice-number fallback only.
     """
     contents = full.get("contents", [])
     if not isinstance(contents, list):
@@ -421,7 +448,25 @@ def evaluate(
                     f"(CU twins resolved to {po_value!r})"
                 )
 
-    b4_review, b4_reasons = evaluate_b4(fields, critical, field_threshold, resolutions)
+    # Invoice-number filename fallback: a municipal bill whose twins produced
+    # nothing (both extract and generate empty) takes the SharePoint filename,
+    # extension stripped, as its invoice number. Deterministic like the PO
+    # rescue (source "filename", confidence 1.0). A present-but-low-confidence
+    # value is never overwritten -- that still routes to review -- and with no
+    # usable filename the field fails exactly as before.
+    if field_policy.INVOICE_FINAL in critical:
+        inv_value, _inv_conf, inv_passed, _inv_note, _inv_source = resolutions[field_policy.INVOICE_FINAL]
+        if not inv_passed and is_empty_value(inv_value):
+            inv_default = field_policy.invoice_number_default(file_name)
+            if inv_default is not None:
+                resolutions[field_policy.INVOICE_FINAL] = (inv_default, 1.0, True, None, "filename")
+                write_values[field_policy.INVOICE_FINAL] = inv_default
+                defaulted.append(field_policy.INVOICE_FINAL)
+                advisory.append(
+                    f"invoice_number defaulted from the SharePoint filename: {inv_default}"
+                )
+
+    b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)
     if len(po_candidates) > 1:
         b4_reasons.append(
             "po_or_job_number has multiple 8-digit candidates in OCR text: "
@@ -429,8 +474,12 @@ def evaluate(
         )
 
     if b4_review:
+        # reviewReasons carries ONE reviewer-facing summary naming every failing
+        # field; the per-field diagnostics (confidence values, twin keys, format
+        # hints, PO candidates) go to advisoryFlags so nothing is lost.
         routing_decision = REVIEW_B4_CRITICAL_FIELD
-        review_reasons = [f"B4 {reason}" for reason in b4_reasons]
+        review_reasons = [b4_summary(b4_failed)]
+        advisory.extend(f"B4 {reason}" for reason in b4_reasons)
     else:
         routing_decision = HAPPY_PATH_CANDIDATE
         review_reasons = []

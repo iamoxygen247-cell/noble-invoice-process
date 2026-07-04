@@ -51,7 +51,8 @@ harness, not part of the deployable unit). The offline gate/policy suite is in
 {
   "sourceId": "<SharePoint item UniqueId GUID>",   // required — A1 key / row identity
   "contentBase64": "<base64 of the PDF bytes>",     // required for binary transport
-  "fileName": "invoice1.pdf",                       // optional — content-type hint, provenance
+  "fileName": "invoice1.pdf",                       // optional — content-type hint, provenance,
+                                                    //   municipal invoice-number fallback (ext stripped)
   "sourceFileUrl": "https://.../invoice1.pdf",      // optional — stored on the ledger
   "url": "https://...blob...?sas",                  // optional — ad-hoc test only, instead of contentBase64
   "reprocess": false,                               // optional — bypass gate A1
@@ -84,6 +85,20 @@ Response (HTTP 200 on a normal decision):
 `routingDecision` is one of: `HAPPY_PATH_CANDIDATE`, `REVIEW_B4_CRITICAL_FIELD`,
 `REJECT_B2_OTHER_CATEGORY`, `REVIEW_NO_CHILD_EXTRACTION`. (`REVIEW_B3_HANDWRITTEN_OR_UNKNOWN`
 and `REVIEW_GST_MATH` were retired with the B3/GST gates.)
+
+On a `REVIEW_B4_CRITICAL_FIELD` decision, `reviewReasons` holds a **single
+reviewer-facing summary** naming every failing critical field — e.g.
+`vendor_name and po_or_job_number need attention`. The per-field diagnostics
+(confidence values, which twin failed, format hints) are in `advisoryFlags`
+with a `B4 ` prefix.
+
+Municipal invoice-number fallback: when a municipal bill's invoice-number twins
+both come back empty, the field defaults to `fileName` without its extension.
+The response marks it three ways — `defaultedFields` gains `invoice_number`,
+`resolutions.invoice_number.source` is `"filename"`, and an advisory flag
+records the substituted value. With no usable `fileName` the field fails to
+review exactly as before; a present-but-low-confidence value is never
+overwritten.
 
 When gate A1 short-circuits, the response has `alreadyProcessed: true`,
 `skippedCU: true`, and `routingDecision` is the stored decision (or

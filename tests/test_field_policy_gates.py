@@ -106,8 +106,8 @@ def municipal_fields(**overrides):
     return base
 
 
-def ev(fields, category="general_invoice"):
-    return gates.evaluate(cu_result(fields, category=category), THRESHOLD)
+def ev(fields, category="general_invoice", file_name=""):
+    return gates.evaluate(cu_result(fields, category=category), THRESHOLD, file_name=file_name)
 
 
 # --- field_policy unit checks ------------------------------------------------
@@ -736,9 +736,11 @@ def test_po_ocr_rescue():
     r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
               markdown="Job# 11024580 ... PO 33001022")
     check("two OCR candidates -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
-    check("review reason lists both candidates",
-          any("11024580" in x and "33001022" in x and "multiple" in x for x in r["reviewReasons"]),
-          str(r["reviewReasons"]))
+    check("review summary names the field",
+          r["reviewReasons"] == ["po_or_job_number needs attention"], str(r["reviewReasons"]))
+    check("advisory lists both candidates",
+          any("11024580" in a and "33001022" in a and "multiple" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
     check("no value written on ambiguity", r["writeValues"]["po_or_job_number"] in (None, ""),
           str(r["writeValues"].get("po_or_job_number")))
 
@@ -746,9 +748,11 @@ def test_po_ocr_rescue():
     r = ev_md(commercial_fields(po_or_job_number_extract=fstr("", None)),
               markdown="No purchase order on this invoice. Account 99887766.")
     check("no OCR candidate -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
-    check("review reason is the twin-clear failure",
-          any("po_or_job_number_extract/po_or_job_number_generate" in x for x in r["reviewReasons"]),
-          str(r["reviewReasons"]))
+    check("review summary names the field",
+          r["reviewReasons"] == ["po_or_job_number needs attention"], str(r["reviewReasons"]))
+    check("twin-clear failure detail moved to advisoryFlags",
+          any("po_or_job_number_extract/po_or_job_number_generate" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
 
     # 0008 shape: CU confidently returns the 9-digit label artifact; the true
     # 8-digit value is elsewhere in the text -> rescue overrides the bad value.
@@ -787,9 +791,11 @@ def test_account_number_twin():
     r = ev(fields)
     check("municipal missing account -> review",
           r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
-    check("review reason names the account twins",
-          any("account_number_extract/account_number_generate" in x for x in r["reviewReasons"]),
-          str(r["reviewReasons"]))
+    check("review summary names account_number",
+          r["reviewReasons"] == ["account_number needs attention"], str(r["reviewReasons"]))
+    check("account twin diagnostic moved to advisoryFlags",
+          any("account_number_extract/account_number_generate" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
 
     # municipal confident extract -> happy; printed form (dashes kept) written; source = extract.
     r = ev(municipal_fields(account_number_extract=fstr("12345-001", 0.95)))
@@ -865,9 +871,11 @@ def test_invoice_number_twin():
     r = ev(fields)
     check("municipal missing invoice number -> review",
           r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
-    check("review reason names the invoice twins",
-          any("invoice_number_extract/invoice_number_generate" in x for x in r["reviewReasons"]),
-          str(r["reviewReasons"]))
+    check("review summary names invoice_number",
+          r["reviewReasons"] == ["invoice_number needs attention"], str(r["reviewReasons"]))
+    check("invoice twin diagnostic moved to advisoryFlags",
+          any("invoice_number_extract/invoice_number_generate" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
 
     # commercial missing invoice number -> still happy (optional for commercial).
     fields = commercial_fields()
@@ -917,6 +925,116 @@ def test_invoice_number_twin():
           r["writeValues"]["invoice_number"] == "INV-9944", str(r["writeValues"].get("invoice_number")))
 
 
+def test_invoice_number_filename_fallback():
+    print("\n[gates: invoice_number filename fallback -- municipal only, twins empty]")
+
+    # municipal, both twins empty, filename sent -> defaulted from the filename stem.
+    fields = municipal_fields(invoice_number_extract=fstr("", None))
+    r = ev(fields, file_name="BL 2026-0417.pdf")
+    check("municipal empty twins + filename -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("stem written (extension stripped)",
+          r["writeValues"]["invoice_number"] == "BL 2026-0417", str(r["writeValues"].get("invoice_number")))
+    check("resolution source = filename",
+          r["resolutions"]["invoice_number"]["source"] == "filename", str(r["resolutions"].get("invoice_number")))
+    check("defaultedFields records the default",
+          "invoice_number" in r["defaultedFields"], str(r["defaultedFields"]))
+    check("fallback advisory raised",
+          any("invoice_number defaulted from the SharePoint filename: BL 2026-0417" in a
+              for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("fields.invoice_number carries the defaulted value",
+          r["fields"]["invoice_number"]["value"] == "BL 2026-0417", str(r["fields"].get("invoice_number")))
+
+    # twins absent entirely (not just empty) -> same fallback.
+    fields = municipal_fields()
+    del fields["invoice_number_extract"]
+    r = ev(fields, file_name="utility-bill.pdf")
+    check("municipal absent twins + filename -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("absent twins write the stem", r["writeValues"]["invoice_number"] == "utility-bill",
+          str(r["writeValues"].get("invoice_number")))
+
+    # no filename -> review exactly as before the fallback existed.
+    r = ev(municipal_fields(invoice_number_extract=fstr("", None)))
+    check("municipal empty twins, no filename -> review (unchanged)",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("no filename -> nothing defaulted", "invoice_number" not in r["defaultedFields"],
+          str(r["defaultedFields"]))
+
+    # a present-but-low-confidence value is never overwritten by the filename.
+    r = ev(municipal_fields(invoice_number_extract=fstr("BL-1234", 0.40)),
+           file_name="something-else.pdf")
+    check("low-conf present value + filename -> still review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("present value not overwritten", r["writeValues"]["invoice_number"] == "BL-1234",
+          str(r["writeValues"].get("invoice_number")))
+    check("no fallback advisory when a value is present",
+          not any("defaulted from the SharePoint filename" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # commercial: invoice_number is not critical -> fallback never fires.
+    fields = commercial_fields()
+    del fields["invoice_number_extract"]
+    r = ev(fields, file_name="commercial-invoice.pdf")
+    check("commercial empty twins + filename -> happy (not critical)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("commercial invoice_number stays empty (municipal-only fallback)",
+          r["writeValues"].get("invoice_number") in (None, ""), str(r["writeValues"].get("invoice_number")))
+    check("commercial -> no fallback advisory",
+          not any("defaulted from the SharePoint filename" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # helper: stem stripping and blanks.
+    default = field_policy.invoice_number_default
+    check("stem strips the extension", default("BL 2026-0417.pdf") == "BL 2026-0417")
+    check("multi-dot name keeps inner dots", default("bill.2026.pdf") == "bill.2026")
+    check("no extension passes through", default("BL-2026") == "BL-2026")
+    check("whitespace stripped", default("  invoice1.pdf  ") == "invoice1")
+    check("blank filename -> None", default("   ") is None)
+    check("None filename -> None", default(None) is None)
+
+
+def test_b4_review_summary():
+    print("\n[gates: B4 reviewReasons summary -- one message, diagnostics in advisoryFlags]")
+
+    # one failing field -> "<field> needs attention".
+    r = ev(commercial_fields(vendor_name_extract=fstr("Bob", 0.60)))
+    check("single failure summary", r["reviewReasons"] == ["vendor_name needs attention"],
+          str(r["reviewReasons"]))
+    check("diagnostic detail moved to advisoryFlags",
+          any(a.startswith("B4 ") and "vendor_name" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # two failing fields -> "a and b need attention" (critical-set order).
+    r = ev(commercial_fields(vendor_name_extract=fstr("Bob", 0.60),
+                             gst_amount_extract=fnum(5.0, 0.40)))
+    check("two-failure summary", r["reviewReasons"] == ["vendor_name and gst_amount need attention"],
+          str(r["reviewReasons"]))
+
+    # three failing fields -> "a, b and c need attention".
+    r = ev(commercial_fields(vendor_name_extract=fstr("Bob", 0.60),
+                             service_address_extract=fstr("123 Main St", 0.50),
+                             gst_amount_extract=fnum(5.0, 0.40)))
+    check("three-failure summary",
+          r["reviewReasons"] == ["vendor_name, service_address and gst_amount need attention"],
+          str(r["reviewReasons"]))
+
+    # happy path unchanged: no reasons, no B4 diagnostics.
+    r = ev(commercial_fields())
+    check("happy path has no review reasons", r["reviewReasons"] == [], str(r["reviewReasons"]))
+    check("happy path has no B4 advisories",
+          not any(a.startswith("B4 ") for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # grammar helper directly.
+    check("summary of one", gates.b4_summary(["vendor_name"]) == "vendor_name needs attention")
+    check("summary of two",
+          gates.b4_summary(["vendor_name", "po_or_job_number"])
+          == "vendor_name and po_or_job_number need attention")
+    check("summary of three", gates.b4_summary(["a", "b", "c"]) == "a, b and c need attention")
+    check("summary of none", gates.b4_summary([]) == "")
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
@@ -932,6 +1050,8 @@ def main():
     test_amount_and_po_twins()
     test_account_number_twin()
     test_invoice_number_twin()
+    test_invoice_number_filename_fallback()
+    test_b4_review_summary()
     test_po_ocr_rescue()
 
     print("\n" + "=" * 60)

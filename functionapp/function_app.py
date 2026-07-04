@@ -30,7 +30,8 @@ Request body (JSON):
   {
     "sourceId":      "<SharePoint item UniqueId GUID>",   # required (A1 key / identity)
     "contentBase64": "<base64 of the PDF bytes>",          # required for binary transport
-    "fileName":      "invoice1.pdf",                       # optional (content-type hint)
+    "fileName":      "invoice1.pdf",                       # optional (content-type hint; municipal
+                                                           #  invoice-number fallback, ext stripped)
     "sourceFileUrl": "https://.../invoice1.pdf",           # optional (stored on the ledger)
     "url":           "https://...blob...?sas",             # optional, ad-hoc test only
     "reprocess":     false,                                # optional, bypass gate A1
@@ -238,7 +239,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
                            "error": f"Content Understanding analyze failed: {exc}"})
 
     # --- Gates / decision ----------------------------------------------------
-    result = gates.evaluate(full, field_threshold, general_analyzer_id)
+    result = gates.evaluate(full, field_threshold, general_analyzer_id, file_name=file_name)
 
     # --- Ledger: Extracted + decision + bill-type/policy stamps ---------------
     ledger_write_error: Optional[str] = None

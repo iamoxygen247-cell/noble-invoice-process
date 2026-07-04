@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice Number Filename Fallback + Review Summary — Design Review</title>
+<style>
+  :root {
+    --ink: #1a2332;
+    --muted: #5a6a7e;
+    --line: #d8dee7;
+    --accent: #1f5aa8;
+    --band: #eef3f9;
+    --warn-bg: #fdf6e3;
+    --warn-edge: #c9a227;
+    --code-bg: #f4f6f9;
+    --good-bg: #f2f8f0;
+    --good-edge: #4e8f5a;
+    --bad-bg: #fbf2f1;
+    --bad-edge: #b3564e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--ink);
+    margin: 0;
+    background: #fff;
+    line-height: 1.55;
+  }
+  .page { max-width: 960px; margin: 0 auto; padding: 32px 28px 80px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.25rem; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--line); color: var(--accent); }
+  h3 { font-size: 1.02rem; margin: 24px 0 8px; }
+  p, li { font-size: 0.95rem; }
+  .meta { color: var(--muted); font-size: 0.88rem; margin-bottom: 18px; }
+  .status {
+    background: var(--warn-bg);
+    border-left: 4px solid var(--warn-edge);
+    padding: 10px 14px;
+    font-size: 0.92rem;
+    margin: 18px 0 26px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 18px; font-size: 0.9rem; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--band); font-weight: 600; }
+  code, .mono {
+    font-family: Consolas, "Cascadia Code", monospace;
+    font-size: 0.86em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .pill { display: inline-block; background: var(--band); color: var(--accent); border-radius: 10px; padding: 1px 10px; font-size: 0.78rem; font-weight: 600; margin-right: 6px; }
+  .callout { background: var(--band); border-left: 4px solid var(--accent); padding: 10px 14px; margin: 14px 0; font-size: 0.92rem; }
+  .good { background: var(--good-bg); border-left: 4px solid var(--good-edge); padding: 10px 14px; margin: 14px 0; font-size: 0.92rem; }
+  .verdict-yes { color: var(--good-edge); font-weight: 600; }
+  .verdict-no { color: var(--bad-edge); font-weight: 600; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .small { font-size: 0.85rem; color: var(--muted); }
+  .before, .after { border-radius: 6px; }
+  .before { border-left: 4px solid var(--bad-edge); }
+  .after { border-left: 4px solid var(--good-edge); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Invoice Number Filename Fallback + Review-Reasons Summary — Design Review</h1>
+<div class="meta">Noble Homes Invoice Extractor &middot; <code>noble-invoice-process</code> &middot; 2026-07-03 &middot; Prepared for review before implementation</div>
+
+<div class="status"><strong>Status: awaiting sign-off.</strong> No code has been changed. This document covers two new requirements and one confirmed existing behavior. On approval, implementation proceeds in the order in §7; the offline pytest suite gates every step. No analyzer change and no Power Automate change is required.</div>
+
+<h2>1 &middot; The requirements</h2>
+<table>
+  <tr><th style="width:190px">Requirement</th><th>Behavior</th></tr>
+  <tr>
+    <td><strong>R1 — filename fallback</strong></td>
+    <td>Municipal bills often carry no printed invoice number. <code>invoice_number</code> is critical for the municipal bucket, so today every such bill routes to <code>REVIEW_B4_CRITICAL_FIELD</code>. New rule: when the invoice number is truly empty on a municipal bill, default it to the <strong>SharePoint filename (without extension)</strong> and let the bill proceed.</td>
+  </tr>
+  <tr>
+    <td><strong>R2 — review summary</strong></td>
+    <td>When a bill fails the critical-field gate (B4), <code>reviewReasons</code> must carry <strong>one combined, human-readable message</strong> naming every failing field:<br>
+    1 field → <code>vendor_name needs attention</code><br>
+    2 fields → <code>vendor_name and po_or_job_number need attention</code><br>
+    3+ fields → <code>vendor_name, po_or_job_number and gst_amount need attention</code></td>
+  </tr>
+  <tr>
+    <td><strong>Confirmed — agreement rule</strong></td>
+    <td><em>No change needed.</em> When both the extract and generate twins are below the confidence threshold but their values match, the field <strong>already passes</strong> (source <code>"agreement"</code>, extract's literal value written). Proven by an existing test: extract <code>"INV-2201"</code> @ 0.50 + generate <code>"inv 2201"</code> @ 0.60 → passes, writes <code>"INV-2201"</code>. The filename fallback never competes with it, because the fallback fires only when <em>both</em> twins are empty.</td>
+  </tr>
+</table>
+
+<h2>2 &middot; R1 options considered</h2>
+
+<table>
+  <tr><th style="width:210px">Option</th><th>Assessment</th><th style="width:90px">Verdict</th></tr>
+  <tr>
+    <td><strong>A — Function-side, reuse the existing <code>fileName</code> field</strong></td>
+    <td>The filename <strong>already reaches the function</strong>: <code>fileName</code> is an existing optional request field, the Power Automate flow already sends the SharePoint filename, and both test scripts (<code>local_test.py</code>, <code>verify_fn.py</code>) already send the real PDF filename. No contract change, no caller breaks, no dummy test value needed. Routing, the ledger audit trail (<code>DefaultedFields</code>), and the offline unit tests all stay consistent. There is a proven in-function pattern to copy: the <strong>PO rescue</strong> (fill a failed critical field from another deterministic source, mark its <code>source</code>, add an advisory).</td>
+    <td class="verdict-yes">CHOSEN</td>
+  </tr>
+  <tr>
+    <td><strong>B — New <em>required</em> parameter <code>default_invoice_number</code></strong> (original proposal)</td>
+    <td>Works, but duplicates <code>fileName</code> (in production both would carry the same SharePoint filename), and making it <em>required</em> breaks every existing caller until updated: the deployed Power Automate flow, both test scripts, and the hardening tests. Internal testing would need the <code>"INTERNAL INVOICE #"</code> dummy value. All of that buys nothing over option A.</td>
+    <td class="verdict-no">rejected</td>
+  </tr>
+  <tr>
+    <td><strong>C — Handle it in Power Automate</strong></td>
+    <td>The flow could substitute the filename when <code>writeValues.invoice_number</code> is empty — but the function has <em>already</em> routed the bill to <code>REVIEW_B4_CRITICAL_FIELD</code> before the flow sees the result. The bill would still land in human review unless the flow also overrode the routing decision, which moves field policy out of <code>field_policy.py</code>/<code>gates.py</code> where this project deliberately centralizes it. PA expressions are also unversioned and untestable by the offline suite, and the ledger's <code>DefaultedFields</code> audit would not record the substitution.</td>
+    <td class="verdict-no">rejected</td>
+  </tr>
+  <tr>
+    <td><strong>D — Analyzer prompt change</strong></td>
+    <td>Not viable: Content Understanding only sees the document bytes. The filename is not in the document, so no prompt can produce it.</td>
+    <td class="verdict-no">not viable</td>
+  </tr>
+</table>
+
+<div class="callout"><strong>Bottom line:</strong> the new-parameter proposal is superseded because the data it would carry is already in the request. Option A is a small, surgical change entirely inside the decision engine.</div>
+
+<h2>3 &middot; Confirmed design decisions</h2>
+
+<h3>R1 — filename fallback</h3>
+<ul>
+  <li><strong>Trigger — only when truly empty:</strong> fires only when <em>both</em> <code>invoice_number_extract</code> and <code>invoice_number_generate</code> produced nothing. A present-but-low-confidence value still routes to review — the filename never overwrites a real candidate a human could confirm.</li>
+  <li><strong>Value — filename without extension:</strong> <code>2026-water-bill.pdf</code> → <code>2026-water-bill</code>. Punctuation and casing kept as-is.</li>
+  <li><strong>Scope — municipal only:</strong> fires only when <code>invoice_number</code> is in the bucket's critical set (i.e. the municipal bucket), mirroring the PO-rescue pattern. Commercial bills are unchanged (the field is informational there).</li>
+  <li><strong>Missing filename — graceful no-op:</strong> if <code>fileName</code> is absent or blank (e.g. the ad-hoc <code>url</code> transport), behavior is exactly today's (review). No error, no new required field.</li>
+  <li><strong>Fully audited:</strong> the response marks it three ways — <code>resolutions.invoice_number.source = "filename"</code>, <code>defaultedFields</code> gains <code>"invoice_number"</code> (persisted to the ledger's existing <code>DefaultedFields</code> column), and an advisory flag records the substituted value. Confidence is reported as 1.0, same rationale as the PO rescue: the value is deterministic, not model output.</li>
+</ul>
+
+<h3>R2 — review-reasons summary</h3>
+<ul>
+  <li><strong>Replace, not append:</strong> on a B4 failure, <code>reviewReasons</code> contains exactly one message — the combined summary. The current per-field diagnostics (confidence values, which twin failed, format hints, the multi-PO-candidate note) <strong>move to <code>advisoryFlags</code></strong>, so the result JSON keeps full debugging detail.</li>
+  <li><strong>Uniform wording:</strong> <code>needs attention</code> for every failure cause — absent, empty, low confidence, or format violation. (E.g. a <code>vendor_name</code> present at 0.65 confidence reads <code>vendor_name needs attention</code>.)</li>
+  <li><strong>Field naming:</strong> twin fields appear by their final name (<code>invoice_number</code>, never <code>invoice_number_extract/invoice_number_generate</code>), listed in critical-set order.</li>
+  <li><strong>Grammar:</strong> 1 field → <code>X needs attention</code>; 2 → <code>X and Y need attention</code>; 3+ → <code>X, Y and Z need attention</code>.</li>
+  <li><strong>Scope — B4 only:</strong> <code>REJECT_B2_OTHER_CATEGORY</code>, <code>REVIEW_NO_CHILD_EXTRACTION</code>, and gate-A1 short-circuit messages keep their current wording (they are not field failures).</li>
+</ul>
+
+<h2>4 &middot; R1 behavior matrix</h2>
+<table>
+  <tr><th>Scenario (municipal bill)</th><th>Today</th><th>After this change</th></tr>
+  <tr>
+    <td>Both invoice-number twins empty, <code>fileName = "BL 2026-0417.pdf"</code></td>
+    <td>Review (<code>invoice_number</code> fails B4)</td>
+    <td><strong>Auto-write candidate</strong> — <code>invoice_number = "BL 2026-0417"</code>, source <code>filename</code>, listed in <code>defaultedFields</code> (assuming the other criticals pass)</td>
+  </tr>
+  <tr>
+    <td>Both twins empty, no <code>fileName</code> sent</td>
+    <td>Review</td>
+    <td>Review (unchanged)</td>
+  </tr>
+  <tr>
+    <td>Extract present but below threshold (e.g. <code>"BL-1234"</code> @ 0.55, generate disagrees or empty)</td>
+    <td>Review</td>
+    <td>Review (unchanged — a real candidate is never overwritten by the filename)</td>
+  </tr>
+  <tr>
+    <td>Both twins below threshold but values match</td>
+    <td>Passes (agreement rule)</td>
+    <td>Passes (unchanged — fallback never fires when a twin has a value)</td>
+  </tr>
+  <tr>
+    <td>Commercial bill, twins empty, <code>fileName</code> sent</td>
+    <td><code>invoice_number</code> written empty, no review (not critical)</td>
+    <td>Identical (fallback is municipal-only)</td>
+  </tr>
+</table>
+
+<h2>5 &middot; Before / after response examples</h2>
+
+<h3>5a &middot; Municipal bill with no printed invoice number (<code>fileName: "BL 2026-0417.pdf"</code>)</h3>
+<pre class="before"><code>// BEFORE — routed to review
+"routingDecision": "REVIEW_B4_CRITICAL_FIELD",
+"reviewReasons": [
+  "B4 invoice_number_extract/invoice_number_generate did not clear 0.73 (best 0.000)"
+],
+"writeValues": { "invoice_number": null, ... },
+"defaultedFields": []</code></pre>
+<pre class="after"><code>// AFTER — proceeds, fully audited
+"routingDecision": "HAPPY_PATH_CANDIDATE",
+"reviewReasons": [],
+"advisoryFlags": [
+  "invoice_number defaulted from the SharePoint filename: BL 2026-0417"
+],
+"fields":      { "invoice_number": { "value": "BL 2026-0417", "confidence": 1.0 }, ... },
+"resolutions": { "invoice_number": { "passed": true, "source": "filename" }, ... },
+"writeValues": { "invoice_number": "BL 2026-0417", ... },
+"defaultedFields": ["invoice_number"]     // → ledger DefaultedFields column</code></pre>
+
+<h3>5b &middot; Commercial bill failing two critical fields</h3>
+<pre class="before"><code>// BEFORE — one detailed reason per failure
+"reviewReasons": [
+  "B4 vendor_name_extract/vendor_name_generate did not clear 0.73 (best 0.610)",
+  "B4 po_or_job_number must be exactly 8 digits starting with 110 or 330"
+]</code></pre>
+<pre class="after"><code>// AFTER — one reviewer-facing summary; diagnostics preserved in advisoryFlags
+"reviewReasons": [
+  "vendor_name and po_or_job_number need attention"
+],
+"advisoryFlags": [
+  "B4 vendor_name_extract/vendor_name_generate did not clear 0.73 (best 0.610)",
+  "B4 po_or_job_number must be exactly 8 digits starting with 110 or 330"
+]</code></pre>
+
+<h2>6 &middot; Why no other part of the system changes</h2>
+<ul>
+  <li><span class="pill">Request contract</span> Untouched. <code>fileName</code> stays optional; existing callers keep working. The Power Automate flow needs <strong>no change</strong> — it already sends <code>fileName</code>.</li>
+  <li><span class="pill">Test scripts</span> <code>scripts/local_test.py</code> and <code>scripts/verify_fn.py</code> need <strong>zero edits</strong> — they already send the real PDF filename, and their scorecards already print <code>invoice_number.source</code> and join <code>reviewReasons</code> generically. The internal-test fallback value is simply the sample PDF's stem (e.g. <code>invoice1</code>); no <code>"INTERNAL INVOICE #"</code> dummy is needed.</li>
+  <li><span class="pill">Ledger</span> Untouched — <code>DefaultedFields</code> is already persisted on every Extracted write.</li>
+  <li><span class="pill">Analyzer</span> Untouched — no prompt or schema change, no re-provisioning.</li>
+</ul>
+
+<h2>7 &middot; Implementation steps (on approval)</h2>
+<table>
+  <tr><th style="width:70px">Step</th><th style="width:250px">File</th><th>Change</th></tr>
+  <tr><td>1</td><td><code>functionapp/field_policy.py</code></td><td>New pure helper <code>invoice_number_default(file_name)</code>: strip whitespace, <code>None</code> for blank, else the filename stem. Rules live in this module by design.</td></tr>
+  <tr><td>2</td><td><code>functionapp/gates.py</code></td><td><code>evaluate(...)</code> gains optional <code>file_name=""</code>. New fallback block in the B4 section (directly after the PO rescue, same shape): set resolution <code>(value, 1.0, passed, source "filename")</code>, update <code>writeValues</code>, append to <code>defaultedFields</code>, add the advisory.</td></tr>
+  <tr><td>3</td><td><code>functionapp/gates.py</code></td><td>R2: <code>evaluate_b4</code> also returns the failing final field names; new <code>b4_summary(fields)</code> grammar helper; <code>evaluate</code> puts the summary in <code>reviewReasons</code> and moves the detailed <code>B4 ...</code> strings (and the multi-PO-candidate note) into <code>advisoryFlags</code>.</td></tr>
+  <tr><td>4</td><td><code>functionapp/function_app.py</code></td><td>Pass <code>file_name</code> into <code>gates.evaluate</code>; update the docstring's <code>fileName</code> annotation.</td></tr>
+  <tr><td>5</td><td><code>tests/test_field_policy_gates.py</code></td><td>New tests for every row of the §4 matrix plus unit checks of <code>invoice_number_default</code> and <code>b4_summary</code>; update existing <code>reviewReasons</code> assertions to the new summary + <code>advisoryFlags</code> split.</td></tr>
+  <tr><td>6</td><td><code>functionapp/README.md</code>, <code>docs/power-automate-design.html</code></td><td>Document the <code>fileName</code> fallback role, the new <code>reviewReasons</code> format, and that per-field diagnostics now live in <code>advisoryFlags</code>.</td></tr>
+</table>
+
+<h2>8 &middot; Verification plan</h2>
+<ul>
+  <li><strong>Offline suite:</strong> <code>.\.venv\Scripts\python.exe -m pytest</code> — all existing tests (with updated reason assertions) plus the new fallback/summary tests pass.</li>
+  <li><strong>Local end-to-end:</strong> <code>func start</code>, then post a municipal sample that has no printed invoice number via <code>scripts/local_test.py</code> → scorecard shows <code>invoice_number.gate = pass</code>, <code>.source = filename</code>, value = filename stem; <code>defaultedFields</code> includes <code>invoice_number</code>.</li>
+  <li><strong>Review format:</strong> post a sample known to fail ≥2 critical fields → <code>reviewReasons</code> is exactly <code>["&lt;a&gt; and &lt;b&gt; need attention"]</code>, diagnostics present in <code>advisoryFlags</code>.</li>
+  <li><strong>Regression:</strong> one commercial sample and one municipal sample <em>with</em> a printed invoice number → decisions and written values byte-identical to before.</li>
+  <li><strong>Deployed:</strong> after <code>func ... publish --build remote</code>, re-check with <code>scripts/verify_fn.py</code>.</li>
+</ul>
+
+<div class="good"><strong>Ready for sign-off.</strong> If the design above is approved as written, implementation is steps 1–6 in §7, gated by the verification plan in §8. Any change requested to a decision in §3 only touches this document first.</div>
+
+</div>
+</body>
+</html>

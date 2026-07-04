@@ -263,6 +263,15 @@
         <td><code>HAPPY_PATH_CANDIDATE</code> &middot; <code>REVIEW_B4_CRITICAL_FIELD</code> &middot;
             <code>REJECT_B2_OTHER_CATEGORY</code> &middot; <code>REVIEW_NO_CHILD_EXTRACTION</code>
             (plus <code>PROCESSING_IN_PROGRESS</code> / a prior decision echoed on an A1 skip).</td></tr>
+    <tr><td><code>reviewReasons</code> on <code>REVIEW_B4_CRITICAL_FIELD</code></td>
+        <td>One reviewer-facing summary naming every failing critical field, e.g.
+            <code>vendor_name and po_or_job_number need attention</code> &mdash; use it directly as the
+            review-item text. Per-field diagnostics (confidence values, twin detail) are in
+            <code>advisoryFlags</code>.</td></tr>
+    <tr><td><code>defaultedFields</code> contains <code>invoice_number</code></td>
+        <td>A municipal bill carried no invoice number, so the Function defaulted it from
+            <code>fileName</code> (extension stripped). Keep sending <code>fileName</code> &mdash; it feeds this
+            fallback, not just the content-type hint.</td></tr>
   </table>
 
   <h2><span class="num">4</span>What I need from you before building</h2>
@@ -477,7 +486,9 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
       <ul>
         <li><code>sourceId</code> = <span class="field">Identifier</span> (trigger) &mdash; the stable idempotency key</li>
         <li><code>contentBase64</code> = <span class="field">Outputs</span> of the <code>contentBase64</code> Compose</li>
-        <li><code>fileName</code> = <span class="field">File name with extension</span> (trigger)</li>
+        <li><code>fileName</code> = <span class="field">File name with extension</span> (trigger) &mdash; required in
+            practice: a municipal bill with no printed invoice number gets its invoice number defaulted from this
+            filename (extension stripped)</li>
         <li><code>sourceFileUrl</code> = <span class="field">Link to item</span> (trigger)</li>
       </ul>
     </li>

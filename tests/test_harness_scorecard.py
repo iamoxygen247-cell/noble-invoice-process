@@ -153,9 +153,9 @@ def test_municipal_review_bill_gates_match_review_reasons(harness):
         )
     )
     assert decision["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD
-    assert len(decision["reviewReasons"]) == 2
-    assert any("vendor_name" in r for r in decision["reviewReasons"])
-    assert any("service_address" in r for r in decision["reviewReasons"])
+    # One reviewer-facing summary naming every failing field; the per-field
+    # diagnostics live in advisoryFlags.
+    assert decision["reviewReasons"] == ["vendor_name and service_address need attention"]
 
     pairs, rows = scorecard_rows(harness, decision)
     assert review_gate_fields(pairs) == {"vendor_name", "service_address"}, (

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
+from pathlib import PurePath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -201,6 +202,19 @@ def find_po_candidates(text: Optional[str]) -> List[str]:
                 seen.add(digits)
                 out.append(digits)
     return out
+
+
+def invoice_number_default(file_name: Any) -> Optional[str]:
+    """The fallback invoice number for a municipal bill whose twins produced
+    nothing: the SharePoint filename without its extension, punctuation and
+    casing kept as uploaded. Returns None when no usable filename was provided,
+    so the caller leaves the field failing (review) exactly as before."""
+    if file_name is None:
+        return None
+    text = str(file_name).strip()
+    if not text:
+        return None
+    return PurePath(text).stem or None
 
 
 # --- date handling -----------------------------------------------------------
