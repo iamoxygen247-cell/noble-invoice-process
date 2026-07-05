@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Azure Naming Convention &amp; Remediation Plan</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  .bad { color:#b42318; font-weight:600; }
+  .good { color:#1c6b3f; font-weight:600; }
+  ul { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  ol { margin:10px 0 10px 22px; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Azure Naming Convention &amp; Remediation Plan</h1>
+  <p class="sub">Noble Invoice Processor · one standard, the current-state audit, and how (and how far) to correct dev</p>
+
+  <p>
+    <span class="tag">workload token: invoice</span>
+    <span class="tag">pattern: &lt;type&gt;-invoice-&lt;env&gt;-&lt;region&gt;</span>
+    <span class="tag">style: Microsoft CAF</span>
+    <span class="tag">audit date: 2026-07-05 (live, via az)</span>
+  </p>
+
+  <div class="note">
+    <strong>The one fact that shapes everything here:</strong> Azure resources <strong>cannot be renamed</strong>.
+    The only renameable thing in the current estate is a <em>subscription display name</em>. Every other
+    "rename" is really <em>create-new → migrate → delete-old</em>. That is why this plan (a) applies the
+    convention perfectly to the <strong>new production environment</strong> (which starts from scratch), and
+    (b) treats correcting <strong>dev</strong> as a phased, mostly optional cleanup.
+  </div>
+
+  <h2><span class="num">1</span>The standard</h2>
+
+  <h3>Pattern</h3>
+  <pre><code>&lt;type&gt;-&lt;workload&gt;-&lt;env&gt;-&lt;region&gt;[-&lt;instance&gt;]
+
+  type      CAF resource-type abbreviation (table below)
+  workload  invoice            (fixed — one canonical token, never "invoiceprocess",
+                                "invoice-processing", "content-understanding", …)
+  env       dev | prod
+  region    westus             (spelled out, matching current usage)
+  instance  -01, -02 …         only when a second instance of the same type exists
+
+  Storage accounts (no hyphens allowed, ≤ 24 chars, lowercase alphanumeric):
+  st&lt;workload&gt;[&lt;qualifier&gt;]&lt;env&gt;&lt;region&gt;      e.g. stinvoiceprodwestus, stinvoicefuncprodwestus</code></pre>
+
+  <h3>Resource-type abbreviations (CAF)</h3>
+  <table>
+    <tr><th>Type</th><th>Prefix</th><th>prod example</th><th>dev example</th></tr>
+    <tr><td>Resource group</td><td><code>rg-</code></td><td><code>rg-invoice-prod-westus</code></td><td><code>rg-invoice-dev-westus</code></td></tr>
+    <tr><td>Function App</td><td><code>func-</code></td><td><code>func-invoice-prod-westus</code></td><td><code>func-invoice-dev-westus</code></td></tr>
+    <tr><td>App Service plan</td><td><code>asp-</code></td><td colspan="2">platform-managed on Flex Consumption — see the exemption below</td></tr>
+    <tr><td>Storage (data/ledger)</td><td><code>st</code></td><td><code>stinvoiceprodwestus</code> (19/24)</td><td><code>stinvoicedevwestus</code> (18/24)</td></tr>
+    <tr><td>Storage (Function runtime)</td><td><code>st</code> + <code>func</code></td><td><code>stinvoicefuncprodwestus</code> (23/24)</td><td><code>stinvoicefuncdevwestus</code> (22/24)</td></tr>
+    <tr><td>AI Foundry / AI Services (CU)</td><td><code>aif-</code></td><td><code>aif-invoice-prod-westus</code></td><td><code>aif-invoice-dev-westus</code></td></tr>
+    <tr><td>User-assigned identity</td><td><code>id-</code></td><td><code>id-invoice-prod-westus</code></td><td><code>id-invoice-dev-westus</code></td></tr>
+    <tr><td>Application Insights</td><td><code>appi-</code></td><td><code>appi-invoice-prod-westus</code></td><td><code>appi-invoice-dev-westus</code></td></tr>
+    <tr><td>Log Analytics workspace</td><td><code>log-</code></td><td><code>log-invoice-prod-westus</code></td><td><code>log-invoice-dev-westus</code></td></tr>
+    <tr><td>Key Vault (if ever needed)</td><td><code>kv-</code></td><td><code>kv-invoice-prod-westus</code> (22/24)</td><td><code>kv-invoice-dev-westus</code></td></tr>
+  </table>
+
+  <h3>Rules beyond resource names</h3>
+  <table>
+    <tr><th>Item</th><th>Rule</th><th>Example</th></tr>
+    <tr><td>Subscription display name</td><td><code>&lt;env&gt;-Invoice Processing</code> (display names <em>are</em> renameable)</td>
+        <td><code>prod-Invoice Processing</code> · <code>dev-Invoice Processing</code></td></tr>
+    <tr><td>Tags (every resource)</td><td><code>env</code>, <code>workload=invoice</code>, <code>owner</code></td>
+        <td><code>env=prod workload=invoice owner=george</code></td></tr>
+    <tr><td>Data-plane: tables</td><td>PascalCase, <strong>identical across environments</strong> (code carries the name)</td>
+        <td><code>InvoiceExtractProcessLog</code></td></tr>
+    <tr><td>Data-plane: CU analyzers</td><td>lowercase, no separators, identical across environments</td>
+        <td><code>invoicerouter</code>, <code>generalinvoice</code></td></tr>
+    <tr><td>Data-plane: blob containers (future)</td><td>lowercase-hyphen, identical across environments</td>
+        <td><code>property-snapshot</code></td></tr>
+    <tr><td>Power Automate artifacts</td><td>Product name + explicit env suffix (environment-scoped anyway)</td>
+        <td><code>Noble Invoice Function (prod)</code>, flow <code>Noble Invoice – Process (prod)</code></td></tr>
+  </table>
+
+  <div class="note">
+    <strong>Exemption — platform-generated names.</strong> The Flex Consumption <em>plan</em> is auto-created by
+    <code>az functionapp create</code> with a generated name, and the <code>Application Insights Smart
+    Detection</code> action group is created by the platform. These are not hand-managed and are exempt.
+    Everything a human creates by name must follow the standard.
+  </div>
+
+  <h2><span class="num">2</span>Current-state audit (dev, live-verified 2026-07-05)</h2>
+  <p>The estate mixes <span class="bad">five renderings of the workload</span>
+     (<code>content-understanding</code>, <code>invoiceprocess</code>, <code>invoice-process</code>,
+     <code>invoice-processing</code>, <code>invoice</code>), inconsistent env/region suffixes, and two
+     portal-generated names.</p>
+  <table>
+    <tr><th>Current name</th><th>What's wrong</th><th>Target name</th><th>Renameable?</th><th>Disposition</th></tr>
+    <tr><td><code>dev-Document Intelligence</code> (subscription)</td>
+        <td>Product is Content Understanding, workload is invoice — name says neither</td>
+        <td><code>dev-Invoice Processing</code></td><td><span class="good">YES</span> (display name)</td>
+        <td><strong>Rename now</strong> (Phase 0)</td></tr>
+    <tr><td><code>rg-content-understanding-dev</code></td>
+        <td>Workload token names the AI service, not the workload; no region</td>
+        <td><code>rg-invoice-dev-westus</code></td><td>No</td>
+        <td>Recreate (Phase 2, optional)</td></tr>
+    <tr><td><code>func-invoiceprocess-westus</code></td>
+        <td>Region suffix but <em>no env</em>; fused workload token</td>
+        <td><code>func-invoice-dev-westus</code></td><td>No</td>
+        <td>Recreate (Phase 2, optional)</td></tr>
+    <tr><td><code>func-invoiceprocess-westus</code> (App Insights, same name)</td>
+        <td>Portal default: component named after the app; classic (workspace = portal default)</td>
+        <td><code>appi-invoice-dev-westus</code></td><td>No</td>
+        <td>Recreate with the app (Phase 2)</td></tr>
+    <tr><td><code>ASP-rgcontentunderstandingdev-bb9f</code></td>
+        <td>Portal auto-generated</td>
+        <td>— (exempt)</td><td>No</td>
+        <td>Replaced automatically when the app is recreated</td></tr>
+    <tr><td><code>stinvoicedevwestus</code></td>
+        <td><span class="good">Nothing — already conforms</span></td>
+        <td><code>stinvoicedevwestus</code> ✓</td><td>—</td>
+        <td><strong>Keep</strong>; move to the new RG in Phase 2 (data survives)</td></tr>
+    <tr><td><code>stinvoicefuncappwestus</code></td>
+        <td>No env token; <code>funcapp</code> qualifier off-standard</td>
+        <td><code>stinvoicefuncdevwestus</code></td><td>No</td>
+        <td>Recreated automatically with the app (Phase 2)</td></tr>
+    <tr><td><code>invoice-processing-dev-resource</code> (AIServices / CU)</td>
+        <td>Portal default "-resource" suffix; no type prefix; third workload spelling</td>
+        <td><code>aif-invoice-dev-westus</code></td><td>No</td>
+        <td>Recreate + re-provision analyzers (Phase 2, optional)</td></tr>
+    <tr><td><code>ai-content-understanding-dev-01</code> (CognitiveServices)</td>
+        <td><span class="bad">Unused</span> — no RBAC points at it, no app setting references it</td>
+        <td>—</td><td>No</td>
+        <td><strong>Decommission</strong> (Phase 1)</td></tr>
+    <tr><td><code>kv-invoice-process-dev</code> (Key Vault)</td>
+        <td><span class="bad">Unused</span> — zero Key Vault references in live app settings (the app went
+            keyless via managed identity); fourth workload spelling</td>
+        <td>—</td><td>No</td>
+        <td><strong>Decommission</strong> (Phase 1)</td></tr>
+    <tr><td><code>id-invoice-processing-dev</code> (UAMI)</td>
+        <td>Fifth workload spelling; no region</td>
+        <td><code>id-invoice-dev-westus</code></td><td>No</td>
+        <td>Recreate (Phase 2, optional)</td></tr>
+    <tr><td><code>DefaultWorkspace-…-WUS</code> in <code>DefaultResourceGroup-WUS</code></td>
+        <td>Portal auto-created Log Analytics defaults</td>
+        <td><code>log-invoice-dev-westus</code></td><td>No</td>
+        <td>Replace in Phase 2; delete the defaults once nothing references them</td></tr>
+  </table>
+
+  <h2><span class="num">3</span>Recommendation: which environment becomes production?</h2>
+  <p><strong>Question asked:</strong> is it easier to keep the current environment as production and provision
+     the new one as dev?</p>
+  <div class="ok">
+    <strong>Recommendation: no — keep the current environment as dev and provision production fresh</strong>
+    (this is what <code>docs/provision-azure-environment.html</code> does). Reasons:
+    <ul>
+      <li><strong>Names are permanent.</strong> Promoting the current environment would put production on
+          resources permanently named <code>…-dev</code> / <code>invoice-processing-dev-resource</code>,
+          inside a subscription that (pre-rename) says <code>dev-…</code>. The naming problem this document
+          exists to fix would be locked into production forever.</li>
+      <li><strong>The switchover cost is the same either way.</strong> Production Power Automate needs its own
+          environment-scoped connector, connection and flow regardless of which Azure environment it points
+          at — so "keeping" the current environment saves no orchestrator work.</li>
+      <li><strong>A fresh prod validates the runbook.</strong> The current environment was built by hand;
+          building prod from the provisioning doc proves the whole environment is reproducible — which is
+          exactly what you want to be true of production.</li>
+      <li><strong>Clean ledger.</strong> Prod starts without months of dev/test rows in
+          <code>InvoiceExtractProcessLog</code>.</li>
+    </ul>
+  </div>
+  <div class="warn">
+    <strong>The honest trade-off:</strong> the new prod is an unproven deployment on day one, while the current
+    environment is battle-tested. Mitigation: the runbook's smoke tests (400-validation, real invoice, A1
+    resubmit, ledger check, App Insights live metrics) exercise every trust boundary before any real invoice
+    flows — and dev remains available for side-by-side comparison of the same PDF.
+  </div>
+
+  <h2><span class="num">4</span>Correcting dev — three phases</h2>
+  <p>Phases 0–1 are cheap and safe; do them now. Phase 2 is the full rename-by-recreation — genuinely
+     <strong>optional</strong>, because after prod exists the wrong names live only in dev where they cost
+     nothing but aesthetics.</p>
+
+  <h3>Phase 0 — free, immediate (no resources touched)</h3>
+  <ol>
+    <li><strong>Adopt the standard for everything new</strong> — starting with the entire prod build.</li>
+    <li><strong>Rename the subscription display names</strong> (the one true rename Azure allows):
+        Portal → Subscriptions → select → <strong>Rename</strong>:
+        <code>dev-Document Intelligence</code> → <code>dev-Invoice Processing</code>, and name the new one
+        <code>prod-Invoice Processing</code>.
+        <div class="warn" style="margin:8px 0 0;">After renaming, update the two places in this repo that
+        reference the old display name: <code>docs/deploy-to-azure.html</code> (step 0) and
+        <code>functionapp/README.md</code> — plus <code>CLAUDE.local.md</code> (gitignored).</div></li>
+  </ol>
+
+  <h3>Phase 1 — decommission the two unused resources (low risk)</h3>
+  <p>Both were part of earlier iterations and are dead weight (and S0 Cognitive Services accounts can bill on
+     use — zero use, but zero value too). Verify, then delete.</p>
+  <pre><code># --- ai-content-understanding-dev-01 (unused CognitiveServices account) ---
+# 1. Confirm nothing references it: no role assignments scoped to it...
+$OLD_AI_ID = az cognitiveservices account show -g rg-content-understanding-dev `
+  -n ai-content-understanding-dev-01 --query id -o tsv
+az role assignment list --scope $OLD_AI_ID -o table                      # expect: empty
+
+# ...and the Function's settings point at invoice-processing-dev-resource, not this:
+az functionapp config appsettings list -g rg-content-understanding-dev -n func-invoiceprocess-westus `
+  --query "[?name=='AZURE_CU_ENDPOINT'].value" -o tsv
+
+# 2. Delete (CognitiveServices soft-deletes; purge makes the name reusable)
+az cognitiveservices account delete -g rg-content-understanding-dev -n ai-content-understanding-dev-01
+az cognitiveservices account purge  -g rg-content-understanding-dev -n ai-content-understanding-dev-01 -l westus
+
+# --- kv-invoice-process-dev (unused Key Vault) ---
+# 1. Confirm the app has no Key Vault references (verified 2026-07-05: none)...
+az functionapp config appsettings list -g rg-content-understanding-dev -n func-invoiceprocess-westus `
+  --query "[?contains(value, 'KeyVault')].name" -o json                  # expect: []
+
+# ...and inventory any secrets before losing them:
+az keyvault secret list --vault-name kv-invoice-process-dev --query "[].name" -o tsv
+
+# 2. Delete (Key Vault soft-deletes for 90 days by default — recoverable window)
+az keyvault delete -n kv-invoice-process-dev -g rg-content-understanding-dev</code></pre>
+  <div class="warn">
+    <strong>Before deleting:</strong> both verification commands must come back empty, and give it a
+    once-over in the portal (Metrics → total calls, last 30 days) if in doubt. Deletion is the one
+    irreversible step in this document — soft-delete windows aside.
+  </div>
+
+  <h3>Phase 2 — optional: rebuild dev under conforming names</h3>
+  <p>Do this only after prod is live and stable. It is literally the provisioning runbook re-run with
+     <code>$ENVTOKEN = "dev"</code>, plus a small migration and cleanup. Skipping it forever is acceptable —
+     document the legacy names and move on.</p>
+  <ol>
+    <li><strong>Run <code>docs/provision-azure-environment.html</code> with <code>$ENVTOKEN = "dev"</code></strong> —
+        but <em>skip the data-storage creation</em>: <code>stinvoicedevwestus</code> already conforms.
+        Instead, move it into the new resource group (a move preserves the name, the table, and every row —
+        no data migration):
+        <pre><code>$ST_ID = az storage account show -g rg-content-understanding-dev -n stinvoicedevwestus --query id -o tsv
+az resource move --destination-group rg-invoice-dev-westus --ids $ST_ID</code></pre>
+        <div class="warn" style="margin:8px 0 0;"><strong>Moves break role assignments.</strong> A moved
+        resource gets a new resource ID, and RBAC scoped to the old ID does not follow. Re-run the two
+        <code>Storage Table Data Contributor</code> assignments (new UAMI + your user) against the moved
+        account — the runbook's step 5 covers it.</div></li>
+    <li><strong>Update the code/config touchpoints</strong> (verified by repo-wide scan, 2026-07-05 — tests and
+        <code>scripts/*.py</code> are clean, everything is env-var driven):
+        <table>
+          <tr><th>File</th><th>What to change</th></tr>
+          <tr><td><code>functionapp/cu_client.py</code></td>
+              <td><strong>Resolved 2026-07-05:</strong> the hardcoded dev endpoint default was removed;
+                  <code>AZURE_CU_ENDPOINT</code> is now required and the code fails fast with a clear error
+                  when it is missing. Deployable Python carries <strong>zero</strong> resource names — nothing
+                  to change here in Phase 2.</td></tr>
+          <tr><td><code>functionapp/local.settings.json.template</code></td>
+              <td><code>AZURE_CU_ENDPOINT</code> and <code>AZURE_STORAGE_ACCOUNT</code> values.</td></tr>
+          <tr><td><code>functionapp/local.settings.json</code> (gitignored, per machine)</td>
+              <td>Same two values.</td></tr>
+          <tr><td><code>.claude/settings.json</code> lines 6–7</td>
+              <td>Permission strings embedding <code>$RG</code>/<code>$APP</code> dev names.</td></tr>
+          <tr><td>READMEs + <code>docs/*.html</code></td>
+              <td>Documentation mentions of old dev names (cosmetic; update opportunistically).</td></tr>
+          <tr><td><code>CLAUDE.local.md</code> (gitignored)</td>
+              <td>Function app / RG pointers.</td></tr>
+        </table></li>
+    <li><strong>Re-wire the dev orchestrator + identity plumbing</strong> (falls out of the runbook, listed for
+        completeness): new UAMI client id into <code>AZURE_CLIENT_ID</code>; analyzers re-provisioned
+        (<code>generalinvoice</code> then <code>invoicerouter</code>); dev Power Automate connector host + key
+        updated (or connector recreated) to <code>func-invoice-dev-westus</code>.</li>
+    <li><strong>Verify</strong> — the runbook's smoke tests (step 10) against the new dev, plus one PDF through
+        the dev flow; confirm ledger rows land in the moved <code>stinvoicedevwestus</code>.</li>
+    <li><strong>Delete the old shells</strong> once everything is green:
+        <pre><code># the old RG now holds only superseded resources (storage was moved out in step 1)
+az resource list -g rg-content-understanding-dev -o table    # eyeball what's left FIRST
+az group delete -n rg-content-understanding-dev
+
+# the portal-default monitoring leftovers (check nothing else in the subscription uses them)
+az group delete -n DefaultResourceGroup-WUS</code></pre></li>
+  </ol>
+  <div class="note">
+    <strong>What never changes in any phase:</strong> data-plane names
+    (<code>InvoiceExtractProcessLog</code>, <code>invoicerouter</code>, <code>generalinvoice</code>) are part
+    of the application contract and stay identical in every environment — only control-plane resource names
+    carry env/region tokens.
+  </div>
+
+  <div class="ok">
+    <strong>Summary.</strong> Standard: <code>&lt;type&gt;-invoice-&lt;env&gt;-westus</code> (storage:
+    <code>stinvoice[func]&lt;env&gt;westus</code>). Prod is born conforming via the provisioning runbook.
+    Dev: rename the subscription and delete the two unused resources now; the full rebuild is optional and
+    fully scripted whenever it becomes worth an afternoon.
+  </div>
+
+  <footer>
+    Generated 2026-07-05 for the Noble Invoice Processor repo. Audit grounded in the live subscription
+    (resources, RBAC and app settings read via <code>az</code> on the audit date) and a repo-wide scan for
+    hardcoded names. Companion runbook: <code>docs/provision-azure-environment.html</code>. Convention style:
+    Microsoft Cloud Adoption Framework resource abbreviations.
+  </footer>
+
+</div>
+</body>
+</html>

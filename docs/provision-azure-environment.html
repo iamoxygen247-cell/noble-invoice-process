@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Provision an Azure Environment (End-to-End)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  h4 { font-size:15px; margin:16px 0 6px; color:var(--accent); }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  ul { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  ol { margin:10px 0 10px 22px; }
+  ol.steps > li { margin:9px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Provision an Azure Environment — End-to-End</h1>
+  <p class="sub">Noble Invoice Processor · resource group → storage → Content Understanding → identity → Function App → analyzers → deploy → Power Automate</p>
+
+  <p>
+    <span class="tag">target env: prod</span>
+    <span class="tag">region: westus</span>
+    <span class="tag">runtime: Python 3.13 · Flex Consumption (FC1)</span>
+    <span class="tag">auth: keyless (user-assigned identity)</span>
+    <span class="tag">naming: see docs/naming-convention.html</span>
+  </p>
+
+  <div class="note">
+    <strong>What this runbook builds.</strong> A complete, standalone environment for the invoice pipeline:
+    resource group, two storage accounts (ledger data + Function runtime), an AI&nbsp;Services (Content
+    Understanding) resource, a user-assigned managed identity with least-privilege RBAC, Log Analytics +
+    Application Insights, a Flex Consumption Function App, the two CU analyzers, the deployed Function code,
+    and the production Power Automate connector/flow. It is written for <strong>prod</strong> but is fully
+    parameterized — re-run it with the <code>dev</code> name set (see the naming doc) to rebuild dev later.
+  </div>
+
+  <div class="warn">
+    <strong>Run order matters.</strong> Steps are dependency-ordered: RBAC (step&nbsp;5) must exist before the
+    analyzers (step&nbsp;8) and the smoke test (step&nbsp;10); the general analyzer must exist before the router
+    (the router's JSON references <code>analyzerId: generalinvoice</code>). Each step ends with a
+    <strong>Verify</strong> command — do not continue past a failed verify.
+  </div>
+
+  <p>Placeholders used throughout:
+    <span class="ph">&lt;SUB-ID&gt;</span> (new subscription id),
+    <span class="ph">&lt;UAMI-CLIENT-ID&gt;</span> (managed-identity client id, captured in step&nbsp;5),
+    <span class="ph">&lt;HOST&gt;</span> / <span class="ph">&lt;KEY&gt;</span> (Function host + key, step&nbsp;11).
+    Secrets (keys, connection strings) are <strong>never</strong> written into files in this repo.
+  </p>
+
+  <h2><span class="num">0</span>Prerequisites</h2>
+  <h3>A · Tools (already on this machine)</h3>
+  <pre><code>az version                                   # Azure CLI
+func --version                               # Azure Functions Core Tools v4
+.\.venv\Scripts\python.exe --version         # project venv (analyzer scripts, smoke tests)</code></pre>
+  <div class="warn">
+    <strong>TLS-inspection on this machine.</strong> <code>az</code> network calls can fail with
+    <code>CERTIFICATE_VERIFY_FAILED</code> or <code>ConnectionResetError 10054</code> behind the local
+    TLS-inspecting agent. The fix (truststore wrapper) and alternatives (Azure Portal, Cloud Shell) are in
+    <code>docs/ai/troubleshooting.md</code>. Intermittent <code>10054</code> resets are flaky-proxy noise —
+    just re-run the command.
+  </div>
+
+  <h3>B · Create the production subscription (portal, one-time)</h3>
+  <ol class="steps">
+    <li>Portal → <strong>Subscriptions</strong> → <strong>+ Add</strong>.</li>
+    <li>Name it <code>prod-Invoice Processing</code> (matches the <code>&lt;env&gt;-Invoice Processing</code>
+        convention; the dev subscription's rename is covered in the naming doc). Pick the same billing
+        account/profile as the existing subscriptions.</li>
+    <li>You need <strong>Owner</strong> on the new subscription to run the rest of this runbook.</li>
+  </ol>
+  <pre><code># Point the CLI at it and confirm
+az account set --subscription "prod-Invoice Processing"
+az account show --query "{name:name, id:id}" -o table</code></pre>
+
+  <h3>C · Register resource providers + CLI extension (one-time per subscription)</h3>
+  <pre><code>az provider register --namespace Microsoft.Web
+az provider register --namespace Microsoft.Storage
+az provider register --namespace Microsoft.CognitiveServices
+az provider register --namespace Microsoft.ManagedIdentity
+az provider register --namespace Microsoft.OperationalInsights
+az provider register --namespace Microsoft.Insights
+
+az extension add --name application-insights   # for az monitor app-insights (step 6)</code></pre>
+  <div class="ok">
+    <strong>Verify:</strong> each shows <code>Registered</code> (registration can take a couple of minutes):
+    <pre><code>az provider show -n Microsoft.CognitiveServices --query registrationState -o tsv</code></pre>
+  </div>
+
+  <h2><span class="num">1</span>Parameters — set once per PowerShell session</h2>
+  <p>Every later command uses these variables. The names follow the repo convention
+     (<code>&lt;type&gt;-invoice-&lt;env&gt;-&lt;region&gt;</code>, defined in
+     <code>docs/naming-convention.html</code>). Storage accounts drop hyphens (Azure: 3–24 chars, lowercase
+     letters/digits only).</p>
+  <pre><code>$LOC      = "westus"
+$ENVTOKEN = "prod"                          # "dev" when rebuilding dev later
+$RG       = "rg-invoice-$ENVTOKEN-$LOC"     # rg-invoice-prod-westus
+$APP      = "func-invoice-$ENVTOKEN-$LOC"   # func-invoice-prod-westus (globally unique)
+$ST_DATA  = "stinvoice$ENVTOKEN$LOC"        # stinvoiceprodwestus     (ledger table)
+$ST_FUNC  = "stinvoicefunc$ENVTOKEN$LOC"    # stinvoicefuncprodwestus (Function runtime)
+$AIF      = "aif-invoice-$ENVTOKEN-$LOC"    # aif-invoice-prod-westus (Content Understanding)
+$UAMI     = "id-invoice-$ENVTOKEN-$LOC"     # id-invoice-prod-westus
+$LAW      = "log-invoice-$ENVTOKEN-$LOC"    # log-invoice-prod-westus
+$APPI     = "appi-invoice-$ENVTOKEN-$LOC"   # appi-invoice-prod-westus
+$TABLE    = "InvoiceExtractProcessLog"      # data-plane name — same in every environment</code></pre>
+  <div class="ok">
+    <strong>Verify:</strong> the Function App name must be globally unique:
+    <pre><code>az functionapp list --query "[?name=='$APP']" -o table    # in this subscription
+# and check https://$APP.azurewebsites.net does not already resolve for someone else —
+# az functionapp create in step 7 fails clearly if the name is taken.</code></pre>
+  </div>
+
+  <h2><span class="num">2</span>Resource group</h2>
+  <pre><code>az group create --name $RG --location $LOC `
+  --tags env=$ENVTOKEN workload=invoice owner=george</code></pre>
+  <div class="ok">
+    <strong>Verify:</strong>
+    <pre><code>az group show -n $RG --query "{name:name, location:location, tags:tags}" -o json</code></pre>
+  </div>
+
+  <h2><span class="num">3</span>Storage — data account + runtime account + the ledger table</h2>
+  <p>Two accounts, mirroring dev: the <strong>data</strong> account holds the
+     <code>InvoiceExtractProcessLog</code> ledger (geo-redundant), the <strong>runtime</strong> account is the
+     Function App's own storage (locally redundant is fine — it holds only deployment packages and host state).</p>
+  <pre><code># Data / ledger account (RAGRS = read-access geo-redundant, parity with dev)
+az storage account create -g $RG -n $ST_DATA -l $LOC `
+  --sku Standard_RAGRS --kind StorageV2 --min-tls-version TLS1_2 `
+  --tags env=$ENVTOKEN workload=invoice
+
+# Function runtime account (LRS)
+az storage account create -g $RG -n $ST_FUNC -l $LOC `
+  --sku Standard_LRS --kind StorageV2 --min-tls-version TLS1_2 `
+  --tags env=$ENVTOKEN workload=invoice
+
+# The ledger table ( --auth-mode key uses your Owner right to read the account key;
+# your data-plane RBAC role arrives in step 5 )
+az storage table create --account-name $ST_DATA --name $TABLE --auth-mode key</code></pre>
+  <div class="ok">
+    <strong>Verify:</strong>
+    <pre><code>az storage account list -g $RG --query "[].{name:name, sku:sku.name}" -o table
+az storage table list --account-name $ST_DATA --auth-mode key --query "[].name" -o tsv   # -> InvoiceExtractProcessLog</code></pre>
+  </div>
+
+  <h2><span class="num">4</span>AI Services — the Content Understanding resource</h2>
+  <p>Kind <code>AIServices</code> (the Azure AI Foundry multi-service resource — same kind as dev's
+     <code>invoice-processing-dev-resource</code>). The <code>--custom-domain</code> is <strong>required</strong>:
+     Entra/managed-identity auth and the <code>services.ai.azure.com</code> endpoint only work with a custom
+     subdomain.</p>
+  <pre><code>az cognitiveservices account create -g $RG -n $AIF -l $LOC `
+  --kind AIServices --sku S0 --custom-domain $AIF --yes `
+  --tags env=$ENVTOKEN workload=invoice</code></pre>
+  <div class="note">
+    <strong>Endpoint.</strong> The app setting in step&nbsp;7 uses the Foundry-style endpoint
+    <code>https://&#36;AIF.services.ai.azure.com/</code> — the same form dev uses. Content Understanding is
+    region-limited; <code>westus</code> is a supported region (it is where dev runs today).
+  </div>
+  <div class="ok">
+    <strong>Verify:</strong>
+    <pre><code>az cognitiveservices account show -g $RG -n $AIF --query "{kind:kind, sku:sku.name, endpoint:properties.endpoint}" -o json</code></pre>
+  </div>
+
+  <h2><span class="num">5</span>Managed identity + RBAC (least privilege)</h2>
+  <p>One user-assigned managed identity; it is how the Function reaches CU and the ledger — no keys.</p>
+  <pre><code>az identity create -g $RG -n $UAMI -l $LOC --tags env=$ENVTOKEN workload=invoice
+
+# Capture its three ids
+$UAMI_ID        = az identity show -g $RG -n $UAMI --query id -o tsv
+$UAMI_CLIENT_ID = az identity show -g $RG -n $UAMI --query clientId -o tsv
+$UAMI_PRINCIPAL = az identity show -g $RG -n $UAMI --query principalId -o tsv
+
+# Scopes
+$AIF_ID     = az cognitiveservices account show -g $RG -n $AIF --query id -o tsv
+$ST_DATA_ID = az storage account show -g $RG -n $ST_DATA --query id -o tsv
+
+# The identity's two roles (exactly what dev's identity holds)
+az role assignment create --assignee-object-id $UAMI_PRINCIPAL --assignee-principal-type ServicePrincipal `
+  --role "Cognitive Services User" --scope $AIF_ID
+az role assignment create --assignee-object-id $UAMI_PRINCIPAL --assignee-principal-type ServicePrincipal `
+  --role "Storage Table Data Contributor" --scope $ST_DATA_ID
+
+# Your own account needs the same two roles — for create_analyzer.py (step 8)
+# and the ledger verification query (step 10)
+$ME = az ad signed-in-user show --query id -o tsv
+az role assignment create --assignee-object-id $ME --assignee-principal-type User `
+  --role "Cognitive Services User" --scope $AIF_ID
+az role assignment create --assignee-object-id $ME --assignee-principal-type User `
+  --role "Storage Table Data Contributor" --scope $ST_DATA_ID</code></pre>
+  <div class="warn">
+    <strong>RBAC propagation</strong> can take up to ~5 minutes. If step 8 or 10 returns 401/403 right after
+    this step, wait and retry before changing anything.
+  </div>
+  <div class="ok">
+    <strong>Verify:</strong>
+    <pre><code>az role assignment list --assignee $UAMI_PRINCIPAL --all --query "[].{role:roleDefinitionName, scope:scope}" -o table</code></pre>
+    Expect exactly <code>Cognitive Services User</code> (CU scope) and
+    <code>Storage Table Data Contributor</code> (data-storage scope).
+  </div>
+
+  <h2><span class="num">6</span>Monitoring — Log Analytics + Application Insights</h2>
+  <p>Created explicitly with convention names — this avoids the portal's auto-generated
+     <code>DefaultWorkspace-…</code> / app-named component that dev ended up with.</p>
+  <pre><code>az monitor log-analytics workspace create -g $RG -n $LAW -l $LOC `
+  --tags env=$ENVTOKEN workload=invoice
+$LAW_ID = az monitor log-analytics workspace show -g $RG -n $LAW --query id -o tsv
+
+az monitor app-insights component create --app $APPI -l $LOC -g $RG `
+  --workspace $LAW_ID --tags env=$ENVTOKEN workload=invoice
+$AI_CONN = az monitor app-insights component show --app $APPI -g $RG --query connectionString -o tsv</code></pre>
+  <div class="ok">
+    <strong>Verify:</strong> <code>$AI_CONN</code> is non-empty and starts with <code>InstrumentationKey=</code>.
+  </div>
+
+  <h2><span class="num">7</span>Function App — Flex Consumption, Python 3.13</h2>
+  <pre><code>az functionapp create -g $RG -n $APP `
+  --flexconsumption-location $LOC `
+  --runtime python --runtime-version 3.13 `
+  --storage-account $ST_FUNC `
+  --app-insights $APPI `
+  --tags env=$ENVTOKEN workload=invoice
+
+# Attach the user-assigned identity
+az functionapp identity assign -g $RG -n $APP --identities $UAMI_ID</code></pre>
+  <div class="note">
+    <strong>Two platform-managed leftovers.</strong> (1) The Flex Consumption <em>plan</em> is auto-created by
+    this command with a generated name — it is exempt from the naming convention (see the naming doc).
+    (2) The CLI wires <code>AzureWebJobsStorage</code> and <code>DEPLOYMENT_STORAGE_CONNECTION_STRING</code>
+    to <code>$ST_FUNC</code> automatically — do not edit them.
+    <strong>Stay on Python 3.13:</strong> 3.14 has no remote-build support on Flex Consumption and step&nbsp;9
+    deploys with <code>--build remote</code>.
+  </div>
+  <h3>Application settings</h3>
+  <pre><code>az functionapp config appsettings set -g $RG -n $APP --settings `
+  "AZURE_CU_ENDPOINT=https://$AIF.services.ai.azure.com/" `
+  "AZURE_CU_ANALYZER_ID=invoicerouter" `
+  "AZURE_CU_GENERAL_ANALYZER_ID=generalinvoice" `
+  "AZURE_CU_API_VERSION=2025-11-01" `
+  "AZURE_STORAGE_ACCOUNT=$ST_DATA" `
+  "AZURE_TABLES_TABLE=$TABLE" `
+  "AZURE_CLIENT_ID=$UAMI_CLIENT_ID" `
+  "FIELD_CONFIDENCE_THRESHOLD=0.73" `
+  "APPLICATIONINSIGHTS_CONNECTION_STRING=$AI_CONN"</code></pre>
+  <table>
+    <tr><th>Setting</th><th>Value (prod)</th><th>Why</th></tr>
+    <tr><td><code>AZURE_CU_ENDPOINT</code></td><td><code>https://aif-invoice-prod-westus.services.ai.azure.com/</code></td><td>the step-4 resource</td></tr>
+    <tr><td><code>AZURE_CU_ANALYZER_ID</code></td><td><code>invoicerouter</code></td><td>router analyzer (step 8)</td></tr>
+    <tr><td><code>AZURE_CU_GENERAL_ANALYZER_ID</code></td><td><code>generalinvoice</code></td><td>extraction analyzer (step 8)</td></tr>
+    <tr><td><code>AZURE_CU_API_VERSION</code></td><td><code>2025-11-01</code></td><td>same as dev / <code>cu_client.py</code></td></tr>
+    <tr><td><code>AZURE_STORAGE_ACCOUNT</code></td><td><code>stinvoiceprodwestus</code></td><td>ledger account (step 3)</td></tr>
+    <tr><td><code>AZURE_TABLES_TABLE</code></td><td><code>InvoiceExtractProcessLog</code></td><td>ledger table</td></tr>
+    <tr><td><code>AZURE_CLIENT_ID</code></td><td><span class="ph">&lt;UAMI-CLIENT-ID&gt;</span></td><td>tells the app which identity to use</td></tr>
+    <tr><td><code>FIELD_CONFIDENCE_THRESHOLD</code></td><td><code>0.73</code></td><td>same as dev</td></tr>
+    <tr><td><code>APPLICATIONINSIGHTS_CONNECTION_STRING</code></td><td>from step 6</td><td>telemetry</td></tr>
+  </table>
+  <div class="warn">
+    <strong>Deliberately NOT set</strong> (keyless by design — same as dev):
+    <code>AZURE_CU_KEY</code> and <code>AZURE_TABLES_CONNECTION_STRING</code>. Leaving them unset makes the
+    Function authenticate with the managed identity. <code>A1_LEASE_SECONDS</code> and
+    <code>AZURE_CU_TIMEOUT_SECONDS</code> keep their code defaults (600&nbsp;s / 120&nbsp;s) unless tuning is needed.
+  </div>
+  <div class="ok">
+    <strong>Verify:</strong>
+    <pre><code>az functionapp show -g $RG -n $APP --query "{state:state, host:defaultHostName}" -o table
+az functionapp config appsettings list -g $RG -n $APP `
+  --query "[?contains(name,'AZURE_') || name=='FIELD_CONFIDENCE_THRESHOLD'].name" -o tsv</code></pre>
+    All nine names from the table appear; the app is <code>Running</code>.
+  </div>
+
+  <h2><span class="num">8</span>Provision the two CU analyzers</h2>
+  <p>Analyzers are <strong>data-plane</strong> objects inside the CU resource — a new resource starts empty.
+     Push both definitions from <code>analyzers/</code>. <strong>Order matters:</strong> the router's JSON
+     references <code>analyzerId: generalinvoice</code>, so create the general analyzer first.</p>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
+
+# Point the script at the NEW resource (AZURE_CU_ENDPOINT is required — the script
+# has no default endpoint and errors out rather than silently targeting another env)
+$env:AZURE_CU_ENDPOINT = "https://$AIF.services.ai.azure.com/"
+
+# 1) generalinvoice (default definition file)
+.\.venv\Scripts\python.exe scripts\create_analyzer.py
+
+# 2) invoicerouter (references generalinvoice)
+.\.venv\Scripts\python.exe scripts\create_analyzer.py `
+  --file analyzers\create-router-analyzer.json --analyzer-id invoicerouter</code></pre>
+  <div class="note">
+    <strong>Auth:</strong> the script uses your <code>az login</code> (needs the
+    <code>Cognitive Services User</code> role granted in step&nbsp;5). If local Python hits the machine's
+    TLS-inspection (<code>CERTIFICATE_VERIFY_FAILED</code>), use the key fallback documented in
+    <code>docs/ai/troubleshooting.md</code>: set <code>AZURE_CU_KEY</code> for the session from
+    <code>az cognitiveservices account keys list -g $RG -n $AIF</code> — never write the key to a file.
+  </div>
+  <div class="ok">
+    <strong>Verify:</strong> each run ends with <code>Done. analyzer_id=generalinvoice…</code> /
+    <code>Done. analyzer_id=invoicerouter…</code>.
+  </div>
+
+  <h2><span class="num">9</span>Deploy the Function code</h2>
+  <pre><code># Offline tests green first
+.\.venv\Scripts\python.exe -m pytest
+
+# Deploy (remote build — server rebuilds from requirements.txt)
+az account set --subscription "prod-Invoice Processing"
+cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\functionapp"
+func azure functionapp publish $APP --build remote</code></pre>
+  <div class="note">
+    <code>local.settings.json</code> is <strong>never</strong> deployed — prod reads only the Application
+    Settings from step&nbsp;7. VS Code's "Deploy to Function App…" works too
+    (<code>deploySubpath: functionapp</code>), but double-check it targets <code>$APP</code> in the
+    <strong>prod</strong> subscription, not dev.
+  </div>
+  <div class="ok">
+    <strong>Verify:</strong> the publish output lists the <code>process_invoice</code> function and its
+    invoke URL <code>https://&lt;HOST&gt;/api/process-invoice</code>.
+  </div>
+
+  <h2><span class="num">10</span>Smoke test + ledger check</h2>
+  <pre><code># Host + function key
+$FN_HOST = az functionapp show -g $RG -n $APP --query defaultHostName -o tsv
+$FN_KEY  = az functionapp keys list -g $RG -n $APP --query functionKeys.default -o tsv
+
+cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
+
+# 1) Validation path (no data written) -> expect HTTP 400
+.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://$FN_HOST" --key "$FN_KEY" --bad-payload
+
+# 2) Real invoice -> expect HTTP 200 + routingDecision, writes the FIRST prod ledger row
+.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://$FN_HOST" --key "$FN_KEY" --file ".\samples\trade1.pdf"
+
+# 3) Re-post the same source id -> alreadyProcessed:true (gate A1 works in prod)
+.\.venv\Scripts\python.exe scripts\verify_fn.py --base-url "https://$FN_HOST" --key "$FN_KEY" `
+  --file ".\samples\trade1.pdf" --source-id &lt;SID_FROM_STEP_2&gt;
+
+# Ledger rows landed
+az storage entity query --account-name $ST_DATA --table-name $TABLE `
+  --auth-mode login --num-results 5 `
+  --query "items[].{rk:RowKey, status:Status, decision:RoutingDecision}" -o table</code></pre>
+  <p>Add <code>--insecure</code> to <code>verify_fn.py</code> calls if the corporate proxy intercepts TLS.
+     Triage: <code>401</code> = wrong key · <code>404</code> = wrong host/path · <code>502</code> = CU or its
+     role assignment · <code>500</code> = storage or its role assignment.</p>
+  <div class="ok">
+    <strong>Verify:</strong> 400 → 200 + <code>routingDecision</code> → <code>alreadyProcessed:true</code>,
+    and the table shows <code>Status=Extracted</code>. The Azure environment is now fully live — what remains
+    is wiring the orchestrator to it.
+  </div>
+
+  <h2><span class="num">11</span>Power Automate — production connector, connection, flow</h2>
+  <p>Condensed build with <strong>prod values</strong>. The full click-by-click walkthrough, designer notes,
+     schema rationale and troubleshooting live in <code>docs/power-automate-design.html</code> — use it side
+     by side; only the values below change.</p>
+
+  <h3>A · Prerequisites</h3>
+  <ul>
+    <li>A Power Platform <strong>production environment</strong> (custom connectors are environment-scoped —
+        the dev connector is not reachable from another environment).</li>
+    <li>Premium Power Automate license for the flow owner (custom connectors are premium).</li>
+    <li>The production SharePoint <span class="ph">&lt;site&gt;</span> + <span class="ph">&lt;library&gt;</span>
+        where invoices land, and ideally a dedicated service account
+        (<span class="ph">svc-invoiceflow@&lt;tenant&gt;</span>) with read on that library only.</li>
+    <li><span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span> from step&nbsp;10
+        (<code>$FN_HOST</code> / <code>$FN_KEY</code>), or from the portal: Function App → Overview →
+        Default domain; key under the <code>process_invoice</code> function → Function keys.</li>
+  </ul>
+
+  <h3>B · Custom connector (once per environment)</h3>
+  <ol class="steps">
+    <li><strong>make.powerautomate.com</strong> → environment picker → the <strong>production</strong>
+        environment.</li>
+    <li><strong>Solutions</strong> → open/create an unmanaged solution → <strong>New custom connector</strong> →
+        <strong>Create from blank</strong> → name <code>Noble Invoice Function (prod)</code>.</li>
+    <li><strong>General:</strong> Scheme <code>HTTPS</code> · Host = <span class="ph">&lt;HOST&gt;</span>
+        (host only — no <code>https://</code>, no path) · Base URL <code>/api</code>.</li>
+    <li><strong>Security:</strong> Authentication <code>API Key</code> · label <code>Function key</code> ·
+        parameter name <code>x-functions-key</code> (exact, lowercase) · location <code>Header</code> →
+        <strong>Create connector</strong>.</li>
+    <li><strong>Definition:</strong> + New action · Summary <code>Process invoice</code> · Operation ID
+        <code>process-invoice</code>. Request → <strong>Import from sample</strong>: verb <code>POST</code>,
+        URL <code>https://&lt;HOST&gt;/api/process-invoice</code>, body:
+        <pre><code>{
+  "sourceId": "sample-id",
+  "contentBase64": "JVBERi0xLjQK",
+  "fileName": "invoice1.pdf",
+  "sourceFileUrl": "https://contoso.sharepoint.com/sites/x/invoice1.pdf"
+}</code></pre>
+        Response → <strong>+ Add default response</strong> → Import from sample:
+        <pre><code>{
+  "routingDecision": "HAPPY_PATH_CANDIDATE",
+  "alreadyProcessed": false,
+  "status": "Extracted",
+  "ledgerWriteError": "",
+  "writeValues": {}
+}</code></pre>
+        → <strong>Update connector</strong>.</li>
+    <li><strong>Test:</strong> + New connection → paste <span class="ph">&lt;KEY&gt;</span> → create.
+        On the Test tab select the connection, leave the body <em>empty</em> →
+        <strong>Test operation</strong>.</li>
+  </ol>
+  <div class="ok">
+    <strong>Verify:</strong> HTTP <code>400</code> (<code>sourceId is required</code>) — the request reached
+    prod and the key was accepted, and the deliberately empty body means <strong>no junk ledger row</strong>
+    was written. <code>401</code> = wrong key · <code>404</code> = wrong host/Base URL.
+  </div>
+
+  <h3>C · Cloud flow</h3>
+  <ol class="steps">
+    <li><strong>+ Create → Automated cloud flow</strong>, name <code>Noble Invoice – Process (prod)</code>,
+        trigger <strong>"When a file is created (properties only)"</strong> (SharePoint) — sign the connection
+        in as the service account. Site = production <span class="ph">&lt;site&gt;</span>, Library =
+        <span class="ph">&lt;library&gt;</span>.</li>
+    <li><strong>Get file content</strong> (SharePoint) — File Identifier = the trigger's
+        <code>Identifier</code>.</li>
+    <li><strong>Compose</strong>, renamed <code>contentBase64</code> — expression
+        <code>body('Get_file_content')?['$content']</code> (do <em>not</em> wrap in <code>base64()</code> —
+        that double-encodes).</li>
+    <li><strong>Process invoice</strong> (the prod connector action):
+        <code>sourceId</code> = trigger <code>Identifier</code> ·
+        <code>contentBase64</code> = the Compose output ·
+        <code>fileName</code> = <code>File name with extension</code> ·
+        <code>sourceFileUrl</code> = <code>Link to item</code>.</li>
+    <li><strong>Condition</strong>: <code>body('Process_invoice')?['alreadyProcessed']</code> equals
+        <code>true</code> → <strong>Terminate (Succeeded)</strong>.</li>
+    <li>False branch → <strong>Switch</strong> on
+        <code>body('Process_invoice')?['routingDecision']</code>: cases
+        <code>HAPPY_PATH_CANDIDATE</code> / <code>REVIEW_B4_CRITICAL_FIELD</code>
+        (+ optionally <code>REJECT_B2_OTHER_CATEGORY</code>, <code>REVIEW_NO_CHILD_EXTRACTION</code>) and a
+        Default — with the downstream actions your dev flow settled on (Dataverse write / review item; Compose
+        placeholders until then). Also honor <code>status: "Received"</code> +
+        <code>ledgerWriteError</code> as a failure → review/alert, never a Dynamics write.</li>
+    <li><strong>Save.</strong></li>
+  </ol>
+  <div class="ok">
+    <strong>Verify (end-to-end):</strong> drop a real invoice PDF into the production library → flow run shows
+    <code>200</code> with a <code>routingDecision</code> → the ledger query from step&nbsp;10 shows the new row
+    at <code>Status=Extracted</code> → <strong>Resubmit</strong> the run → the Condition goes true →
+    Terminate (idempotency proof, gate A1).
+  </div>
+  <div class="warn">
+    <strong>Keep dev and prod fully parallel but separate:</strong> separate Power Platform environment,
+    separate connector, separate connection (holding the <em>prod</em> key), separate flow, separate SharePoint
+    library. Nothing in the prod flow may reference <code>func-invoiceprocess-westus</code> (dev).
+  </div>
+
+  <h2><span class="num">12</span>Post-provision checklist</h2>
+  <ul>
+    <li>☐ All resources present:
+        <pre><code>az resource list -g $RG --query "[].{name:name, type:type}" -o table</code></pre>
+        Expect: 2 storage accounts, 1 AIServices account, 1 identity, 1 workspace, 1 App Insights,
+        1 plan (auto-named), 1 function app.</li>
+    <li>☐ RBAC audit: the UAMI holds exactly two roles (step 5 verify) — nothing at subscription scope.</li>
+    <li>☐ Keyless confirmed: <code>AZURE_CU_KEY</code> and <code>AZURE_TABLES_CONNECTION_STRING</code> absent
+        from app settings.</li>
+    <li>☐ Function key hygiene: the prod key exists only inside the Power Automate connection. Never in this
+        repo, run history, or a tracked file. Rotate it in the portal if it ever leaks — then update the
+        connection.</li>
+    <li>☐ Budget alert (recommended): Portal → the new subscription → <strong>Cost Management → Budgets → +
+        Add</strong> — Flex Consumption + S0 are pay-per-use, so an early-warning budget is cheap insurance.</li>
+    <li>☐ Telemetry flowing: Portal → <code>appi-invoice-prod-westus</code> → Live metrics while re-running a
+        step-10 smoke test.</li>
+    <li>☐ Update <code>CLAUDE.local.md</code> (gitignored) with the prod subscription/app pointers for future
+        sessions.</li>
+  </ul>
+
+  <div class="ok">
+    <strong>Recommended order (recap):</strong> subscription + providers → parameters → RG → storage + table →
+    CU resource → identity + RBAC → monitoring → Function App + settings → analyzers
+    (<code>generalinvoice</code> then <code>invoicerouter</code>) → <code>pytest</code> +
+    <code>func publish</code> → smoke tests + ledger check → connector (400 test) → flow (drop a PDF, resubmit
+    for A1) → checklist.
+  </div>
+
+  <footer>
+    Generated 2026-07-05 for the Noble Invoice Processor repo. Grounded in the live dev environment
+    (inventory, RBAC and app settings verified via <code>az</code> the same day) and in
+    <code>docs/deploy-to-azure.html</code> / <code>docs/power-automate-design.html</code>, which stay the
+    deep-dive references for steps 9–11. Naming rules and the dev-environment remediation plan:
+    <code>docs/naming-convention.html</code>.
+  </footer>
+
+</div>
+</body>
+</html>
