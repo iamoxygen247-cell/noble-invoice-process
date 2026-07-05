@@ -25,7 +25,6 @@ import mimetypes
 import os
 from typing import Any, Dict, Optional
 
-DEFAULT_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
 DEFAULT_API_VERSION = "2025-11-01"
 DEFAULT_ROUTER_ANALYZER_ID = "invoicerouter"
 DEFAULT_GENERAL_ANALYZER_ID = "generalinvoice"
@@ -41,7 +40,15 @@ def _env(name: str, default: str) -> str:
 
 
 def endpoint() -> str:
-    return _env("AZURE_CU_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/") + "/"
+    # Deliberately no default: the endpoint names an environment, and a silent
+    # fallback would let a misconfigured app call another environment's CU.
+    value = os.getenv("AZURE_CU_ENDPOINT")
+    if not value:
+        raise RuntimeError(
+            "AZURE_CU_ENDPOINT is not set; set it to this environment's Content "
+            "Understanding endpoint, e.g. https://<resource>.services.ai.azure.com/"
+        )
+    return value.rstrip("/") + "/"
 
 
 def api_version() -> str:

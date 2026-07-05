@@ -416,6 +416,26 @@ def test_analyze_timeout_env_parsing(monkeypatch, env, expected):
     assert cu_client.analyze_timeout_seconds() == expected
 
 
+# --- endpoint is required config: no environment baked into the code --------------
+
+
+def test_endpoint_raises_when_env_var_unset(monkeypatch):
+    monkeypatch.delenv("AZURE_CU_ENDPOINT", raising=False)
+    with pytest.raises(RuntimeError, match="AZURE_CU_ENDPOINT"):
+        cu_client.endpoint()
+
+
+def test_endpoint_raises_when_env_var_empty(monkeypatch):
+    monkeypatch.setenv("AZURE_CU_ENDPOINT", "")
+    with pytest.raises(RuntimeError, match="AZURE_CU_ENDPOINT"):
+        cu_client.endpoint()
+
+
+def test_endpoint_normalizes_trailing_slash(monkeypatch):
+    monkeypatch.setenv("AZURE_CU_ENDPOINT", "https://example.services.ai.azure.com")
+    assert cu_client.endpoint() == "https://example.services.ai.azure.com/"
+
+
 # --- harness threshold defaults match the Function's policy (H1) ------------------
 
 

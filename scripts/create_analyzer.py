@@ -8,7 +8,9 @@ provisions the general invoice analyzer (the one that owns po_or_job_number).
 
 Endpoint/auth mirror functionapp/cu_client.py: AZURE_CU_KEY if set, otherwise
 DefaultAzureCredential (your `az login` locally, managed identity in Azure);
-endpoint/api-version come from the same env vars or the same defaults. The
+the endpoint comes from --endpoint or AZURE_CU_ENDPOINT (required — no baked-in
+default, so the script cannot silently target the wrong environment);
+api-version comes from the same env var or default as cu_client. The
 identity needs 'Cognitive Services User' on the CU resource. allow_replace=True,
 so an existing analyzer with the same id is overwritten.
 
@@ -61,9 +63,12 @@ def main() -> int:
         default=cu_client.general_invoice_analyzer_id(),
         help="Analyzer id to create/replace in CU. Default: %(default)s",
     )
-    ap.add_argument("--endpoint", default=cu_client.endpoint(), help="CU endpoint. Default: %(default)s")
+    ap.add_argument("--endpoint", default=None,
+                    help="CU endpoint. Default: the AZURE_CU_ENDPOINT environment variable (required if this flag is omitted).")
     ap.add_argument("--api-version", default=cu_client.api_version(), help="CU API version. Default: %(default)s")
     args = ap.parse_args()
+    if not args.endpoint:
+        args.endpoint = cu_client.endpoint()  # raises with a clear message if AZURE_CU_ENDPOINT is unset
 
     path = pathlib.Path(args.file)
     if not path.is_file():
