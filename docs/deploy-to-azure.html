@@ -83,7 +83,9 @@ az functionapp list --query "[].{name:name, rg:resourceGroup, state:state}" -o t
 
   <h2><span class="num">1</span>Re-provision the CU analyzer (the 8-digit prompt)</h2>
   <p>Editing <code>analyzers\create-generalinvoice-analyzer.json</code> changes nothing live. Push it to CU:</p>
-  <pre><code>.\.venv\Scripts\python.exe scripts\create_analyzer.py</code></pre>
+  <pre><code># AZURE_CU_ENDPOINT is required (the script has no baked-in default) — point it at dev:
+$env:AZURE_CU_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
+.\.venv\Scripts\python.exe scripts\create_analyzer.py</code></pre>
   <p>Expect <code>Done. analyzer_id=generalinvoice…</code>. Auth uses your <code>az login</code>; your
      identity needs <strong>Cognitive Services User</strong> on <code>invoice-processing-dev-resource</code>.
      This overwrites the live <code>generalinvoice</code> analyzer (<code>allow_replace=True</code>).</p>
