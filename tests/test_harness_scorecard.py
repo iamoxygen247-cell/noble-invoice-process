@@ -2,13 +2,12 @@
 test_harness_scorecard.py — the harness scorecard must agree with the Function.
 
 Regression guard for the bucket-aware critical-field policy: the per-field .gate
-cells that local_test.py / verify_fn.py reconstruct from a decision JSON must
-flag exactly the fields the Function's own B4 gate flagged (reviewReasons), for
-both policy buckets. Offline: gates.evaluate supplies the decision JSON, no HTTP.
+cells that verify_fn.py reconstructs from a decision JSON must flag exactly the
+fields the Function's own B4 gate flagged (reviewReasons), for both policy
+buckets. Offline: gates.evaluate supplies the decision JSON, no HTTP.
 
-Both harnesses carry a deliberate copy of the same reconstruction logic, so every
-test is parametrized over the two modules — a fix landing in only one of them
-fails here.
+(verify_fn.py absorbed the former local_test.py, so there is one harness now;
+the HARNESSES parametrization remains in case a second harness ever returns.)
 
 Run under pytest (the project standard), from the repo root:
     .\\.venv\\Scripts\\python.exe -m pytest
@@ -31,13 +30,11 @@ for _cand in (_REPO / "scripts", _REPO / "functionapp"):
 
 import field_policy  # noqa: E402  -- imported after the sys.path bootstrap above
 import gates  # noqa: E402
-import local_test  # noqa: E402
 import verify_fn  # noqa: E402
 
 THRESHOLD = field_policy.THRESHOLD  # 0.73
 
 HARNESSES = [
-    pytest.param(local_test, id="local_test"),
     pytest.param(verify_fn, id="verify_fn"),
 ]
 
@@ -77,6 +74,8 @@ def commercial_fields(**overrides):
         "invoice_date": fdate("2026-05-01", 0.95),
         "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
+        "sub_bill_type": fstr("repair", 0.9),
+        "sub_bill_type_generate": fstr("repair", 0.85),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),
     }
@@ -95,6 +94,8 @@ def municipal_fields(**overrides):
         "invoice_number_extract": fstr("BL-123456", 0.93),
         "invoice_date": fdate("2026-05-10", 0.95),
         "bill_type": fstr("municipal", 0.9),
+        "sub_bill_type": fstr("business_license", 0.9),
+        "sub_bill_type_generate": fstr("business_license", 0.85),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Annual business license renewal.", 0.8),
     }

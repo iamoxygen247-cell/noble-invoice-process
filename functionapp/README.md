@@ -39,9 +39,11 @@ the single owner of the Dataverse write and writes the terminal `Written` +
 | `requirements.txt`, `host.json` | Function app config |
 | `local.settings.json.template` | Copy to `local.settings.json` for local runs (do not commit secrets) |
 
-The PDF-posting client `local_test.py` lives in `../scripts/`, not here (it is a
-harness, not part of the deployable unit). The offline gate/policy suite is in
-`../tests/` — run it with `python -m pytest` from the repo root.
+The PDF-posting client `verify_fn.py` lives in `../scripts/`, not here (it is a
+harness, not part of the deployable unit; it targets the local `func start` host
+by default and the deployed app with `--base-url`/`--key`). The offline
+gate/policy suite is in `../tests/` — run it with `python -m pytest` from the
+repo root.
 
 ## Request / response
 
@@ -71,13 +73,15 @@ Response (HTTP 200 on a normal decision):
   "category": "general_invoice", "routerCategory": "general_invoice",
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
-  "billType": "commercial", "policyBucket": "commercial", "policyVersion": "bill-type-v2",
+  "billType": "commercial", "subBillType": "repair",
+  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v1",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
   "writeValues": { "vendor_name": "...", "invoice_date": "2026-05-01",
                    "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0,
-                   "account_number": "123456789012", "...": null },
+                   "account_number": "123456789012", "sub_bill_type": "repair",
+                   "...": null },
   "defaultedFields": [], "anomalyFlag": ""
 }
 ```
@@ -91,6 +95,19 @@ reviewer-facing summary** naming every failing critical field — e.g.
 `vendor_name and po_or_job_number need attention`. The per-field diagnostics
 (confidence values, which twin failed, format hints) are in `advisoryFlags`
 with a `B4 ` prefix.
+
+`subBillType` (also `writeValues.sub_bill_type`) is the resolved sub-classification
+of `billType` — informational only, it never gates routing. The classified
+`sub_bill_type` label is trusted when it clears its own confidence bar (0.80,
+stricter than the critical-field threshold) OR when the `sub_bill_type_generate`
+reasoning twin returns the same label (CU's estimated confidence on classify
+fields is noisy on identical documents; two independent reads agreeing are not).
+A municipal bill accepts `gas`, `electric`, `water` (includes sewer/stormwater
+and combined city utility bills), or `business_license` (city-issued business
+licence/permit renewals); a commercial bill accepts `repair` only, and only when
+the resolved `po_or_job_number` is present and format-valid (an OCR-rescued PO
+counts). Everything else — unconfirmed below-bar labels, unknown or cross-bucket
+labels, property tax, missing PO — resolves to `other`.
 
 Municipal invoice-number fallback: when a municipal bill's invoice-number twins
 both come back empty, the field defaults to `fileName` without its extension.
@@ -163,13 +180,14 @@ python -m pip install -r requirements.txt
 func start
 ```
 
-Then, in another shell (the client lives in `../scripts/`):
+Then, in another shell (the client lives in `../scripts/`; no `--base-url` needed
+— it defaults to the `func start` host):
 
 ```cmd
 cd scripts
-python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
+python verify_fn.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
 :: run the same line again -> alreadyProcessed:true, skippedCU:true (gate A1)
-python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --reprocess
+python verify_fn.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --reprocess
 ```
 
 `gates.py` and `field_policy.py` have no Azure dependency; the suite in `../tests/`
@@ -202,7 +220,8 @@ connection (encrypted at rest, never in run history) rather than in the flow.
    - `HAPPY_PATH_CANDIDATE` → **Add a new row** to the Dataverse invoice table →
      on 201, update the ledger row (`Status=Written`, `DynamicsRecordId`).
      `writeValues` now includes `account_number` (required on municipal bills,
-     optional on commercial) — map it to the matching Dataverse column.
+     optional on commercial) and `sub_bill_type` (gas / electric / water /
+     business_license / repair / other) — map each to the matching Dataverse column.
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.
@@ -224,7 +243,8 @@ are not verified, so the happy path writes directly.
 > limit, switch the function to the async 202 + `Location` polling pattern.
 
 > Corporate network note: `curl` to the endpoint needs `--ssl-no-revoke --insecure`.
-> `local_test.py` uses Python's urllib and is unaffected for local http.
+> `verify_fn.py` uses Python's urllib and is unaffected for local http; against
+> the deployed endpoint pass `--insecure`.
 
 > Naming note: the ledger column is `DynamicsRecordId` (matching the validated
 > Phase 3 table), which is the design's `DataverseRowId` placeholder.

@@ -23,10 +23,9 @@ noble-invoice-process/
 │  ├─ local.settings.json.template   # copy to local.settings.json (gitignored) for local runs
 │  └─ .funcignore
 ├─ scripts/            # standalone prototype harnesses — NOT deployed
-│  ├─ local_test.py            # posts one PDF to the running Function (imports functionapp/gates.py)
-│  ├─ verify_fn.py             # smoke-test caller for the deployed Function
+│  ├─ verify_fn.py             # posts one PDF to the Function (local func start by default, deployed with --base-url/--key)
 │  ├─ create_analyzer.py       # (re)provisions a CU analyzer from analyzers/*.json
-│  └─ scorecard.py             # scoring/output helper (imported by local_test.py and verify_fn.py)
+│  └─ scorecard.py             # scoring/output helper (imported by verify_fn.py)
 ├─ tests/              # offline pytest suite (no Azure) — run with `python -m pytest`
 │  ├─ test_field_policy_gates.py  # gates.py + field_policy.py assertions
 │  └─ test_harness_scorecard.py   # harness scorecards must agree with the Function's B4 gate
@@ -68,11 +67,11 @@ cd functionapp
 func start
 ```
 
-Then, from another shell:
+Then, from another shell (no `--base-url` needed — it defaults to the `func start` host):
 
 ```cmd
 cd scripts
-python local_test.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
+python verify_fn.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
 ```
 
 ## Run the offline tests
@@ -88,12 +87,13 @@ python -m pytest
 Function runs. You can also run it standalone:
 `python tests\test_field_policy_gates.py`.
 
-## Run the harnesses
+## Run the harness
 
-`local_test.py` and `verify_fn.py` import the canonical modules from
-`functionapp/` via a small `sys.path` bootstrap at the top of each file, so the
-gate thresholds they score with are exactly the ones the Function runs.
-`verify_fn.py` and `create_analyzer.py` hit live Azure and need credentials
+`verify_fn.py` imports the canonical modules from `functionapp/` via a small
+`sys.path` bootstrap at the top of the file, so the gate thresholds it scores
+with are exactly the ones the Function runs. It targets the local `func start`
+host by default; pass `--base-url`/`--key` for the deployed Function.
+`create_analyzer.py` hits live Azure and needs credentials
 (a function key / your `az login` identity).
 
 ```cmd

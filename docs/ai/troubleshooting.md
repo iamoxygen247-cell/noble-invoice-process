@@ -70,10 +70,37 @@ corporate root in a form OpenSSL accepts.
 
 ---
 
+## `func azure functionapp publish` fails: "Unable to connect to Azure"
+
+**Symptoms (this dev machine):** `func azure functionapp publish <app> --build remote`
+exits immediately with `Unable to connect to Azure. Make sure you have the az CLI or
+Az.Accounts PowerShell module installed and logged in` — even though `az account show`
+(via the truststore wrapper) shows a valid login.
+
+**Cause:** `func` shells out to the raw `az.cmd` on PATH (not the PowerShell profile
+wrapper) to fetch an ARM token. When the cached access token has expired, `az.cmd`
+must refresh over the network and dies on the TLS-inspection SSL failure above, so
+`func` sees no credential.
+
+**Fix (verified 2026-07-07):** pre-warm the az token cache through the truststore
+bootstrap, then publish — `az.cmd` serves `func` the cached token without a network call:
+
+```powershell
+& 'C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe' -B "$env:LOCALAPPDATA\az-truststore\azrun.py" account get-access-token --output none
+cd functionapp
+func azure functionapp publish func-invoiceprocess-westus --build remote
+```
+
+The publish itself (Kudu remote build, host health check) is .NET and works fine.
+The cached ARM token lasts roughly an hour; re-run the first command if publish
+fails again after a long gap.
+
+---
+
 ## `func start` local run: CU call fails with `CERTIFICATE_VERIFY_FAILED`, then `401`
 
 **Symptoms (this dev machine):** running the decision Function locally (`func start` +
-`scripts/local_test.py`) returns HTTP 502 with
+`scripts/verify_fn.py`, which defaults to the localhost host) returns HTTP 502 with
 `Content Understanding analyze failed: [SSL: CERTIFICATE_VERIFY_FAILED] ... unable to get
 local issuer certificate`. The host, the Azurite-backed ledger, and gate A1 all work — only
 the outbound HTTPS call to Content Understanding fails.
@@ -81,8 +108,8 @@ the outbound HTTPS call to Content Understanding fails.
 **Cause:** the same transparent TLS-inspecting agent as the `az` entry above, but here it hits
 the **Python worker** the func host spawns. The `.NET` func host trusts the agent root via
 SChannel, but the Python worker uses `certifi`, which doesn't include it. This is not
-`az`-specific — any venv-Python outbound HTTPS (the Functions worker, or the `step24`/`local_test`
-harnesses) is affected.
+`az`-specific — any venv-Python outbound HTTPS (the Functions worker, or the standalone
+harness scripts) is affected.
 
 **Fix:** make the worker verify via the Windows cert store with
 [`truststore`](https://pypi.org/project/truststore/), exactly like the `az` fix. For a local

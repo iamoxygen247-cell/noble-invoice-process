@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "bill-type-v2"
+POLICY_VERSION = "sub-bill-type-v1"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -112,12 +112,28 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "gst_amount",
     "account_number",
     "bill_type",
+    "sub_bill_type",
     "invoice_description",
 )
 DATE_FIELDS: Tuple[str, ...] = ("invoice_date", "payment_due_date")
 
 MUNICIPAL = "municipal"
 COMMERCIAL = "commercial"
+
+# sub_bill_type: informational sub-classification of bill_type. The classified
+# label is resolved against the bucket, its own (stricter) confidence bar, and --
+# for the commercial "repair" sub-type -- the resolved po_or_job_number. CU's
+# estimated confidence on classify fields is noisy (+-0.3 on identical documents)
+# while the label itself is stable, so a generate-method reasoning twin
+# corroborates it: matching labels are accepted even below the bar (two
+# independent reads agree). It is never a critical field and never gates routing;
+# an unconfirmed, below-bar, or out-of-bucket label falls back to "other".
+SUB_BILL_TYPE = "sub_bill_type"
+SUB_BILL_TYPE_GENERATE = "sub_bill_type_generate"
+SUB_BILL_TYPE_THRESHOLD = 0.80
+MUNICIPAL_SUB_TYPES: Tuple[str, ...] = ("gas", "electric", "water", "business_license")
+SUB_REPAIR = "repair"
+SUB_OTHER = "other"
 
 
 # --- bucket resolution -------------------------------------------------------
@@ -169,6 +185,49 @@ def format_violation_reason(field: str, value: Any) -> Optional[str]:
     if text == "" or pattern.fullmatch(text):
         return None
     return hint
+
+
+# --- sub_bill_type resolution --------------------------------------------------
+
+
+def resolve_sub_bill_type(
+    bucket: str,
+    value: Optional[str],
+    confidence: Optional[float],
+    po_value: Any,
+    generate_value: Optional[str] = None,
+) -> str:
+    """
+    Resolve the classified ``sub_bill_type`` label to the written sub-type.
+
+    Informational only -- never gates routing; ``other`` is the fallback, not a
+    review trigger. The classify label is trusted when it clears
+    SUB_BILL_TYPE_THRESHOLD (stricter than the critical-field THRESHOLD) OR when
+    the generate reasoning twin returns the same label -- agreement between two
+    independent reads corroborates a below-bar label, exactly like the twin
+    agreement boost, because the estimated confidence is noisy while the label is
+    stable. The generate twin only validates; it never supplies the label itself.
+
+    A municipal bill accepts only the municipal sub-types
+    (gas/electric/water/business_license). A commercial bill accepts only
+    ``repair``, and then only when the resolved po_or_job_number is present and
+    format-valid -- a format-violating PO is guaranteed wrong, so it never
+    supports a repair classification. Everything else (unconfirmed below-bar
+    labels, unknown or cross-bucket labels, missing PO) resolves to ``other``.
+    """
+    label = (value or "").strip().lower()
+    confident = confidence is not None and confidence >= SUB_BILL_TYPE_THRESHOLD
+    agree = label != "" and label == (generate_value or "").strip().lower()
+    if not (confident or agree):
+        return SUB_OTHER
+    if bucket == MUNICIPAL:
+        return label if label in MUNICIPAL_SUB_TYPES else SUB_OTHER
+    if label != SUB_REPAIR:
+        return SUB_OTHER
+    po_text = "" if po_value is None else str(po_value).strip()
+    if po_text == "" or format_violation_reason(PO_FINAL, po_text) is not None:
+        return SUB_OTHER
+    return SUB_REPAIR
 
 
 # Contiguous 8-digit 110/330 run not embedded in a longer digit run, so a
@@ -539,6 +598,17 @@ def build_write_values(
     # receives the resolved value for each. CU no longer returns these names directly.
     for final_name in TWIN_FIELDS:
         write[final_name] = resolve_field(final_name, parsed, threshold)[0]
+
+    # sub_bill_type is derived too: the classified label resolves against the
+    # bucket, its own confidence bar / generate-twin agreement, and the resolved
+    # PO. gates.evaluate refreshes it after the OCR PO rescue, which can change
+    # the PO this rule depends on.
+    sub_value, sub_confidence = parsed.get(SUB_BILL_TYPE, (None, None))
+    write[SUB_BILL_TYPE] = resolve_sub_bill_type(
+        resolve_bucket(parsed.get("bill_type", (None, None))[0]),
+        sub_value, sub_confidence, write[PO_FINAL],
+        parsed.get(SUB_BILL_TYPE_GENERATE, (None, None))[0],
+    )
 
     # amount_excluding_gst is derived from the resolved total and gst, not the raw CU
     # fields (which are now the *_extract / *_generate twins).

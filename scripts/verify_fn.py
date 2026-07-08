@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 r"""
-verify_fn.py - exercise the deployed Noble invoice Function in Azure.
+verify_fn.py - exercise the Noble invoice Function and record the result.
+
+ONE harness for both targets (this file absorbed the former local_test.py):
+  - local `func start` host  -> the default (--base-url defaults to http://localhost:7071)
+  - deployed Function in Azure -> pass --base-url and --key
 
 stdlib only for its OWN logic (urllib, base64, json); Windows / PowerShell friendly.
 A fresh GUID sourceId is generated per run, so gate A1 never short-circuits unless you
@@ -8,25 +12,28 @@ pass --source-id yourself. The --insecure flag uses an unverified TLS context, w
 the Python equivalent of curl's --ssl-no-revoke --insecure for a TLS-intercepting
 corporate proxy.
 
-This is the deployed-function analogue of local_test.py: besides printing the HTTP
-response, --file and --folder now persist an HTML scorecard (same matrix table format as
-local_test.py) into an output folder (default .\out):
+Besides printing the HTTP response, --file / --url / --folder persist into an output
+folder (default .\out):
   - <result-json>   the Function's full decision JSON for the last run (overwritten).
   - <scorecard>     the matrix scorecard, rendered as an HTML table, with one column per
                     run. Supports --append-scorecard and --run-label.
-The scorecard machinery is the shared scorecard.py (write_scorecard_html); the row-
-building logic is kept local to this script (a deliberate copy of local_test.py's so
-verify_fn.py has no dependency on local_test.py). The field policy (critical fields,
-print order) is imported from functionapp/gates.py + field_policy.py so the scorecard's
+The scorecard machinery is the shared scorecard.py (write_scorecard_html); the
+row-building logic lives in this script. The field policy (critical fields, print
+order) is imported from functionapp/gates.py + field_policy.py so the scorecard's
 gate column matches what the Function actually decided.
 
 --bad-payload stays stdout-only (there are no extracted fields to score).
 
 Examples (PowerShell):
-  python verify_fn.py --base-url "https://<host>" --key "<func-key>" --bad-payload --insecure
-  python verify_fn.py --base-url "https://<host>" --key "<func-key>" --file "..\\samples\\invoice1.pdf" --insecure
-  python verify_fn.py --base-url "https://<host>" --key "<func-key>" --folder "..\\samples" --insecure
-  python verify_fn.py --base-url "https://<host>" --key "<func-key>" --file "..\\samples\\invoice1.pdf" --source-id <guid> --reprocess --insecure
+  # local func start host (no key needed)
+  python scripts\verify_fn.py --file ".\samples\invoice1.pdf"
+  python scripts\verify_fn.py --folder ".\samples"
+  # deployed function
+  python scripts\verify_fn.py --base-url "https://<host>" --key "<func-key>" --file ".\samples\invoice1.pdf" --insecure
+  python scripts\verify_fn.py --base-url "https://<host>" --key "<func-key>" --bad-payload --insecure
+  # prove gate A1 short-circuits (fixed source id, then again with --reprocess)
+  python scripts\verify_fn.py --file ".\samples\invoice1.pdf" --source-id <guid>
+  python scripts\verify_fn.py --file ".\samples\invoice1.pdf" --source-id <guid> --reprocess
 
 Assumed repo layout (so the imports resolve):
     <repo>\scripts\verify_fn.py       <- this file
@@ -89,33 +96,51 @@ try:
     _GATES_SOURCE = getattr(_gates, "__file__", "gates")
 except Exception:  # ImportError or attribute drift
     DEFAULT_FIELD_THRESHOLD = 0.73  # mirrors field_policy.THRESHOLD (kept in sync)
+    # Commercial superset (BASE_CRITICAL + COMMERCIAL_DELTA), kept in sync with
+    # field_policy.critical_fields("commercial").
     CRITICAL_FIELDS = [
         "vendor_name",
-        "invoice_number",
-        "invoice_date",
-        "gst_amount",
-        "total_invoice_amount",
         "service_address",
+        "total_invoice_amount",
+        "po_or_job_number",
+        "gst_amount",
     ]
-    ALL_BUCKET_CRITICALS = list(CRITICAL_FIELDS)
+    # Union of both buckets' criticals (commercial + municipal deltas).
+    ALL_BUCKET_CRITICALS = sorted(set(CRITICAL_FIELDS) | {"account_number", "invoice_number"})
+    # Kept in sync with gates.FIELD_PRINT_ORDER.
     FIELD_PRINT_ORDER = [
         "vendor_name",
+        "vendor_name_extract",
+        "vendor_name_generate",
         "invoice_date",
         "payment_due_date",
         "invoice_number",
+        "invoice_number_extract",
+        "invoice_number_generate",
         "po_or_job_number",
-        "job_number",
-        "subtotal_before_tax",
-        "gst_rate",
+        "po_or_job_number_extract",
+        "po_or_job_number_generate",
         "gst_amount",
+        "gst_amount_extract",
+        "gst_amount_generate",
         "total_invoice_amount",
+        "total_invoice_amount_extract",
+        "total_invoice_amount_generate",
         "service_address",
-        "invoice_description",
+        "service_address_extract",
+        "service_address_generate",
+        "account_number",
+        "account_number_extract",
+        "account_number_generate",
+        "bill_type",
+        "sub_bill_type",
+        "sub_bill_type_generate",
         "is_handwritten",
-        "vendor_category",
+        "invoice_description",
         "anomaly_flag",
     ]
 
+DEFAULT_BASE_URL = "http://localhost:7071"
 DEFAULT_OUT_DIR = "out"
 DEFAULT_RESULT_JSON = "verify_result.json"
 DEFAULT_SCORECARD = "verify_scorecard.html"
@@ -123,7 +148,6 @@ DEFAULT_SCORECARD = "verify_scorecard.html"
 
 # -----------------------------------------------------------------------------
 # Scorecard reconstruction from the Function response
-# (a deliberate copy of local_test.py's, so verify_fn.py stands alone)
 # -----------------------------------------------------------------------------
 
 
@@ -339,15 +363,16 @@ def build_scorecard_pairs(
 
 
 # -----------------------------------------------------------------------------
-# HTTP (deployed-function path: x-functions-key header + optional insecure TLS)
+# HTTP (x-functions-key header for a deployed app + optional insecure TLS)
 # -----------------------------------------------------------------------------
 
 
 def post_invoice(url: str, body: Dict[str, Any], key: Optional[str], insecure: bool) -> Tuple[int, str]:
-    """POST the JSON body to the deployed Function. The function key is sent as the
-    x-functions-key header; --insecure skips TLS verification for a TLS-intercepting
-    corporate proxy. HTTPError is captured (so a 4xx/5xx is scored like a normal
-    response); other URLErrors (connection/TLS failures) propagate to the caller."""
+    """POST the JSON body to the Function. The function key (deployed app only) is
+    sent as the x-functions-key header; --insecure skips TLS verification for a
+    TLS-intercepting corporate proxy. HTTPError is captured (so a 4xx/5xx is scored
+    like a normal response); other URLErrors (connection/TLS failures) propagate to
+    the caller."""
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -374,6 +399,7 @@ def score_response(
     status: int,
     *,
     source: str,
+    input_type: str,
     source_id: Optional[str],
     scorecard_path: pathlib.Path,
     result_path: pathlib.Path,
@@ -435,7 +461,7 @@ def score_response(
         print(f"\nResponse has no 'fields' (decision: {decision}); no scorecard column written.")
         return False, f"no fields ({decision})", 0 if status == 200 else 1
 
-    pairs, run_id = build_scorecard_pairs(response, source, "file", field_threshold)
+    pairs, run_id = build_scorecard_pairs(response, source, input_type, field_threshold)
     column_header = scorecard.derive_column_header(run_label, run_id)
     scorecard.write_scorecard_html(scorecard_path, pairs, column_header, append=append)
     print(
@@ -446,26 +472,36 @@ def score_response(
     return True, "scored", 0
 
 
-def run_file(
+def run_source(
     args: argparse.Namespace,
     *,
     url: str,
-    file_path: pathlib.Path,
+    file_path: Optional[pathlib.Path],
+    url_arg: Optional[str],
     source_id: str,
     append: bool,
     run_label: Optional[str],
     scorecard_path: pathlib.Path,
     result_path: pathlib.Path,
 ) -> Tuple[bool, str, int]:
-    """POST one PDF to the deployed Function, then persist + score the response."""
+    """POST one source (a local PDF as contentBase64, or a Blob SAS URL) to the
+    Function, then persist + score the response."""
     body: Dict[str, Any] = {
         "sourceId": source_id,
-        "contentBase64": base64.b64encode(file_path.read_bytes()).decode("ascii"),
-        "fileName": file_path.name,
         "fieldThreshold": args.field_threshold,
     }
     if args.reprocess:
         body["reprocess"] = True
+
+    if file_path is not None:
+        input_type = "file"
+        source = str(file_path)
+        body["fileName"] = file_path.name
+        body["contentBase64"] = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    else:
+        input_type = "url"
+        source = str(url_arg)
+        body["url"] = url_arg
 
     print(f"source id: {source_id}")
     print(f"field threshold: {args.field_threshold:.2f}")
@@ -473,7 +509,8 @@ def run_file(
     return score_response(
         payload,
         status,
-        source=str(file_path),
+        source=source,
+        input_type=input_type,
         source_id=source_id,
         scorecard_path=scorecard_path,
         result_path=result_path,
@@ -515,10 +552,11 @@ def run_folder(
         # a stale scorecard.
         append = args.append_scorecard or wrote_any
         try:
-            wrote, status, _code = run_file(
+            wrote, status, _code = run_source(
                 args,
                 url=url,
                 file_path=pdf,
+                url_arg=None,
                 source_id=str(uuid.uuid4()),
                 append=append,
                 run_label=pdf.name,
@@ -548,13 +586,16 @@ def run_folder(
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Exercise the deployed Noble invoice Function and record the result.")
-    ap.add_argument("--base-url", required=True,
-                    help="e.g. https://func-...azurewebsites.net")
-    ap.add_argument("--key", help="function key (sent as the x-functions-key header)")
+    ap = argparse.ArgumentParser(
+        description="Exercise the Noble invoice Function (local func start by default, "
+                    "deployed with --base-url/--key) and record the result.")
+    ap.add_argument("--base-url", default=DEFAULT_BASE_URL,
+                    help=f"Function host, e.g. https://func-...azurewebsites.net. Default: {DEFAULT_BASE_URL} (func start)")
+    ap.add_argument("--key", help="function key for a deployed app (sent as the x-functions-key header)")
 
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--file", help="path to an invoice PDF")
+    src.add_argument("--url", help="Blob SAS URL (ad-hoc url-transport test instead of binary)")
     src.add_argument(
         "--folder",
         help=(
@@ -636,15 +677,16 @@ def main() -> int:
     if args.folder:
         return run_folder(args, url=url, scorecard_path=scorecard_path, result_path=result_path)
 
-    file_path = pathlib.Path(args.file)
-    if not file_path.is_file():
+    file_path = pathlib.Path(args.file) if args.file else None
+    if file_path is not None and not file_path.is_file():
         raise SystemExit(f"File not found: {file_path}")
 
     try:
-        _wrote, _status, exit_code = run_file(
+        _wrote, _status, exit_code = run_source(
             args,
             url=url,
             file_path=file_path,
+            url_arg=args.url,
             source_id=args.source_id or str(uuid.uuid4()),
             append=args.append_scorecard,
             run_label=args.run_label,

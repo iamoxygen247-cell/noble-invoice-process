@@ -43,7 +43,6 @@ import field_policy  # noqa: E402
 import function_app  # noqa: E402
 import gates  # noqa: E402
 import ledger  # noqa: E402
-import local_test  # noqa: E402
 import verify_fn  # noqa: E402
 
 THRESHOLD = field_policy.THRESHOLD
@@ -90,6 +89,8 @@ def commercial_fields():
         "invoice_date": fdate("2026-05-01", 0.95),
         "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
+        "sub_bill_type": fstr("repair", 0.9),
+        "sub_bill_type_generate": fstr("repair", 0.85),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),
     }
@@ -439,7 +440,6 @@ def test_endpoint_normalizes_trailing_slash(monkeypatch):
 # --- harness threshold defaults match the Function's policy (H1) ------------------
 
 
-@pytest.mark.parametrize("harness", [pytest.param(local_test, id="local_test"),
-                                     pytest.param(verify_fn, id="verify_fn")])
+@pytest.mark.parametrize("harness", [pytest.param(verify_fn, id="verify_fn")])
 def test_harness_default_threshold_matches_policy(harness):
     assert harness.DEFAULT_FIELD_THRESHOLD == THRESHOLD

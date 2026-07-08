@@ -78,6 +78,8 @@ def commercial_fields(**overrides):
         "payment_due_date": fdate("2026-05-31", 0.94),
         "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
+        "sub_bill_type": fstr("repair", 0.9),
+        "sub_bill_type_generate": fstr("repair", 0.85),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Electrical repair work.", 0.8),
         "anomaly_flag": fstr("", None),
@@ -98,6 +100,8 @@ def municipal_fields(**overrides):
         "invoice_date": fdate("2026-05-10", 0.95),
         "payment_due_date": fdate("2026-06-10", 0.94),
         "bill_type": fstr("municipal", 0.9),
+        "sub_bill_type": fstr("business_license", 0.9),
+        "sub_bill_type_generate": fstr("business_license", 0.85),
         "is_handwritten": fstr("no", 0.97),
         "invoice_description": fstr("Annual business license renewal.", 0.8),
         "anomaly_flag": fstr("", None),
@@ -345,8 +349,8 @@ def test_response_shape():
     r = ev(commercial_fields())
     check("has writeValues block", "writeValues" in r)
     check("has defaultedFields", "defaultedFields" in r)
-    check("has billType / policyBucket / policyVersion",
-          all(k in r for k in ("billType", "policyBucket", "policyVersion")))
+    check("has billType / subBillType / policyBucket / policyVersion",
+          all(k in r for k in ("billType", "subBillType", "policyBucket", "policyVersion")))
     check("NO gst math block (gate removed)", "gst" not in r)
     check("NO vendorCategory (replaced by billType)", "vendorCategory" not in r)
     check("writeValues carries derived amount_excluding_gst", "amount_excluding_gst" in r["writeValues"])
@@ -995,6 +999,105 @@ def test_invoice_number_filename_fallback():
     check("None filename -> None", default(None) is None)
 
 
+def test_sub_bill_type():
+    print("\n[field_policy + gates: sub_bill_type -- informational, own 0.80 bar]")
+    resolve = field_policy.resolve_sub_bill_type
+    check("sub_bill_type bar is 0.80 (separate from critical THRESHOLD)",
+          field_policy.SUB_BILL_TYPE_THRESHOLD == 0.80)
+
+    # municipal: only the four municipal sub-types pass, at/above the bar.
+    for label in field_policy.MUNICIPAL_SUB_TYPES:
+        check(f"municipal {label} at 0.80 -> {label}",
+              resolve("municipal", label, 0.80, None) == label)
+    check("municipal label normalised (case/space)", resolve("municipal", " Water ", 0.9, None) == "water")
+    check("municipal below bar -> other", resolve("municipal", "gas", 0.79, None) == "other")
+    check("municipal None confidence -> other", resolve("municipal", "gas", None, None) == "other")
+    check("municipal repair (cross-bucket) -> other",
+          resolve("municipal", "repair", 0.95, "11024580") == "other")
+    check("municipal unknown label -> other", resolve("municipal", "property_tax", 0.95, None) == "other")
+    check("municipal empty label -> other", resolve("municipal", "", 0.95, None) == "other")
+
+    # commercial: repair needs the confident label AND a format-valid resolved PO.
+    check("commercial repair + valid PO -> repair",
+          resolve("commercial", "repair", 0.85, "11024580") == "repair")
+    check("commercial repair below bar -> other", resolve("commercial", "repair", 0.79, "11024580") == "other")
+    check("commercial repair without PO -> other", resolve("commercial", "repair", 0.95, None) == "other")
+    check("commercial repair empty PO -> other", resolve("commercial", "repair", 0.95, "") == "other")
+    check("commercial repair format-violating PO -> other",
+          resolve("commercial", "repair", 0.95, "JOB-4471") == "other")
+    check("commercial gas (cross-bucket) -> other", resolve("commercial", "gas", 0.95, "11024580") == "other")
+    check("commercial 'other' stays other", resolve("commercial", "other", 0.95, "11024580") == "other")
+
+    # agreement twin: a matching generate label corroborates a below-bar classify
+    # label (estimated confidence is noisy; two independent reads agreeing are not).
+    check("below-bar + agreeing generate -> label",
+          resolve("municipal", "gas", 0.51, None, "gas") == "gas")
+    check("agreement is case/space-insensitive",
+          resolve("municipal", "electric", 0.30, None, " Electric ") == "electric")
+    check("below-bar + disagreeing generate -> other",
+          resolve("municipal", "gas", 0.79, None, "electric") == "other")
+    check("below-bar + missing generate -> other",
+          resolve("municipal", "gas", 0.79, None, None) == "other")
+    check("agreement never overrides bucket rules (municipal repair) -> other",
+          resolve("municipal", "repair", 0.50, "11024580", "repair") == "other")
+    check("commercial repair agreement + valid PO -> repair",
+          resolve("commercial", "repair", 0.50, "11024580", "repair") == "repair")
+    check("commercial repair agreement without PO -> other",
+          resolve("commercial", "repair", 0.50, None, "repair") == "other")
+    check("empty labels never agree", resolve("municipal", "", 0.30, None, "") == "other")
+    check("generate never supplies the label alone",
+          resolve("municipal", "", 0.95, None, "gas") == "other")
+
+    # end-to-end: response + writeValues carry the resolved sub-type.
+    r = ev(commercial_fields())
+    check("commercial fixture (repair + PO) -> subBillType repair",
+          r["subBillType"] == "repair", str(r.get("subBillType")))
+    check("writeValues carries sub_bill_type", r["writeValues"]["sub_bill_type"] == "repair",
+          str(r["writeValues"].get("sub_bill_type")))
+    check("fields.sub_bill_type carries the raw label + confidence",
+          r["fields"]["sub_bill_type"] == {"value": "repair", "confidence": 0.9},
+          str(r["fields"].get("sub_bill_type")))
+
+    r = ev(municipal_fields())
+    check("municipal fixture -> business_license", r["subBillType"] == "business_license",
+          str(r.get("subBillType")))
+    r = ev(municipal_fields(sub_bill_type=fstr("water", 0.9),
+                            sub_bill_type_generate=fstr("water", 0.85)))
+    check("municipal water label -> water", r["subBillType"] == "water", str(r.get("subBillType")))
+
+    # below-bar label whose generate twin disagrees -> other, and never gates routing.
+    r = ev(municipal_fields(sub_bill_type=fstr("gas", 0.50)))
+    check("below-bar unconfirmed label -> other", r["subBillType"] == "other", str(r.get("subBillType")))
+    check("sub_bill_type never gates routing", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+    # below-bar label with an agreeing generate twin -> accepted end-to-end.
+    r = ev(municipal_fields(sub_bill_type=fstr("gas", 0.50),
+                            sub_bill_type_generate=fstr("gas", 0.40)))
+    check("below-bar + agreeing twin -> label accepted", r["subBillType"] == "gas",
+          str(r.get("subBillType")))
+
+    # absent field entirely (analyzer not yet updated) -> other, still happy.
+    fields = commercial_fields()
+    del fields["sub_bill_type"]
+    r = ev(fields)
+    check("absent sub_bill_type field -> other", r["subBillType"] == "other", str(r.get("subBillType")))
+    check("absent sub_bill_type does not gate", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+    # commercial repair label with no usable PO -> other (the invoice reviews on
+    # the PO anyway, but the written sub-type must not claim repair).
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("", None)))
+    check("commercial repair label without PO -> other", r["subBillType"] == "other",
+          str(r.get("subBillType")))
+
+    # the OCR PO rescue counts toward repair: twins empty, one candidate in markdown.
+    r = gates.evaluate(
+        cu_result(commercial_fields(po_or_job_number_extract=fstr("", None)),
+                  markdown="Job# 11024580"),
+        THRESHOLD)
+    check("OCR-rescued PO flips repair on", r["subBillType"] == "repair", str(r.get("subBillType")))
+    check("rescued path stays happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+
 def test_b4_review_summary():
     print("\n[gates: B4 reviewReasons summary -- one message, diagnostics in advisoryFlags]")
 
@@ -1051,6 +1154,7 @@ def main():
     test_account_number_twin()
     test_invoice_number_twin()
     test_invoice_number_filename_fallback()
+    test_sub_bill_type()
     test_b4_review_summary()
     test_po_ocr_rescue()
 

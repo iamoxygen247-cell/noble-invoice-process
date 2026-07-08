@@ -73,6 +73,8 @@ FIELD_PRINT_ORDER = [
     "account_number_extract",
     "account_number_generate",
     "bill_type",
+    "sub_bill_type",
+    "sub_bill_type_generate",
     "is_handwritten",
     "invoice_description",
     "anomaly_flag",
@@ -447,6 +449,13 @@ def evaluate(
                     f"po_or_job_number rescued from OCR text: {rescued} "
                     f"(CU twins resolved to {po_value!r})"
                 )
+                # The rescued PO counts toward the "repair" sub-type: refresh the
+                # resolved sub_bill_type with the new final PO value.
+                sub_value, sub_confidence = parsed.get(field_policy.SUB_BILL_TYPE, (None, None))
+                write_values[field_policy.SUB_BILL_TYPE] = field_policy.resolve_sub_bill_type(
+                    bucket, sub_value, sub_confidence, rescued,
+                    parsed.get(field_policy.SUB_BILL_TYPE_GENERATE, (None, None))[0],
+                )
 
     # Invoice-number filename fallback: a municipal bill whose twins produced
     # nothing (both extract and generate empty) takes the SharePoint filename,
@@ -538,6 +547,7 @@ def _result(
         "analyzerUsed": analyzer_used,
         "childSelection": child_selection,
         "billType": bill_type_value,
+        "subBillType": write_values.get(field_policy.SUB_BILL_TYPE),
         "policyBucket": bucket,
         "policyVersion": field_policy.POLICY_VERSION,
         "isHandwritten": is_handwritten_value,

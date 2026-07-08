@@ -13,7 +13,7 @@ This is the SINGLE SOURCE for two things both test harnesses need:
 Every function here is lifted verbatim from step24_test.py. It has NO third-party or
 Azure dependency (csv / os / json / datetime / pathlib only), so it can be imported
 by step24_test.py (which builds its scorecard rows from the raw Content Understanding
-result) and by local_test.py (which builds the same rows from the Function's decision
+result) and by verify_fn.py (which builds the same rows from the Function's decision
 JSON). Each harness owns its own row-BUILDING (the input shapes differ); the row-
 WRITING is identical and lives here.
 

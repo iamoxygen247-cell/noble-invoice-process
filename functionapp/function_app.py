@@ -250,6 +250,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
             RoutingDecision=result["routingDecision"],
             DocumentType=result["effectiveDocumentType"],
             BillType=result.get("billType") or "",
+            SubBillType=result.get("subBillType") or "",
             PolicyBucket=result.get("policyBucket") or "",
             PolicyVersion=result.get("policyVersion") or "",
             DefaultedFields=",".join(result.get("defaultedFields") or []),
