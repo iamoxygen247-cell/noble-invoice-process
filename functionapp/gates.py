@@ -449,8 +449,9 @@ def evaluate(
                     f"po_or_job_number rescued from OCR text: {rescued} "
                     f"(CU twins resolved to {po_value!r})"
                 )
-                # The rescued PO counts toward the "repair" sub-type: refresh the
-                # resolved sub_bill_type with the new final PO value.
+                # The rescued PO's prefix determines the commercial sub-type
+                # (330 service / 110 repair): refresh the resolved sub_bill_type
+                # with the new final PO value.
                 sub_value, sub_confidence = parsed.get(field_policy.SUB_BILL_TYPE, (None, None))
                 write_values[field_policy.SUB_BILL_TYPE] = field_policy.resolve_sub_bill_type(
                     bucket, sub_value, sub_confidence, rescued,

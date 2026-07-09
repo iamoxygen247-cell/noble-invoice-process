@@ -74,7 +74,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v1",
+  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v2",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -97,17 +97,19 @@ reviewer-facing summary** naming every failing critical field — e.g.
 with a `B4 ` prefix.
 
 `subBillType` (also `writeValues.sub_bill_type`) is the resolved sub-classification
-of `billType` — informational only, it never gates routing. The classified
-`sub_bill_type` label is trusted when it clears its own confidence bar (0.80,
+of `billType` — informational only, it never gates routing. A commercial bill
+derives it from the resolved `po_or_job_number` (Noble's numbering scheme): a
+format-valid PO starting `330` → `service`, starting `110` → `repair` (an
+OCR-rescued PO counts); a missing or format-violating PO → `other`. The classified
+label is ignored on commercial bills. A municipal bill resolves the classified
+`sub_bill_type` label — trusted when it clears its own confidence bar (0.80,
 stricter than the critical-field threshold) OR when the `sub_bill_type_generate`
 reasoning twin returns the same label (CU's estimated confidence on classify
-fields is noisy on identical documents; two independent reads agreeing are not).
-A municipal bill accepts `gas`, `electric`, `water` (includes sewer/stormwater
-and combined city utility bills), or `business_license` (city-issued business
-licence/permit renewals); a commercial bill accepts `repair` only, and only when
-the resolved `po_or_job_number` is present and format-valid (an OCR-rescued PO
-counts). Everything else — unconfirmed below-bar labels, unknown or cross-bucket
-labels, property tax, missing PO — resolves to `other`.
+fields is noisy on identical documents; two independent reads agreeing are not) —
+accepting `gas`, `electric`, `water` (includes sewer/stormwater and combined city
+utility bills), or `business_license` (city-issued business licence/permit
+renewals). Everything else — unconfirmed below-bar labels, unknown or
+cross-bucket labels, property tax — resolves to `other`.
 
 Municipal invoice-number fallback: when a municipal bill's invoice-number twins
 both come back empty, the field defaults to `fileName` without its extension.
@@ -221,7 +223,8 @@ connection (encrypted at rest, never in run history) rather than in the flow.
      on 201, update the ledger row (`Status=Written`, `DynamicsRecordId`).
      `writeValues` now includes `account_number` (required on municipal bills,
      optional on commercial) and `sub_bill_type` (gas / electric / water /
-     business_license / repair / other) — map each to the matching Dataverse column.
+     business_license / service / repair / other) — map each to the matching
+     Dataverse column.
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.

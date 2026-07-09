@@ -1000,7 +1000,7 @@ def test_invoice_number_filename_fallback():
 
 
 def test_sub_bill_type():
-    print("\n[field_policy + gates: sub_bill_type -- informational, own 0.80 bar]")
+    print("\n[field_policy + gates: sub_bill_type -- informational; municipal label bar 0.80, commercial PO prefix]")
     resolve = field_policy.resolve_sub_bill_type
     check("sub_bill_type bar is 0.80 (separate from critical THRESHOLD)",
           field_policy.SUB_BILL_TYPE_THRESHOLD == 0.80)
@@ -1017,16 +1017,22 @@ def test_sub_bill_type():
     check("municipal unknown label -> other", resolve("municipal", "property_tax", 0.95, None) == "other")
     check("municipal empty label -> other", resolve("municipal", "", 0.95, None) == "other")
 
-    # commercial: repair needs the confident label AND a format-valid resolved PO.
-    check("commercial repair + valid PO -> repair",
-          resolve("commercial", "repair", 0.85, "11024580") == "repair")
-    check("commercial repair below bar -> other", resolve("commercial", "repair", 0.79, "11024580") == "other")
-    check("commercial repair without PO -> other", resolve("commercial", "repair", 0.95, None) == "other")
-    check("commercial repair empty PO -> other", resolve("commercial", "repair", 0.95, "") == "other")
-    check("commercial repair format-violating PO -> other",
+    # commercial: the format-valid resolved PO's prefix decides (330 -> service,
+    # 110 -> repair); the classified label and its confidence are ignored.
+    check("commercial 110 PO -> repair", resolve("commercial", None, None, "11024580") == "repair")
+    check("commercial 330 PO -> service", resolve("commercial", None, None, "33001022") == "service")
+    check("commercial label ignored (repair label + 330 PO -> service)",
+          resolve("commercial", "repair", 0.95, "33001022") == "service")
+    check("commercial label ignored (gas label + 110 PO -> repair)",
+          resolve("commercial", "gas", 0.95, "11024580") == "repair")
+    check("commercial confidence ignored (below-bar label + 110 PO -> repair)",
+          resolve("commercial", "repair", 0.50, "11024580") == "repair")
+    check("commercial without PO -> other", resolve("commercial", "repair", 0.95, None) == "other")
+    check("commercial empty PO -> other", resolve("commercial", "repair", 0.95, "") == "other")
+    check("commercial format-violating PO -> other",
           resolve("commercial", "repair", 0.95, "JOB-4471") == "other")
-    check("commercial gas (cross-bucket) -> other", resolve("commercial", "gas", 0.95, "11024580") == "other")
-    check("commercial 'other' stays other", resolve("commercial", "other", 0.95, "11024580") == "other")
+    check("commercial malformed 33-prefix PO -> other",
+          resolve("commercial", None, None, "3345") == "other")
 
     # agreement twin: a matching generate label corroborates a below-bar classify
     # label (estimated confidence is noisy; two independent reads agreeing are not).
@@ -1040,23 +1046,27 @@ def test_sub_bill_type():
           resolve("municipal", "gas", 0.79, None, None) == "other")
     check("agreement never overrides bucket rules (municipal repair) -> other",
           resolve("municipal", "repair", 0.50, "11024580", "repair") == "other")
-    check("commercial repair agreement + valid PO -> repair",
-          resolve("commercial", "repair", 0.50, "11024580", "repair") == "repair")
-    check("commercial repair agreement without PO -> other",
-          resolve("commercial", "repair", 0.50, None, "repair") == "other")
+    check("commercial ignores agreement too (agreeing twins, no PO) -> other",
+          resolve("commercial", "repair", 0.95, None, "repair") == "other")
     check("empty labels never agree", resolve("municipal", "", 0.30, None, "") == "other")
     check("generate never supplies the label alone",
           resolve("municipal", "", 0.95, None, "gas") == "other")
 
     # end-to-end: response + writeValues carry the resolved sub-type.
     r = ev(commercial_fields())
-    check("commercial fixture (repair + PO) -> subBillType repair",
+    check("commercial fixture (110 PO) -> subBillType repair",
           r["subBillType"] == "repair", str(r.get("subBillType")))
     check("writeValues carries sub_bill_type", r["writeValues"]["sub_bill_type"] == "repair",
           str(r["writeValues"].get("sub_bill_type")))
     check("fields.sub_bill_type carries the raw label + confidence",
           r["fields"]["sub_bill_type"] == {"value": "repair", "confidence": 0.9},
           str(r["fields"].get("sub_bill_type")))
+
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("33001022", 0.91)))
+    check("commercial 330 PO -> subBillType service", r["subBillType"] == "service",
+          str(r.get("subBillType")))
+    check("writeValues carries service", r["writeValues"]["sub_bill_type"] == "service",
+          str(r["writeValues"].get("sub_bill_type")))
 
     r = ev(municipal_fields())
     check("municipal fixture -> business_license", r["subBillType"] == "business_license",
@@ -1076,26 +1086,38 @@ def test_sub_bill_type():
     check("below-bar + agreeing twin -> label accepted", r["subBillType"] == "gas",
           str(r.get("subBillType")))
 
-    # absent field entirely (analyzer not yet updated) -> other, still happy.
+    # absent classify field: commercial derives from the PO regardless; municipal
+    # has no label to trust -> other. Neither gates.
     fields = commercial_fields()
     del fields["sub_bill_type"]
     r = ev(fields)
-    check("absent sub_bill_type field -> other", r["subBillType"] == "other", str(r.get("subBillType")))
+    check("absent sub_bill_type (commercial) -> PO-derived repair",
+          r["subBillType"] == "repair", str(r.get("subBillType")))
     check("absent sub_bill_type does not gate", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
-
-    # commercial repair label with no usable PO -> other (the invoice reviews on
-    # the PO anyway, but the written sub-type must not claim repair).
-    r = ev(commercial_fields(po_or_job_number_extract=fstr("", None)))
-    check("commercial repair label without PO -> other", r["subBillType"] == "other",
+    fields = municipal_fields()
+    del fields["sub_bill_type"]
+    r = ev(fields)
+    check("absent sub_bill_type (municipal) -> other", r["subBillType"] == "other",
           str(r.get("subBillType")))
 
-    # the OCR PO rescue counts toward repair: twins empty, one candidate in markdown.
+    # commercial bill with no usable PO -> other (the invoice reviews on the PO
+    # anyway, but the written sub-type must not claim service or repair).
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("", None)))
+    check("commercial without PO -> subBillType other", r["subBillType"] == "other",
+          str(r.get("subBillType")))
+
+    # the OCR PO rescue drives the sub-type: twins empty, one candidate in markdown.
     r = gates.evaluate(
         cu_result(commercial_fields(po_or_job_number_extract=fstr("", None)),
                   markdown="Job# 11024580"),
         THRESHOLD)
-    check("OCR-rescued PO flips repair on", r["subBillType"] == "repair", str(r.get("subBillType")))
+    check("OCR-rescued 110 PO -> repair", r["subBillType"] == "repair", str(r.get("subBillType")))
     check("rescued path stays happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    r = gates.evaluate(
+        cu_result(commercial_fields(po_or_job_number_extract=fstr("", None)),
+                  markdown="PO# 33001022"),
+        THRESHOLD)
+    check("OCR-rescued 330 PO -> service", r["subBillType"] == "service", str(r.get("subBillType")))
 
 
 def test_b4_review_summary():
