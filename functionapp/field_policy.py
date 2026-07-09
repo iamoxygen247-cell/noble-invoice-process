@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "sub-bill-type-v2"
+POLICY_VERSION = "sub-bill-type-v3"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -122,7 +122,7 @@ COMMERCIAL = "commercial"
 
 # sub_bill_type: informational sub-classification of bill_type. A commercial
 # bill derives it from the resolved po_or_job_number (Noble's numbering scheme:
-# a format-valid 330... PO is a service job, 110... a repair job); the classified
+# a format-valid 110... PO is a service job, 330... a repair job); the classified
 # label is ignored. A municipal bill resolves the classified label against its
 # own (stricter) confidence bar. CU's estimated confidence on classify fields is
 # noisy (+-0.3 on identical documents) while the label itself is stable, so a
@@ -207,8 +207,8 @@ def resolve_sub_bill_type(
 
     A commercial bill ignores the classified label entirely: the sub-type is
     derived from the resolved po_or_job_number (Noble's numbering scheme encodes
-    it). A format-valid PO starting with 33 is a ``service`` job, one starting
-    with 11 a ``repair`` job. A missing or format-violating PO is guaranteed
+    it). A format-valid PO starting with 11 is a ``service`` job, one starting
+    with 33 a ``repair`` job. A missing or format-violating PO is guaranteed
     wrong, so it never drives the sub-type -- the bill resolves to ``other``.
 
     A municipal bill resolves the classified label: it is trusted when it clears
@@ -225,9 +225,9 @@ def resolve_sub_bill_type(
         po_text = "" if po_value is None else str(po_value).strip()
         if po_text == "" or format_violation_reason(PO_FINAL, po_text) is not None:
             return SUB_OTHER
-        if po_text.startswith("33"):
-            return SUB_SERVICE
         if po_text.startswith("11"):
+            return SUB_SERVICE
+        if po_text.startswith("33"):
             return SUB_REPAIR
         return SUB_OTHER
     label = (value or "").strip().lower()

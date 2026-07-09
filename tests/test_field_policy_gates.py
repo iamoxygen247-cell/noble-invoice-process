@@ -1017,16 +1017,16 @@ def test_sub_bill_type():
     check("municipal unknown label -> other", resolve("municipal", "property_tax", 0.95, None) == "other")
     check("municipal empty label -> other", resolve("municipal", "", 0.95, None) == "other")
 
-    # commercial: the format-valid resolved PO's prefix decides (330 -> service,
-    # 110 -> repair); the classified label and its confidence are ignored.
-    check("commercial 110 PO -> repair", resolve("commercial", None, None, "11024580") == "repair")
-    check("commercial 330 PO -> service", resolve("commercial", None, None, "33001022") == "service")
-    check("commercial label ignored (repair label + 330 PO -> service)",
-          resolve("commercial", "repair", 0.95, "33001022") == "service")
-    check("commercial label ignored (gas label + 110 PO -> repair)",
-          resolve("commercial", "gas", 0.95, "11024580") == "repair")
-    check("commercial confidence ignored (below-bar label + 110 PO -> repair)",
-          resolve("commercial", "repair", 0.50, "11024580") == "repair")
+    # commercial: the format-valid resolved PO's prefix decides (110 -> service,
+    # 330 -> repair); the classified label and its confidence are ignored.
+    check("commercial 110 PO -> service", resolve("commercial", None, None, "11024580") == "service")
+    check("commercial 330 PO -> repair", resolve("commercial", None, None, "33001022") == "repair")
+    check("commercial label ignored (service label + 330 PO -> repair)",
+          resolve("commercial", "service", 0.95, "33001022") == "repair")
+    check("commercial label ignored (gas label + 110 PO -> service)",
+          resolve("commercial", "gas", 0.95, "11024580") == "service")
+    check("commercial confidence ignored (below-bar label + 110 PO -> service)",
+          resolve("commercial", "repair", 0.50, "11024580") == "service")
     check("commercial without PO -> other", resolve("commercial", "repair", 0.95, None) == "other")
     check("commercial empty PO -> other", resolve("commercial", "repair", 0.95, "") == "other")
     check("commercial format-violating PO -> other",
@@ -1054,18 +1054,18 @@ def test_sub_bill_type():
 
     # end-to-end: response + writeValues carry the resolved sub-type.
     r = ev(commercial_fields())
-    check("commercial fixture (110 PO) -> subBillType repair",
-          r["subBillType"] == "repair", str(r.get("subBillType")))
-    check("writeValues carries sub_bill_type", r["writeValues"]["sub_bill_type"] == "repair",
+    check("commercial fixture (110 PO) -> subBillType service",
+          r["subBillType"] == "service", str(r.get("subBillType")))
+    check("writeValues carries sub_bill_type", r["writeValues"]["sub_bill_type"] == "service",
           str(r["writeValues"].get("sub_bill_type")))
     check("fields.sub_bill_type carries the raw label + confidence",
           r["fields"]["sub_bill_type"] == {"value": "repair", "confidence": 0.9},
           str(r["fields"].get("sub_bill_type")))
 
     r = ev(commercial_fields(po_or_job_number_extract=fstr("33001022", 0.91)))
-    check("commercial 330 PO -> subBillType service", r["subBillType"] == "service",
+    check("commercial 330 PO -> subBillType repair", r["subBillType"] == "repair",
           str(r.get("subBillType")))
-    check("writeValues carries service", r["writeValues"]["sub_bill_type"] == "service",
+    check("writeValues carries repair", r["writeValues"]["sub_bill_type"] == "repair",
           str(r["writeValues"].get("sub_bill_type")))
 
     r = ev(municipal_fields())
@@ -1091,8 +1091,8 @@ def test_sub_bill_type():
     fields = commercial_fields()
     del fields["sub_bill_type"]
     r = ev(fields)
-    check("absent sub_bill_type (commercial) -> PO-derived repair",
-          r["subBillType"] == "repair", str(r.get("subBillType")))
+    check("absent sub_bill_type (commercial) -> PO-derived service",
+          r["subBillType"] == "service", str(r.get("subBillType")))
     check("absent sub_bill_type does not gate", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
     fields = municipal_fields()
     del fields["sub_bill_type"]
@@ -1111,13 +1111,13 @@ def test_sub_bill_type():
         cu_result(commercial_fields(po_or_job_number_extract=fstr("", None)),
                   markdown="Job# 11024580"),
         THRESHOLD)
-    check("OCR-rescued 110 PO -> repair", r["subBillType"] == "repair", str(r.get("subBillType")))
+    check("OCR-rescued 110 PO -> service", r["subBillType"] == "service", str(r.get("subBillType")))
     check("rescued path stays happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
     r = gates.evaluate(
         cu_result(commercial_fields(po_or_job_number_extract=fstr("", None)),
                   markdown="PO# 33001022"),
         THRESHOLD)
-    check("OCR-rescued 330 PO -> service", r["subBillType"] == "service", str(r.get("subBillType")))
+    check("OCR-rescued 330 PO -> repair", r["subBillType"] == "repair", str(r.get("subBillType")))
 
 
 def test_b4_review_summary():

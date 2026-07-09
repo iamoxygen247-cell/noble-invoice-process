@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v2",
+  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v3",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -98,7 +98,7 @@ with a `B4 ` prefix.
 `subBillType` (also `writeValues.sub_bill_type`) is the resolved sub-classification
 of `billType` — informational only, it never gates routing. A commercial bill
 derives it from the resolved `po_or_job_number` (Noble's numbering scheme): a
-format-valid PO starting `330` → `service`, starting `110` → `repair` (an
+format-valid PO starting `110` → `service`, starting `330` → `repair` (an
 OCR-rescued PO counts); a missing or format-violating PO → `other`. The classified
 label is ignored on commercial bills. A municipal bill resolves the classified
 `sub_bill_type` label — trusted when it clears its own confidence bar (0.80,
