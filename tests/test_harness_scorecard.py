@@ -30,7 +30,7 @@ for _cand in (_REPO / "scripts", _REPO / "functionapp"):
 
 import field_policy  # noqa: E402  -- imported after the sys.path bootstrap above
 import gates  # noqa: E402
-import verify_fn  # noqa: E402
+import test as verify_fn  # noqa: E402  -- scripts/verify_fn.py was renamed to scripts/test.py
 
 THRESHOLD = field_policy.THRESHOLD  # 0.73
 

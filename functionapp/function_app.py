@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+from pathlib import PurePath
 from typing import Optional, Tuple
 
 import azure.functions as func
@@ -217,6 +218,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         logging.info("A1 short-circuit for %s (decision=%s)", source_id, decision)
         return _json(200, {
             "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
+            "invoiceFileName": PurePath(file_name).stem,
             "alreadyProcessed": True, "skippedCU": True,
             "status": status, "routingDecision": decision,
             "reviewReasons": [reason],
@@ -264,6 +266,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
 
     response = {
         "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
+        "invoiceFileName": PurePath(file_name).stem,
         "alreadyProcessed": False, "skippedCU": False,
         # status mirrors the ledger row's true state: if the Extracted write
         # failed the row is still at Received, and the flow must not treat the

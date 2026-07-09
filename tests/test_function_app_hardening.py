@@ -43,7 +43,7 @@ import field_policy  # noqa: E402
 import function_app  # noqa: E402
 import gates  # noqa: E402
 import ledger  # noqa: E402
-import verify_fn  # noqa: E402
+import test as verify_fn  # noqa: E402  -- scripts/verify_fn.py was renamed to scripts/test.py
 
 THRESHOLD = field_policy.THRESHOLD
 

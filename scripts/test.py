@@ -261,6 +261,7 @@ def build_scorecard_pairs(
     # .gate), then the decision summary. routing_decision/review_reasons used to sit at
     # the very end; they now lead and are not repeated below.
     pairs: List[Tuple[str, str]] = [
+        ("invoice_filename", str(response.get("invoiceFileName") or "")),
         ("run_id_utc", run_id),
         ("source", source),
         ("input_type", input_type),
