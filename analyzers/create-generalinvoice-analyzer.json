@@ -111,7 +111,7 @@
         "type": "string",
         "method": "classify",
         "enum": ["yes", "no"],
-        "description": "Classify yes when any important field (vendor name, total amount, service address, GST amount, or PO/job number) appears handwritten or manually filled in. Classify no when those fields are printed or digitally generated, even if there are handwritten notes, signatures, or checkboxes elsewhere. This value is informational only."
+        "description": "Classify by how the field VALUES were produced, not by the form or letterhead. Classify yes when the value of any important field (vendor name, total amount, service address, GST amount, or PO/job number) is handwritten or manually filled in. A pre-printed blank invoice form — printed letterhead, printed field labels such as DATE/INVOICE/DESCRIPTION/PRICE, and a printed table grid — whose values (dates, amounts, totals, addresses, invoice or job numbers, descriptions) are written in by hand IS handwritten: classify yes even though the letterhead and labels are printed. Classify no only when those important field values themselves are printed or digitally generated; handwritten signatures, checkboxes, or margin notes on an otherwise fully printed invoice do not make it yes. This value is informational only."
       },
       "invoice_description": {
         "type": "string",
