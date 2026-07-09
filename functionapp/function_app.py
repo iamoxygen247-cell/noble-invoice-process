@@ -16,6 +16,8 @@ Flow per request:
      decodes and is non-empty, or a url). A bad request 400s here, BEFORE any
      ledger write, so it can never claim the A1 slot and block a corrected retry.
   2. Gate A1 (atomic): claim the SharePoint item id in InvoiceExtractProcessLog.
+     Concurrency guard only -- an item processed before is re-claimed and fully
+     re-processed (a corrected invoice may arrive as the same file again).
   3. Call Content Understanding with the document bytes (binary transport).
   4. gates.evaluate -> routingDecision, bill_type bucket, write values, ledger fields.
   5. Write ledger Status=Extracted + decision/bucket/policy stamps. If this write
@@ -23,8 +25,10 @@ Flow per request:
      ledgerWriteError; the decision payload is still returned.
   6. Return the decision JSON (writeValues included for the flow to consume).
 
-There is NO duplicate-invoice verification anywhere in the pipeline (requirement).
-Gate A1 is ingestion idempotency only (same SharePoint upload not processed twice).
+There is NO duplicate-invoice verification anywhere in the pipeline (requirement),
+and no re-upload dedup: the same SharePoint item posted again is re-processed in
+full (each happy-path run leads the flow to create another Dynamics row). Gate A1
+only stops two CONCURRENT invocations processing the same item at once.
 
 Request body (JSON):
   {
@@ -34,7 +38,6 @@ Request body (JSON):
                                                            #  invoice-number fallback, ext stripped)
     "sourceFileUrl": "https://.../invoice1.pdf",           # optional (stored on the ledger)
     "url":           "https://...blob...?sas",             # optional, ad-hoc test only
-    "reprocess":     false,                                # optional, bypass gate A1
     "fieldThreshold": 0.73                                 # optional, overrides field_policy.THRESHOLD
   }
 """
@@ -138,32 +141,34 @@ def _lease_seconds() -> int:
         return 600
 
 
-def _a1(table, source_id: str, reprocess: bool, received_fields: dict, lease_seconds: int):
+def _a1(table, source_id: str, received_fields: dict, lease_seconds: int):
     """
-    Gate A1 — atomic idempotency claim. Returns None to proceed, or a tuple
-    ("skip", routingDecision, status, reason) to short-circuit (skip CU).
-    """
-    if reprocess:
-        ledger.upsert(table, source_id, Status="Received", **received_fields)
-        return None
+    Gate A1 — atomic concurrency claim (NOT re-upload dedup: that was removed so
+    the same file can be uploaded again for re-processing). Returns None to
+    proceed, or a tuple ("skip", routingDecision, status, reason) to
+    short-circuit (skip CU).
 
+    A row with a recorded decision no longer blocks: it is re-claimed and the
+    item re-processed from scratch. The only skip left is a row another
+    invocation is actively working on (undecided and within the lease). Both
+    claim paths are atomic — insert for a first-seen item, etag-conditioned
+    reset for a decided or stale row — so of two concurrent invocations for the
+    same item exactly one proceeds, first upload or re-upload alike.
+    """
     existing = ledger.get_row(table, source_id)
     if existing is None:
         if ledger.claim(table, source_id, Status="Received", **received_fields):
             return None  # claimed atomically; Received already written
         existing = ledger.get_row(table, source_id)  # a concurrent run just claimed it
 
-    if ledger.has_decision(existing):
-        return ("skip",
-                (existing.get("RoutingDecision") or "ALREADY_PROCESSED"),
-                existing.get("Status"),
-                "A1: SharePoint item id already processed; not reprocessed")
-
-    if ledger.is_stale(existing, lease_seconds):
-        ledger.upsert(table, source_id, Status="Received", **received_fields)  # resume crashed run
+    reclaimable = ledger.has_decision(existing) or ledger.is_stale(existing, lease_seconds)
+    if reclaimable and ledger.reclaim(table, source_id, ledger.entity_etag(existing),
+                                      Status="Received", **received_fields):
+        # decided -> a re-upload, re-process; stale Received -> a crashed run, resume.
         return None
 
-    return ("skip", "PROCESSING_IN_PROGRESS", existing.get("Status") if existing else "Received",
+    return ("skip", "PROCESSING_IN_PROGRESS",
+            (existing.get("Status") if existing else None) or "Received",
             "A1: another invocation is currently processing this SharePoint item")
 
 
@@ -180,7 +185,6 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
 
     file_name = body.get("fileName") or ""
     sharepoint_url = body.get("sourceFileUrl") or ""
-    reprocess = bool(body.get("reprocess", False))
 
     # --- Validation: reject bad input BEFORE any ledger write ----------------
     # A request that 400s here must never claim the A1 slot; otherwise a
@@ -205,9 +209,9 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
     pk, rk = ledger.keys_for_source_id(source_id)
     received_fields = {"FileName": file_name, "SharePointUrl": sharepoint_url, "RoutingDecision": ""}
 
-    # --- Gate A1: atomic idempotency claim -----------------------------------
+    # --- Gate A1: atomic concurrency claim ------------------------------------
     try:
-        a1 = _a1(table, source_id, reprocess, received_fields, _lease_seconds())
+        a1 = _a1(table, source_id, received_fields, _lease_seconds())
     except Exception as exc:
         logging.exception("Ledger A1 / Received write failed")
         return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,

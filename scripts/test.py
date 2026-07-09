@@ -31,9 +31,9 @@ Examples (PowerShell):
   # deployed function
   python scripts\verify_fn.py --base-url "https://<host>" --key "<func-key>" --file ".\samples\invoice1.pdf" --insecure
   python scripts\verify_fn.py --base-url "https://<host>" --key "<func-key>" --bad-payload --insecure
-  # prove gate A1 short-circuits (fixed source id, then again with --reprocess)
+  # re-run a fixed source id -> full re-process (A1 dedup removed; only a
+  # concurrent in-flight run short-circuits)
   python scripts\verify_fn.py --file ".\samples\invoice1.pdf" --source-id <guid>
-  python scripts\verify_fn.py --file ".\samples\invoice1.pdf" --source-id <guid> --reprocess
 
 Assumed repo layout (so the imports resolve):
     <repo>\scripts\verify_fn.py       <- this file
@@ -453,9 +453,9 @@ def score_response(
     skipped = bool(response.get("alreadyProcessed")) or bool(response.get("skippedCU"))
     if skipped:
         print(
-            "\nGate A1 short-circuited this run (alreadyProcessed): CU did not run, so there is no "
-            "extraction to score - no scorecard column written. Re-run with --reprocess or a fresh "
-            "--source-id to score this invoice."
+            "\nGate A1 short-circuited this run (another invocation is processing this source id): "
+            "CU did not run, so there is no extraction to score - no scorecard column written. "
+            "Re-run once the in-flight run finishes."
         )
         return False, "skipped (A1)", 0
 
@@ -494,9 +494,6 @@ def run_source(
         "sourceId": source_id,
         "fieldThreshold": args.field_threshold,
     }
-    if args.reprocess:
-        body["reprocess"] = True
-
     if file_path is not None:
         input_type = "file"
         source = str(file_path)
@@ -613,7 +610,6 @@ def parse_args() -> argparse.Namespace:
                      help="POST {} to force the HTTP 400 validation path (stdout only, no scorecard)")
 
     ap.add_argument("--source-id", help="override sourceId (default: a fresh GUID)")
-    ap.add_argument("--reprocess", action="store_true", help="bypass gate A1")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (corporate proxy)")
     ap.add_argument(

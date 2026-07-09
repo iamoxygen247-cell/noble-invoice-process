@@ -8,7 +8,7 @@ the v8 design.
 
 ## What it does (and does not do)
 
-Per request it runs gate **A1** (item-id idempotency), writes the ledger row
+Per request it runs gate **A1** (item-id concurrency guard), writes the ledger row
 `Received`, calls **Content Understanding** with the document **bytes** (binary
 transport — no Blob, no SAS), applies the routing gates via `gates.py` — **B2**
 (router/effective category `other` → reject), **B4** (a critical field for the
@@ -57,7 +57,6 @@ repo root.
                                                     //   municipal invoice-number fallback (ext stripped)
   "sourceFileUrl": "https://.../invoice1.pdf",      // optional — stored on the ledger
   "url": "https://...blob...?sas",                  // optional — ad-hoc test only, instead of contentBase64
-  "reprocess": false,                               // optional — bypass gate A1
   "fieldThreshold": 0.75                            // optional — overrides field_policy.THRESHOLD (default 0.73)
 }
 ```
@@ -119,39 +118,40 @@ records the substituted value. With no usable `fileName` the field fails to
 review exactly as before; a present-but-low-confidence value is never
 overwritten.
 
-When gate A1 short-circuits, the response has `alreadyProcessed: true`,
-`skippedCU: true`, and `routingDecision` is the stored decision (or
-`PROCESSING_IN_PROGRESS`). The Power Automate flow treats `alreadyProcessed: true` as a
+When gate A1 short-circuits (another invocation is processing the same item), the
+response has `alreadyProcessed: true`, `skippedCU: true`, and `routingDecision`
+`PROCESSING_IN_PROGRESS`. The Power Automate flow treats `alreadyProcessed: true` as a
 no-op — no Dataverse write, no review item.
 
 Status codes: `200` decision returned (including review/reject); `400` bad request;
 `502` Content Understanding failed (row left at `Received` — see A1 below); `500`
 ledger/config failure.
 
-## Gate A1 semantics — atomic idempotency claim
+## Gate A1 semantics — atomic concurrency claim (re-uploads re-process)
 
-A1 prevents the **same SharePoint upload** being processed twice; it is not
-duplicate-invoice verification. It uses an **atomic insert-claim** on the ledger:
+A1 no longer de-duplicates re-uploads: the same file uploaded again (same
+SharePoint item id) is **re-processed in full**, because a corrected version of
+an invoice may arrive as the same file. Each re-run resets the ledger row to
+`Received` and overwrites it with the new decision; on the happy path the flow
+writes **another** Dataverse row (there is no duplicate-invoice verification —
+requirement).
 
-- **Already decided** (`RoutingDecision` set, or `Status` past `Received`) → return
-  the stored decision, skip Content Understanding. The invoice is not reprocessed.
-- **No row yet** → atomically claim it (insert `Received`). The insert is atomic in
-  Table Storage, so of two perfectly concurrent triggers exactly one claims and
-  proceeds; the other sees the row and short-circuits.
-- **Claim lost / row in-flight within the lease** → skip with
-  `PROCESSING_IN_PROGRESS`; another invocation owns the item.
-- **Row stale at `Received`** (older than `A1_LEASE_SECONDS`, default 600) → a
-  crashed prior run; **resume** it. A transient CU failure thus recovers on the
-  next trigger rather than being skipped forever.
+What A1 still guarantees is that two **concurrent** invocations for the same item
+(a re-fired SharePoint trigger) cannot both process it:
 
-Send `"reprocess": true` to force a full re-run past A1.
+- **No row yet** → atomically claim it (insert `Received`). The insert is atomic
+  in Table Storage, so of two perfectly concurrent triggers exactly one claims
+  and proceeds; the other sees the row and short-circuits.
+- **Row decided, or stale at `Received`** (older than `A1_LEASE_SECONDS`, default
+  600 — a crashed prior run) → atomically **re-claim** it (etag-conditioned reset
+  to `Received`) and re-process; a concurrent invocation that loses the re-claim
+  short-circuits. A transient CU failure thus recovers on the next trigger rather
+  than being skipped forever.
+- **Row at `Received` within the lease** → skip with `PROCESSING_IN_PROGRESS`;
+  another invocation owns the item.
 
-The atomic claim replaces the role the Dataverse alternate key used to play at the
-ingestion level, so a re-fired trigger cannot create two Dynamics rows for one
-upload. It does **not** detect the same invoice arriving by a different route: a
-re-upload as a *new* SharePoint file (new item id) or a manual Dynamics entry is
-not seen, and will create another Dynamics row. That is the accepted consequence
-of removing duplicate-invoice verification.
+The `reprocess` request flag was removed along with the dedup — re-processing is
+now the default. Requests that still send it are accepted; the field is ignored.
 
 ## Authentication
 
@@ -188,8 +188,7 @@ Then, in another shell (the client lives in `../scripts/`; no `--base-url` neede
 ```cmd
 cd scripts
 python verify_fn.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77
-:: run the same line again -> alreadyProcessed:true, skippedCU:true (gate A1)
-python verify_fn.py --file "..\samples\invoice1.pdf" --source-id 0fb9c2a1-7d3e-4a55-9c10-2b8e6f4a1d77 --reprocess
+:: run the same line again -> full re-process (A1 no longer skips decided items)
 ```
 
 `gates.py` and `field_policy.py` have no Azure dependency; the suite in `../tests/`

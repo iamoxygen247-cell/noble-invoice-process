@@ -2,7 +2,7 @@
 ledger.py — InvoiceExtractProcessLog (Azure Table Storage) client for the Function.
 
 Lifted from the validated Phase 3 harness (phase3_ledger_test.py):
-  - row identity is the SharePoint item UniqueId (gate A1 idempotency key)
+  - row identity is the SharePoint item UniqueId (gate A1 concurrency key)
   - RowKey = sanitized item id; PartitionKey = a short prefix of it
   - upsert is idempotent: re-running the same source id updates in place,
     preserves the original IngestedUtc, and never blanks a recorded
@@ -154,6 +154,61 @@ def is_stale(entity: Optional[Dict[str, Any]], lease_seconds: int) -> bool:
     if getattr(ts, "tzinfo", None) is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - ts).total_seconds() > lease_seconds
+
+
+def entity_etag(entity: Any) -> Optional[str]:
+    """The etag of an entity returned by get_row, tolerant of SDK differences:
+    azure-data-tables surfaces it as entity.metadata["etag"]; a plain dict row
+    may carry it inline as "odata.etag"."""
+    meta = getattr(entity, "metadata", None)
+    if isinstance(meta, dict) and meta.get("etag"):
+        return meta["etag"]
+    if isinstance(entity, dict):
+        return entity.get("odata.etag")
+    return None
+
+
+def reclaim(table, source_id: str, etag: Optional[str],
+            retention_days: int = DEFAULT_RETENTION_DAYS, **fields: Any) -> bool:
+    """
+    Atomically re-claim an EXISTING row for re-processing (a re-uploaded item, or
+    a crashed run older than the lease): merge-update conditioned on the etag the
+    caller read. Returns True if this call won the row; False if a concurrent
+    invocation updated (or deleted) it first -- the loser must skip, so a
+    double-fired trigger cannot re-process the same item twice. This mirrors the
+    atomic insert in claim() for first-seen items. Merge mode preserves
+    IngestedUtc and a recorded DynamicsRecordId.
+    """
+    from azure.core import MatchConditions
+    from azure.core.exceptions import (
+        HttpResponseError,
+        ResourceModifiedError,
+        ResourceNotFoundError,
+    )
+    from azure.data.tables import UpdateMode
+
+    if not etag:
+        return False
+    pk, rk = keys_for_source_id(source_id)
+    now = datetime.now(timezone.utc)
+    entity: Dict[str, Any] = {
+        "PartitionKey": pk,
+        "RowKey": rk,
+        "SharePointItemId": source_id,
+        "LastUpdatedUtc": now,
+        "ExpiresAt": now + timedelta(days=retention_days),
+    }
+    entity.update({k: ("" if v is None else v) for k, v in fields.items()})
+    try:
+        table.update_entity(entity, mode=UpdateMode.MERGE, etag=etag,
+                            match_condition=MatchConditions.IfNotModified)
+        return True
+    except (ResourceModifiedError, ResourceNotFoundError):
+        return False
+    except HttpResponseError as exc:  # some SDK versions raise the base type for 412
+        if getattr(exc, "status_code", None) == 412:
+            return False
+        raise
 
 
 def upsert(

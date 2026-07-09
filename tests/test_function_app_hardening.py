@@ -36,7 +36,11 @@ for _cand in (_REPO / "scripts", _REPO / "functionapp"):
         sys.path.insert(0, str(_cand))
 
 import azure.functions as func  # noqa: E402
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError  # noqa: E402
+from azure.core.exceptions import (  # noqa: E402
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 
 import cu_client  # noqa: E402
 import field_policy  # noqa: E402
@@ -102,17 +106,26 @@ def commercial_fields():
 class FakeTable:
     """Mimics the TableClient surface ledger.py touches, with the same atomic
     semantics: create_entity raises ResourceExistsError on a duplicate key,
-    get_entity raises ResourceNotFoundError on a miss."""
+    get_entity raises ResourceNotFoundError on a miss, and update_entity honours
+    etag + match_condition (ResourceModifiedError on a mismatch), so the A1
+    re-claim race is exercised for real."""
 
     def __init__(self):
         self.rows = {}
-        self.write_calls = []  # every create/upsert, in order
+        self.write_calls = []  # every create/upsert/update, in order
+        self._versions = {}
+
+    def _etag(self, key):
+        return f'W/"{self._versions[key]}"'
 
     def get_entity(self, partition_key, row_key):
+        key = (partition_key, row_key)
         try:
-            return dict(self.rows[(partition_key, row_key)])
+            entity = dict(self.rows[key])
         except KeyError:
             raise ResourceNotFoundError("entity not found")
+        entity["odata.etag"] = self._etag(key)
+        return entity
 
     def create_entity(self, entity):
         key = (entity["PartitionKey"], entity["RowKey"])
@@ -120,11 +133,23 @@ class FakeTable:
         if key in self.rows:
             raise ResourceExistsError("entity already exists")
         self.rows[key] = dict(entity)
+        self._versions[key] = self._versions.get(key, 0) + 1
 
     def upsert_entity(self, entity, mode=None):
         key = (entity["PartitionKey"], entity["RowKey"])
         self.write_calls.append(("upsert", key))
         self.rows.setdefault(key, {}).update(entity)
+        self._versions[key] = self._versions.get(key, 0) + 1
+
+    def update_entity(self, entity, mode=None, etag=None, match_condition=None):
+        key = (entity["PartitionKey"], entity["RowKey"])
+        self.write_calls.append(("update", key))
+        if key not in self.rows:
+            raise ResourceNotFoundError("entity not found")
+        if match_condition is not None and etag != self._etag(key):
+            raise ResourceModifiedError("etag mismatch")
+        self.rows[key].update(entity)
+        self._versions[key] += 1
 
 
 @pytest.fixture
@@ -294,7 +319,7 @@ def test_retry_after_malformed_request_is_not_locked_out(fake_table, cu_stub):
     assert payload["status"] == "Extracted"
 
 
-# --- route: happy path and A1 semantics preserved ---------------------------------
+# --- route: happy path and A1 semantics (concurrency guard, re-uploads re-process) --
 
 
 def test_happy_path_extracts_and_records(fake_table, cu_stub):
@@ -323,17 +348,52 @@ def test_url_transport_still_works(fake_table, cu_stub):
     assert cu_stub == [("url", "https://example/blob?sas", None)]
 
 
-def test_a1_short_circuit_still_skips_processed_items(fake_table, cu_stub):
+def test_reupload_of_processed_item_reprocesses(fake_table, cu_stub):
+    """A1 dedup removed: the same sourceId posted again (a re-uploaded file)
+    must run the full pipeline again, not short-circuit."""
     first = post(valid_body())
     assert as_json(first)["alreadyProcessed"] is False
 
     second = post(valid_body())
     payload = as_json(second)
     assert second.status_code == 200
+    assert payload["alreadyProcessed"] is False
+    assert payload["skippedCU"] is False
+    assert payload["routingDecision"] == gates.HAPPY_PATH_CANDIDATE
+    assert payload["status"] == "Extracted"
+    assert len(cu_stub) == 2, "the re-upload must run CU again"
+
+    pk, rk = ledger.keys_for_source_id(SOURCE_ID)
+    row = fake_table.rows[(pk, rk)]
+    assert row["Status"] == "Extracted"
+    assert row["RoutingDecision"] == gates.HAPPY_PATH_CANDIDATE
+
+
+def test_in_flight_item_still_short_circuits(fake_table, cu_stub):
+    """The concurrency guard kept: a Received row with no decision, within the
+    lease, is another invocation mid-run — a double-fired trigger must skip."""
+    ledger.claim(fake_table, SOURCE_ID, Status="Received",
+                 FileName="", SharePointUrl="", RoutingDecision="")
+    resp = post(valid_body())
+    payload = as_json(resp)
+    assert resp.status_code == 200
     assert payload["alreadyProcessed"] is True
     assert payload["skippedCU"] is True
-    assert payload["routingDecision"] == gates.HAPPY_PATH_CANDIDATE
-    assert len(cu_stub) == 1, "the second request must not re-run CU"
+    assert payload["routingDecision"] == "PROCESSING_IN_PROGRESS"
+    assert cu_stub == [], "an in-flight item must not reach CU"
+
+
+def test_reclaim_is_atomic_per_etag(fake_table, cu_stub):
+    """Two concurrent invocations read the same decided row: only the first
+    etag-conditioned re-claim wins; the loser gets False and must skip."""
+    post(valid_body())  # leaves a decided row
+    row = ledger.get_row(fake_table, SOURCE_ID)
+    etag = ledger.entity_etag(row)
+    assert etag
+    assert ledger.reclaim(fake_table, SOURCE_ID, etag,
+                          Status="Received", RoutingDecision="") is True
+    assert ledger.reclaim(fake_table, SOURCE_ID, etag,
+                          Status="Received", RoutingDecision="") is False
 
 
 def test_non_json_body_is_400(fake_table, cu_stub):
