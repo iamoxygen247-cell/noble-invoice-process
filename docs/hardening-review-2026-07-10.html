@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice — Workspace Hardening Review (2026-07-10)</title>
+<style>
+  :root {
+    --paper: #FBFAF8;
+    --ink: #212832;
+    --muted: #5C6572;
+    --line: #E5E2DA;
+    --accent: #2F5D50;
+    --accent-soft: #EDF3F0;
+    --crit: #A63A2B;
+    --crit-soft: #F9EEEC;
+    --high: #96660F;
+    --high-soft: #F8F1E2;
+    --med: #44607E;
+    --med-soft: #EDF1F6;
+    --low: #6E7681;
+    --low-soft: #F0F1F2;
+    --ok: #2F5D50;
+    --ok-soft: #EDF3F0;
+    --mono: "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    padding: 2.5rem 1.25rem 5rem;
+    font-size: 15.5px;
+  }
+  main { max-width: 58rem; margin: 0 auto; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+  h1 { font-size: 1.9rem; font-weight: 650; letter-spacing: -0.015em; margin: 0.4rem 0 0.6rem; }
+  h2 { font-size: 1.3rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+  h3 { font-size: 1.05rem; font-weight: 650; margin: 0 0 0.3rem; }
+  p { margin: 0.55rem 0; max-width: 72ch; }
+  section { margin-top: 3rem; }
+  .eyebrow {
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); margin: 0;
+  }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.5rem; }
+  code, pre {
+    font-family: var(--mono);
+    font-size: 0.85em;
+  }
+  code {
+    background: var(--low-soft);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.05em 0.35em;
+    white-space: nowrap;
+  }
+  pre {
+    background: #F4F3F0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; white-space: pre; }
+  .badge {
+    display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; border-radius: 999px; padding: 0.15rem 0.65rem; vertical-align: middle;
+  }
+  .badge.high { color: var(--crit); background: var(--crit-soft); border: 1px solid var(--crit); }
+  .badge.medium { color: var(--high); background: var(--high-soft); border: 1px solid var(--high); }
+  .badge.low { color: var(--med); background: var(--med-soft); border: 1px solid var(--med); }
+  .badge.info { color: var(--low); background: var(--low-soft); border: 1px solid var(--low); }
+  .badge.ok { color: var(--ok); background: var(--ok-soft); border: 1px solid var(--ok); }
+  .finding {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    padding: 1.1rem 1.4rem 1.2rem;
+    margin: 1.1rem 0;
+  }
+  .finding h3 { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .finding h3 .id { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; font-weight: 600; }
+  .kv { color: var(--muted); font-size: 0.88rem; margin: 0.15rem 0 0.6rem; }
+  .kv code { white-space: normal; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.92rem; }
+  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 0.45rem 0.7rem 0.45rem 0; vertical-align: top; }
+  th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.3rem 0; max-width: 72ch; }
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 8px 8px 0;
+    padding: 0.7rem 1rem;
+    margin: 1rem 0;
+  }
+  .callout.warn { border-left-color: var(--crit); background: var(--crit-soft); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+</style>
+</head>
+<body>
+<main>
+
+<p class="eyebrow">Noble Invoice Pipeline</p>
+<h1>Workspace Hardening Review</h1>
+<p class="meta">2026-07-10 · full-workspace audit: <code>functionapp/</code> code, <code>scripts/</code>, tracked configuration,
+untracked local artifacts, <code>docs/</code> provisioning runbooks, and the complete git history (all refs, origin included).
+All credential values in this report are redacted to a short prefix.</p>
+
+<!-- ============================================================ -->
+<section id="summary">
+  <h2>Executive summary</h2>
+  <p>
+    The tracked repository is in <strong>good shape</strong>: no secrets exist in any tracked file at HEAD, the single HTTP
+    endpoint requires a function key, table keys are sanitized against injection, input is validated before any state
+    change, secrets are read from environment only with a managed-identity fallback, and a prior hardening pass
+    (F1–F5/H1) is regression-tested in <code>tests/test_function_app_hardening.py</code>. The provisioning design is
+    keyless-by-default with least-privilege RBAC.
+  </p>
+  <p>The remaining gaps concentrate in four areas, in priority order:</p>
+  <ol>
+    <li><strong>Git history:</strong> a Content Understanding API key (and two now-expired blob SAS URLs) live in the
+        majority of the repo's commit history, which has been pushed to GitHub (private repo). Rotation is
+        <em>probably</em> done but unconfirmed; the history was never scrubbed. — <a href="#hg-01">HG-01</a>, <a href="#hg-02">HG-02</a></li>
+    <li><strong>Local disk:</strong> a live CU key sits in plaintext in <code>functionapp/local.settings.json</code>, and a
+        pre-approved <code>az</code> command echoes it to the terminal; real invoice PII sits in <code>samples/</code> and <code>out/</code>. — <a href="#hg-03">HG-03</a>, <a href="#hg-08">HG-08</a></li>
+    <li><strong>Azure platform flags:</strong> the provisioning runbook creates storage and the Function App without
+        several hardening switches (<code>--https-only</code>, shared-key/public-blob-access disable, network rules). — <a href="#hg-06">HG-06</a></li>
+    <li><strong>Application code:</strong> the ad-hoc <code>url</code> transport is unvalidated (SSRF-shaped), raw exception text
+        is returned to callers, dependencies are unpinned, and there is no request payload size cap. — <a href="#hg-04">HG-04</a>, <a href="#hg-05">HG-05</a>, <a href="#hg-07">HG-07</a>, <a href="#hg-09">HG-09</a></li>
+  </ol>
+
+  <h3>Remediation checklist (priority order)</h3>
+  <table>
+    <tr><th>#</th><th>Severity</th><th>Finding</th><th>Effort</th></tr>
+    <tr><td><a href="#hg-01">HG-01</a></td><td><span class="badge high">High</span></td><td>CU key in git history (pushed to GitHub) — confirm rotation, scrub history</td><td>~1–2 h</td></tr>
+    <tr><td><a href="#hg-03">HG-03</a></td><td><span class="badge high">High</span></td><td>Live CU key handling on this machine (plaintext file, echoed by allowlisted <code>az</code> query, CLI arg)</td><td>~30 min</td></tr>
+    <tr><td><a href="#hg-04">HG-04</a></td><td><span class="badge medium">Medium</span></td><td>Unvalidated <code>url</code> transport passed to server-side fetch (SSRF vector)</td><td>~30 min</td></tr>
+    <tr><td><a href="#hg-05">HG-05</a></td><td><span class="badge medium">Medium</span></td><td>Raw exception detail returned in HTTP responses</td><td>~45 min</td></tr>
+    <tr><td><a href="#hg-06">HG-06</a></td><td><span class="badge medium">Medium</span></td><td>Provisioning runbook missing platform hardening flags (HTTPS-only, shared-key, public blob, network)</td><td>~1 h</td></tr>
+    <tr><td><a href="#hg-07">HG-07</a></td><td><span class="badge medium">Medium</span></td><td>Dependencies unpinned (<code>&gt;=</code> floors, no lockfile)</td><td>~20 min</td></tr>
+    <tr><td><a href="#hg-02">HG-02</a></td><td><span class="badge medium">Medium</span></td><td>Expired blob SAS URLs in git history (scrubbed together with HG-01)</td><td>with HG-01</td></tr>
+    <tr><td><a href="#hg-08">HG-08</a></td><td><span class="badge medium">Medium</span></td><td>Real invoice PII at rest in <code>samples/</code> and <code>out/</code></td><td>policy + ~15 min</td></tr>
+    <tr><td><a href="#hg-09">HG-09</a></td><td><span class="badge low">Low</span></td><td>No payload size cap before base64 decode</td><td>~15 min</td></tr>
+    <tr><td><a href="#hg-10">HG-10</a></td><td><span class="badge low">Low</span></td><td><code>--insecure</code> TLS bypass in the test harness</td><td>doc note</td></tr>
+    <tr><td><a href="#hg-11">HG-11</a></td><td><span class="badge low">Low</span></td><td><code>host.json</code> relies on platform defaults (no functionTimeout/retry/concurrency caps)</td><td>~15 min</td></tr>
+    <tr><td><a href="#hg-12">HG-12</a></td><td><span class="badge low">Low</span></td><td>Docs disagree on Function→CU auth model (Key Vault key vs keyless)</td><td>doc edit</td></tr>
+    <tr><td><a href="#hg-13">HG-13</a></td><td><span class="badge info">Info</span></td><td>Minor code/ops notes (submit-call timeout, <code>default=str</code>, ledger TTL)</td><td>optional</td></tr>
+  </table>
+</section>
+
+<hr>
+
+<!-- ============================================================ -->
+<section id="findings">
+  <h2>Findings</h2>
+
+  <div class="finding" id="hg-01">
+    <h3><span class="id">HG-01</span> <span class="badge high">High</span> Content Understanding API key committed across most of git history, pushed to GitHub</h3>
+    <p class="kv">Where: history of <code>scripts/step24_test.py</code>, <code>scripts/step21_test.py</code>, <code>scripts/step24_test_old.py</code>, <code>scripts/model_deployment_info.py</code> (e.g. <code>step24_test.py:57</code> at commit <code>3127eab</code>) · remote: <code>github.com/iamoxygen247-cell/noble-invoice-process</code> (private)</p>
+    <p>
+      An 84-character AI Services key (<code>9n1Mwhx3…</code>, redacted) for
+      <code>invoice-processing-dev-resource.services.ai.azure.com</code> was hardcoded as <code>API_KEY = "…"</code> in early
+      prototype scripts. It was removed from HEAD (commits <code>ba6c735</code> "replaced key with identity" and
+      <code>1414f19</code> "cleanup old files"), but it remains retrievable from the majority of historical commits via
+      <code>git log -p</code> / <code>git show</code>, and that history has been pushed to the GitHub remote.
+    </p>
+    <p><strong>Mitigating evidence found:</strong></p>
+    <ul>
+      <li>The repo is private (unauthenticated GitHub API returns 404).</li>
+      <li>The key currently in <code>functionapp/local.settings.json</code> (<code>2E8z…</code>) is a <em>different value</em> than the
+          leaked one, and <code>docs/ai/troubleshooting.md:132-134</code> describes the old hardcoded key as "stale/rotated" —
+          so rotation very likely already happened, but nothing confirms it, and AI Services resources have <em>two</em> keys
+          (the leaked one could be the un-rotated twin).</li>
+      <li><code>README.md:119-125</code> acknowledges the past hardcoding but only says to regenerate "if it was ever
+          committed" — it was.</li>
+    </ul>
+    <p><strong>Fix:</strong></p>
+    <ol>
+      <li><strong>Confirm the leaked key is dead</strong> — regenerate <em>both</em> keys (idempotent and instant; then update
+          <code>local.settings.json</code> / the Key Vault secret if key auth is still used anywhere):
+<pre><code>az cognitiveservices account keys regenerate -g rg-content-understanding-dev `
+  -n invoice-processing-dev-resource --key-name key1
+az cognitiveservices account keys regenerate -g rg-content-understanding-dev `
+  -n invoice-processing-dev-resource --key-name key2</code></pre></li>
+      <li><strong>Scrub history</strong> with <code>git-filter-repo</code> (also removes the HG-02 SAS URLs). Create a fresh clone first;
+          filter-repo refuses to run on a dirty working copy:
+<pre><code># replacements.txt — one line per secret (full literal values, taken from history)
+#   &lt;the full leaked key&gt;==&gt;REDACTED
+#   &lt;each full sig=… SAS token&gt;==&gt;REDACTED
+.\.venv\Scripts\python.exe -m pip install git-filter-repo
+git filter-repo --replace-text replacements.txt
+git push --force origin main</code></pre>
+          Afterwards every collaborator must re-clone (old clones still hold the secret), and any other refs
+          (forks, other branches) must be rewritten or deleted. GitHub may retain unreachable commits in
+          cache/pull-request refs — contact GitHub support to purge if the repo will ever be made public.</li>
+      <li>Optionally enable GitHub <strong>push protection</strong> (Settings → Code security) so a future accidental key push is
+          blocked at the boundary; secret scanning for private repos requires Advanced Security, but push protection
+          for common Azure key patterns is worth checking on the current plan.</li>
+    </ol>
+    <div class="callout warn">
+      Do not skip step 1 by relying on the "stale/rotated" note — the confirmation costs one command and closes the
+      only path by which this finding is exploitable today.
+    </div>
+  </div>
+
+  <div class="finding" id="hg-02">
+    <h3><span class="id">HG-02</span> <span class="badge medium">Medium</span> Blob SAS URLs in git history (expired, but leak account/container/object naming)</h3>
+    <p class="kv">Where: history of <code>scripts/step21_test.py:10</code>, <code>scripts/step24_test.py:10</code>, <code>scripts/step24_test_old.py:10</code></p>
+    <p>
+      Read-only SAS URLs (<code>sig=I8QeQUTR…</code>, <code>sig=iyqM7c…</code>, redacted) to a real customer invoice blob
+      (<code>cont-invoice-prototype/250524_0009.pdf</code> on <code>stinvoicedevwestus</code>) were committed. Both carry
+      <code>se=2026-06-11</code> and are <strong>expired</strong> as of this review, so they no longer grant access — but they
+      permanently leak the storage account, container, and a real invoice object path, and they were valid when pushed.
+    </p>
+    <p><strong>Fix:</strong> include both <code>sig=…</code> values in the HG-01 <code>replace-text</code> scrub. If the storage
+      account keys have not been rotated since June, rotate them (<code>az storage account keys renew</code>) — SAS tokens are
+      signed by the account key and cannot be revoked individually.</p>
+  </div>
+
+  <div class="finding" id="hg-03">
+    <h3><span class="id">HG-03</span> <span class="badge high">High</span> Live CU key handling on this machine: plaintext file, echoed by an allowlisted <code>az</code> query, passed as a CLI argument</h3>
+    <p class="kv">Where: <code>functionapp/local.settings.json:7</code> (untracked, gitignored — verified never committed) · <code>.claude/settings.json:5</code> · <code>scripts/test.py:595</code></p>
+    <p>Three related exposure paths for live keys during local development:</p>
+    <ul>
+      <li>The current CU key (<code>2E8z…</code>) sits unencrypted in <code>functionapp/local.settings.json</code>. Git hygiene is
+          correct (ignored, never committed — verified with <code>git log --all --diff-filter=A</code> and content search across
+          all refs), so the risk is disk-level: backups, cloud sync, malware, screen sharing.</li>
+      <li>The pre-approved command in <code>.claude/settings.json:5</code> projects <code>{name, value}</code> for all
+          <code>AZURE_*</code> app settings — running it prints the deployed <code>AZURE_CU_KEY</code> value into the terminal and any
+          session transcript.</li>
+      <li><code>scripts/test.py --key &lt;function-key&gt;</code> puts the function key into shell history and the process table.</li>
+    </ul>
+    <p><strong>Fix:</strong></p>
+    <ol>
+      <li><strong>Go keyless locally</strong> — the code already prefers <code>DefaultAzureCredential</code> when
+          <code>AZURE_CU_KEY</code> is empty (<code>cu_client.py:77-88</code>). After <code>az login</code>, blank the key in
+          <code>local.settings.json</code> and grant your user the <em>Cognitive Services User</em> role on the CU resource.
+          Then the plaintext-file problem disappears entirely.</li>
+      <li>Change the allowlisted query in <code>.claude/settings.json</code> to project names only:
+<pre><code>az functionapp config appsettings list -g $RG -n $APP `
+  --query "[?contains(name,'AZURE_')].name" -o table</code></pre></li>
+      <li>In <code>scripts/test.py</code>, read the function key from an environment variable (e.g.
+          <code>FUNCTION_KEY</code>) with <code>--key</code> kept only as an explicit override, and note the history caveat in its
+          <code>--help</code> text.</li>
+    </ol>
+  </div>
+
+  <div class="finding" id="hg-04">
+    <h3><span class="id">HG-04</span> <span class="badge medium">Medium</span> Unvalidated <code>url</code> transport passed to a server-side fetch (SSRF vector)</h3>
+    <p class="kv">Where: <code>functionapp/function_app.py:130-134</code> → <code>:238</code> → <code>functionapp/cu_client.py:154-163</code></p>
+    <p>
+      The request body's <code>url</code> field is accepted with no scheme/host validation and handed to
+      <code>begin_analyze(inputs=[AnalysisInput(url=url)])</code>, which Azure Content Understanding fetches server-side.
+      The docstrings label it "ad-hoc test only," but nothing gates it — the path is fully reachable in the deployed
+      app by anyone holding the function key. Mitigations already in place: the caller must be authenticated
+      (FUNCTION auth level), and the fetch originates from Azure CU's infrastructure, not the function's own network —
+      so classic instance-metadata SSRF doesn't apply, but it still lets a caller make CU pull arbitrary URLs and can
+      probe endpoints reachable by CU.
+    </p>
+    <p><strong>Fix:</strong> gate the transport off in production and validate what remains. In
+      <code>_decode_content</code> (<code>function_app.py</code>):</p>
+<pre><code>ALLOW_URL_TRANSPORT = os.getenv("ALLOW_URL_TRANSPORT", "").lower() == "true"
+
+url = body.get("url")
+if isinstance(url, str) and url.strip():
+    if not ALLOW_URL_TRANSPORT:
+        return None, None, "url transport is disabled; use contentBase64"
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        return None, None, "url must be https"
+    return None, url, None</code></pre>
+    <p>Leave <code>ALLOW_URL_TRANSPORT</code> unset in the deployed app settings (disabled by default); set it
+      <code>true</code> only in <code>local.settings.json</code> when ad-hoc testing with a Blob SAS URL. Optionally add a host
+      allowlist (e.g. <code>*.blob.core.windows.net</code>) if the transport must stay enabled anywhere. Add a regression test
+      alongside the existing transport tests in <code>tests/test_function_app_hardening.py</code>.</p>
+  </div>
+
+  <div class="finding" id="hg-05">
+    <h3><span class="id">HG-05</span> <span class="badge medium">Medium</span> Raw exception detail returned to the HTTP caller</h3>
+    <p class="kv">Where: <code>functionapp/function_app.py:207</code>, <code>:218</code>, <code>:245</code>, <code>:269/282</code></p>
+    <p>
+      Ledger and CU failures embed <code>str(exc)</code> in the JSON response
+      (<code>"error": f"ledger A1 write failed: {exc}"</code>, <code>ledgerWriteError</code>, etc.). Azure SDK exception messages
+      routinely contain endpoint URLs, storage account names, request IDs, and auth-failure specifics — internal detail
+      disclosed to whoever holds the function key, and recorded into Power Automate run history. Full stack traces
+      already stay server-side (every path calls <code>logging.exception</code> first — good); only the message string leaks.
+    </p>
+    <p><strong>Fix:</strong> return a generic message plus the invocation ID for correlation, keep the detail in App
+      Insights. Example pattern for the A1 handler (repeat for all four sites):</p>
+<pre><code>except Exception:
+    logging.exception("Ledger A1 / Received write failed")   # detail stays in logs
+    return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
+                       "error": "ledger write failed",
+                       "invocationId": context.invocation_id})</code></pre>
+    <p>(Add <code>context: func.Context</code> to the function signature to get the invocation ID.) Note the response contract
+      is consumed by the Power Automate flow — <code>ledgerWriteError</code> becoming generic is fine (the flow keys off
+      <code>status</code>), but re-run the flow's failure branch after the change. Update the assertions in
+      <code>tests/test_function_app_hardening.py</code> that match on error text.</p>
+  </div>
+
+  <div class="finding" id="hg-06">
+    <h3><span class="id">HG-06</span> <span class="badge medium">Medium</span> Provisioning runbook creates resources without platform hardening flags</h3>
+    <p class="kv">Where: <code>docs/provision-azure-environment.html</code> steps 3 and 7 · applies retroactively to the live dev environment (<code>func-invoiceprocess-westus</code>, <code>stinvoicedevwestus</code>)</p>
+    <p>Verified against the actual <code>az</code> commands in the runbook:</p>
+    <ul>
+      <li><code>az functionapp create</code> (line ~245) is run <strong>without</strong> <code>--https-only true</code>, and no
+          <code>minTlsVersion</code> is ever set on the app — a plaintext HTTP call carrying the function key is not rejected
+          at the platform.</li>
+      <li>Both <code>az storage account create</code> calls set <code>--min-tls-version TLS1_2</code> (good) but neither sets
+          <code>--allow-blob-public-access false</code> nor considers <code>--allow-shared-key-access false</code>; the ledger table is
+          created with <code>--auth-mode key</code> even though the design is RBAC/managed-identity.</li>
+      <li>No network restrictions anywhere: no <code>--default-action Deny</code>, no VNet/private endpoints, no
+          <code>--public-network-access</code> settings. Acceptable for a dev prototype; should be an explicit decision for prod
+          (the prod provisioning runbook is derived from this doc).</li>
+    </ul>
+    <p><strong>Fix — retrofit dev now, and add the same flags to the runbook (and the prod runbook derived from it):</strong></p>
+<pre><code># Function App: force HTTPS + TLS floor
+az functionapp update -g $RG -n $APP --set properties.httpsOnly=true
+az functionapp config set -g $RG -n $APP --min-tls-version 1.2
+
+# Data/ledger storage account: no anonymous blob access, RBAC-only data plane
+az storage account update -g $RG -n $ST_DATA --allow-blob-public-access false
+az storage account update -g $RG -n $ST_DATA --allow-shared-key-access false
+# ...and switch the runbook's table create to RBAC:
+az storage table create --account-name $ST_DATA --name $TABLE --auth-mode login</code></pre>
+    <div class="callout">
+      <strong>Caveat for the runtime account (<code>$ST_FUNC</code>):</strong> the Functions host wires
+      <code>AzureWebJobsStorage</code> and <code>DEPLOYMENT_STORAGE_CONNECTION_STRING</code> as connection strings (the runbook
+      notes this). Do <em>not</em> disable shared-key access on <code>$ST_FUNC</code> until the app is switched to
+      identity-based host storage (Flex Consumption supports managed-identity deployment storage); otherwise the app
+      breaks. Disabling public blob access on <code>$ST_FUNC</code> is safe immediately.
+    </div>
+    <p>For prod: additionally decide on <code>--default-action Deny</code> + IP rules or private endpoints for
+      <code>$ST_DATA</code>, and record the decision in <code>docs/provision-azure-environment.html</code> either way.</p>
+  </div>
+
+  <div class="finding" id="hg-07">
+    <h3><span class="id">HG-07</span> <span class="badge medium">Medium</span> Dependencies are unpinned (<code>&gt;=</code> floors, no lockfile)</h3>
+    <p class="kv">Where: <code>functionapp/requirements.txt</code> (all six entries)</p>
+    <p>
+      Every dependency is a floor (<code>azure-functions&gt;=1.20.0</code>, <code>azure-ai-contentunderstanding&gt;=1.1.0</code>, …).
+      Because deploys use <code>func … publish --build remote</code>, Azure resolves whatever is newest at build time — each
+      deploy can silently pick up a different dependency tree, including a breaking or compromised release. This is both
+      a supply-chain and a reproducibility gap.
+    </p>
+    <p><strong>Fix:</strong> pin exact versions from the known-good local environment and keep the floors as comments:</p>
+<pre><code>.\.venv\Scripts\python.exe -m pip freeze | Select-String "azure-|tzdata"
+# copy the resulting == versions into functionapp/requirements.txt</code></pre>
+    <p>Refresh deliberately (e.g. monthly) with a test pass, rather than implicitly on every deploy. A hash-locked file
+      (<code>pip-compile --generate-hashes</code>) is the stronger version if you want to add a dev dependency; exact pins alone
+      are a big step up and need no new tooling.</p>
+  </div>
+
+  <div class="finding" id="hg-08">
+    <h3><span class="id">HG-08</span> <span class="badge medium">Medium</span> Real invoice PII at rest, unencrypted, in the working tree</h3>
+    <p class="kv">Where: <code>samples/</code> (real vendor PDFs: BC Hydro, FortisBC, trade invoices, property tax, …) · <code>out/verify_result.json</code>, <code>out/verify_scorecard.html</code> (extracted vendor names, service addresses, invoice/PO numbers, amounts)</p>
+    <p>
+      Both directories are correctly gitignored and were verified never committed. But they hold real third-party
+      billing documents and production-shaped extracted data in plaintext, regenerated on every harness run. The
+      Azurite emulator artifacts (<code>__azurite_db_*.json</code>) were checked and are clean — the ledger holds only GUIDs,
+      status, and routing decisions, consistent with <code>ledger.py</code> never persisting extracted field values.
+    </p>
+    <p><strong>Fix:</strong></p>
+    <ul>
+      <li>Confirm BitLocker is enabled on this volume (<code>manage-bde -status C:</code>) — that converts "plaintext at rest"
+          into "encrypted at rest" for the whole class of local artifacts, including <code>local.settings.json</code>.</li>
+      <li>Exclude the repo folder from any cloud-sync tool (OneDrive/Dropbox) — sync would copy customer PII and the
+          key file off-machine.</li>
+      <li>Never zip/share the workspace root; share <code>git archive</code> output instead (tracked files only).</li>
+      <li>Purge <code>out/</code> when a verification round is done, and confirm retention of <code>samples/</code> is acceptable under
+          Noble Homes' data-handling expectations (they are needed for the harness, so this is a policy check, not a
+          deletion demand).</li>
+    </ul>
+  </div>
+
+  <div class="finding" id="hg-09">
+    <h3><span class="id">HG-09</span> <span class="badge low">Low</span> No size cap before base64 decode (memory-amplification DoS)</h3>
+    <p class="kv">Where: <code>functionapp/function_app.py:120-128</code></p>
+    <p>
+      <code>contentBase64</code> is regex-stripped and decoded with no length check; the string, its compacted copy, and the
+      decoded bytes coexist in memory (~2.75× the payload), and an authenticated caller can send up to the platform body
+      limit (≈100 MB). One line closes it — before <code>re.sub</code>:
+    </p>
+<pre><code>MAX_CONTENT_B64_CHARS = 45_000_000   # ≈ 33 MB decoded; invoices are &lt;10 MB
+
+if len(content_b64) &gt; MAX_CONTENT_B64_CHARS:
+    return None, None, "contentBase64 exceeds the maximum accepted size"</code></pre>
+    <p>Add a regression test next to the existing transport-validation tests.</p>
+  </div>
+
+  <div class="finding" id="hg-10">
+    <h3><span class="id">HG-10</span> <span class="badge low">Low</span> <code>--insecure</code> TLS bypass in the test harness</h3>
+    <p class="kv">Where: <code>scripts/test.py:388</code> (<code>ssl._create_unverified_context()</code>)</p>
+    <p>
+      Opt-in only, off by default, and exists for this machine's TLS-inspecting proxy — an acceptable harness
+      accommodation, and it never ships (deploy unit is <code>functionapp/</code> only, where TLS verification is never
+      touched). The residual risk is habit: combining <code>--insecure</code> with a real function key against the deployed
+      endpoint would let an active MITM capture the key. <strong>Fix:</strong> print a one-line warning when
+      <code>--insecure</code> is used with a non-localhost URL. No code change needed beyond that.
+    </p>
+  </div>
+
+  <div class="finding" id="hg-11">
+    <h3><span class="id">HG-11</span> <span class="badge low">Low</span> <code>host.json</code> relies entirely on platform defaults</h3>
+    <p class="kv">Where: <code>functionapp/host.json</code></p>
+    <p>
+      No <code>functionTimeout</code>, no retry policy, no HTTP concurrency caps — abuse control rests solely on the function
+      key. Since the CU call is already capped at 120 s (<code>cu_client.DEFAULT_ANALYZE_TIMEOUT_SECONDS</code>), an explicit
+      <code>"functionTimeout": "00:05:00"</code> bounds worst-case invocation cost cheaply. Concurrency throttles are optional
+      at this traffic level; note them for prod capacity planning instead.
+    </p>
+  </div>
+
+  <div class="finding" id="hg-12">
+    <h3><span class="id">HG-12</span> <span class="badge low">Low</span> Docs disagree on the Function→CU auth model</h3>
+    <p class="kv">Where: <code>docs/power-automate-design.html</code> (Key Vault-referenced <code>AZURE_CU_KEY</code> as "validated default") vs <code>docs/provision-azure-environment.html</code> (keyless by design, <code>AZURE_CU_KEY</code> deliberately unset)</p>
+    <p>
+      Not an exposure, but the ambiguity invites an operator to mint an unnecessary CU key during prod provisioning.
+      The keyless/managed-identity path is the stronger default and is what the provisioning runbook already grants
+      roles for. <strong>Fix:</strong> update <code>power-automate-design.html</code> to present keyless as the default and the
+      Key Vault key as the fallback, matching the runbook.
+    </p>
+  </div>
+
+  <div class="finding" id="hg-13">
+    <h3><span class="id">HG-13</span> <span class="badge info">Info</span> Minor notes (no action required)</h3>
+    <ul>
+      <li>The initiating <code>begin_analyze_binary/begin_analyze</code> call relies on azure-core's default transport
+          timeouts; only the polling phase has the explicit 120 s cap (<code>cu_client.py:109-120</code>). Azure-core defaults
+          are sane; acceptable.</li>
+      <li><code>_json</code> serializes with <code>default=str</code> (<code>function_app.py:67</code>) — could stringify an unexpected
+          object repr into a response; payloads are hand-built dicts today.</li>
+      <li><code>ExpiresAt</code> is written to ledger rows but Azure Table Storage has no native TTL — data retention needs an
+          external cleanup job eventually (ops, not security).</li>
+      <li><code>local.settings.json.template</code> and several docs disclose dev resource hostnames — identifiers, not
+          secrets; accepted.</li>
+    </ul>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============================================================ -->
+<section id="already-solid">
+  <h2><span class="badge ok">Verified</span> What is already solid</h2>
+  <p>Confirmed during this review — future reviews should not re-flag these:</p>
+  <ul>
+    <li><strong>No secrets in any tracked file at HEAD</strong>, and none of <code>local.settings.json</code>, <code>samples/</code>,
+        Azurite artifacts, or <code>*.key</code> files were <em>ever</em> committed (verified via <code>git log --all --diff-filter=A</code>
+        and content search across all refs). <code>.gitignore</code> / <code>.funcignore</code> coverage is correct.</li>
+    <li><strong>Endpoint auth:</strong> single POST route with <code>auth_level=FUNCTION</code> (<code>function_app.py:175</code>);
+        Power Automate stores the key in the connector connection and sends it as the <code>x-functions-key</code> header —
+        never in the URL or run history.</li>
+    <li><strong>Secrets discipline in code:</strong> keys/connection strings read from env only; <code>AZURE_CU_ENDPOINT</code>
+        deliberately has no default; <code>DefaultAzureCredential</code>/managed identity is the preferred path
+        (<code>cu_client.py</code>, <code>ledger.py</code>); TLS verification is never disabled in the deployable.</li>
+    <li><strong>Injection surface:</strong> table partition/row keys sanitized (<code>ledger.py:37-52</code>); no blob/file paths
+        built from user input; no <code>eval</code>/<code>exec</code>/<code>pickle</code>/<code>subprocess</code> anywhere in the app.</li>
+    <li><strong>Request validation before state change</strong> (strict base64, threshold range-check, required
+        <code>sourceId</code>) with the A1 claim only after validation — all regression-tested in
+        <code>tests/test_function_app_hardening.py</code>, along with the CU LRO timeout cap and ledger-truth status reporting.</li>
+    <li><strong>No PII in logs:</strong> log lines carry the source GUID and decision only; the Azurite ledger confirmed the
+        design writes no extracted field values.</li>
+    <li><strong>Provisioning design:</strong> least-privilege RBAC (one user-assigned identity with exactly
+        <em>Cognitive Services User</em> + <em>Storage Table Data Contributor</em>), storage created with
+        <code>--min-tls-version TLS1_2</code>, explicit Log Analytics/App Insights wiring, restrictive default CORS untouched.</li>
+    <li><strong>Tooling hygiene:</strong> <code>.claude/settings.json</code> allowlist is narrow and read-only (aside from HG-03's
+        value projection); tests use stubs and placeholder URLs only; <code>analyzers/*.json</code> contain no secrets or PII.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="method">
+  <h2>Method</h2>
+  <p>
+    Review performed 2026-07-10 with three parallel audit passes — (1) <code>functionapp/</code> source, config, and
+    dependency review; (2) <code>scripts/</code>, tracked configuration, untracked local artifacts, and a repo-wide secret
+    grep (<code>.venv</code> excluded, gitignored files explicitly included); (3) provisioning/design docs posture extraction
+    plus a full git-history secret scan across all refs — followed by manual verification of every High/Medium finding
+    against the actual files, history, and the GitHub remote. Secret values in this document are truncated to ≤8
+    characters; the full values needed for the HG-01 scrub must be taken from git history directly, never from a doc.
+  </p>
+</section>
+
+</main>
+</body>
+</html>
