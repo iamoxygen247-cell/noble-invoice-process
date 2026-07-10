@@ -159,3 +159,63 @@ $env:AZURE_CU_KEY = $s.Values.AZURE_CU_KEY
 
 Expected output ends with `status=ContentAnalyzerStatus.READY`. Remember: editing
 `analyzers/*.json` changes nothing in the service until this script is run.
+
+---
+
+## `func start` local run: worker dies with `ZoneInfoNotFoundError: 'No time zone found with key America/Vancouver'`
+
+**Symptoms (verified 2026-07-09):** the func host starts but the Python worker fails to
+initialize with `ModuleNotFoundError: No module named 'tzdata'` →
+`ZoneInfoNotFoundError` from `field_policy.py`'s `ZoneInfo("America/Vancouver")`, and port
+7071 never comes up.
+
+**Cause:** Core Tools spawned its own bundled Python (3.14, under
+`...\Azure Functions Core Tools\workers\python\...`) instead of the project venv. Putting
+`.venv\Scripts` on `PATH` is **not** enough — the host only picks the project interpreter
+when the venv is *activated*, i.e. the `VIRTUAL_ENV` environment variable is set.
+
+**Fix:** set both before `func start` (this is what `Activate.ps1` does):
+
+```powershell
+$env:VIRTUAL_ENV = "<repo>\.venv"
+$env:PATH = "<repo>\.venv\Scripts;" + $env:PATH
+cd functionapp; func start
+```
+
+Combine with the `sitecustomize.py`-on-`PYTHONPATH` truststore shim above for the outbound
+CU call, and run Azurite for the ledger.
+
+---
+
+## CU misreads handwritten receipt-book amounts (drops the cents) and mislabels `is_handwritten`
+
+**Symptoms (confirmed 2026-07-09, `samples/handwritten/260105_0007.pdf`):** a carbon-copy
+receipt-book invoice with amounts written in **split dollars | cents columns** ("94 | 50"
+with a printed vertical rule, no decimal point) extracted as integer `94`/`4` — the cents
+sub-column was dropped by CU itself (both twins; no Python bug). The same document was
+classified `is_handwritten = no` even after a targeted classify-prompt rewrite was
+verified deployed (fetched the live analyzer definition to confirm before concluding).
+
+**Fixes (verified end-to-end 2026-07-10):**
+
+* **Amounts:** the four amount field descriptions in
+  `analyzers/create-generalinvoice-analyzer.json` now explain the split dollars/cents
+  sub-column convention with a concrete example ("94 and 50 in adjacent sub-columns means
+  94.50"). After that, extract AND generate both read 94.50 / 4.50 stably (7/7 replicate
+  analyze calls).
+* **is_handwritten:** a classify-prompt rewrite alone was NOT enough — the label itself
+  flips run-to-run on borderline documents (not just the confidence; the same bytes
+  returned yes and no on consecutive analyze calls). Fixed with the generate-reasoning-twin
+  pattern (`is_handwritten_generate`, like `po_or_job_number_generate`): concrete
+  receipt-book genre cues, "OCR recognition errors in values are evidence of handwriting",
+  and an explicit tie-break — *"when the evidence is mixed or you are unsure, answer yes"*.
+  `gates.py resolve_is_handwritten()` surfaces **yes if either twin says yes** (advisory
+  flag; a missed handwritten doc is the costly direction). Printed invoices still return
+  a clean `no` (the tie-break does not fire on them).
+
+**Reusable lessons:** (1) when a CU prompt fix "doesn't work", first GET the live analyzer
+definition and compare — the JSON edit may simply not be provisioned; (2) CU classify
+labels near the decision boundary are unstable run-to-run, so judge fixes on several
+replicate analyze calls, never one; (3) iterate prompt candidates on a scratch analyzer id
+(`create_analyzer.py --analyzer-id <scratch>` — ids cannot contain `-`) so the analyzer
+the Function uses stays untouched until the wording is proven.

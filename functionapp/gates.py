@@ -76,6 +76,7 @@ FIELD_PRINT_ORDER = [
     "sub_bill_type",
     "sub_bill_type_generate",
     "is_handwritten",
+    "is_handwritten_generate",
     "invoice_description",
     "anomaly_flag",
 ]
@@ -117,6 +118,30 @@ def get_confidence(field_data: Any) -> Optional[float]:
         if isinstance(conf, (int, float)):
             return float(conf)
     return None
+
+
+def resolve_is_handwritten(fields: Dict[str, Any]) -> Tuple[str, Optional[float]]:
+    """
+    Resolve the advisory is_handwritten label from the classify field and its
+    generate reasoning twin. Either twin saying yes wins: the flag warns that OCR
+    quality may be degraded, so a missed handwritten document is the costly
+    direction, and the classify field has confidently mislabelled fully
+    handwritten receipt-book pages. Otherwise the classify label is kept, with
+    the generate value filling in only when the classify field is empty. A
+    response without the generate twin (an older analyzer) resolves exactly as
+    the classify field alone did before.
+    """
+    c_val = (get_value(fields.get("is_handwritten")) or "").strip().lower()
+    c_conf = get_confidence(fields.get("is_handwritten"))
+    g_val = (get_value(fields.get("is_handwritten_generate")) or "").strip().lower()
+    g_conf = get_confidence(fields.get("is_handwritten_generate"))
+    yes_confs = [conf for val, conf in ((c_val, c_conf), (g_val, g_conf)) if val == "yes"]
+    if yes_confs:
+        known = [conf for conf in yes_confs if conf is not None]
+        return "yes", (max(known) if known else None)
+    if c_val:
+        return c_val, c_conf
+    return g_val, g_conf
 
 
 def is_empty_value(value: Any) -> bool:
@@ -390,8 +415,7 @@ def evaluate(
     bucket = field_policy.resolve_bucket(bill_type_value)
 
     # is_handwritten is advisory only (B3 retired) -- surfaced, never gates.
-    is_handwritten_value = (get_value(fields.get("is_handwritten")) or "").strip().lower()
-    is_handwritten_conf = get_confidence(fields.get("is_handwritten"))
+    is_handwritten_value, is_handwritten_conf = resolve_is_handwritten(fields)
 
     advisory = evaluate_b6(fields)
     # Resolved finals (value, effective confidence, passed, note, source) for every twin

@@ -330,6 +330,32 @@ def test_handwriting_b2_nochild():
     check("undetermined handwriting -> auto-writes (full retirement)",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
 
+    # twin resolution: either twin saying yes wins (advisory recall over precision)
+    r = ev(commercial_fields(is_handwritten=fstr("no", 0.88),
+                             is_handwritten_generate=fstr("yes", 0.61)))
+    check("classify no + generate yes -> yes", r["isHandwritten"] == "yes")
+    check("yes confidence comes from the yes twin", r["isHandwrittenConfidence"] == 0.61)
+    r = ev(commercial_fields(is_handwritten=fstr("yes", 0.55),
+                             is_handwritten_generate=fstr("no", 0.9)))
+    check("classify yes + generate no -> yes", r["isHandwritten"] == "yes")
+    check("yes confidence from the classify twin", r["isHandwrittenConfidence"] == 0.55)
+    r = ev(commercial_fields(is_handwritten=fstr("yes", 0.55),
+                             is_handwritten_generate=fstr("yes", 0.8)))
+    check("both yes -> yes at max confidence", r["isHandwritten"] == "yes"
+          and r["isHandwrittenConfidence"] == 0.8, str(r["isHandwrittenConfidence"]))
+    r = ev(commercial_fields(is_handwritten=fstr("no", 0.88),
+                             is_handwritten_generate=fstr("no", 0.61)))
+    check("both no -> no, classify confidence kept", r["isHandwritten"] == "no"
+          and r["isHandwrittenConfidence"] == 0.88, str(r["isHandwrittenConfidence"]))
+    r = ev(commercial_fields(is_handwritten=fstr("", None),
+                             is_handwritten_generate=fstr("no", 0.7)))
+    check("classify empty -> generate label fills in", r["isHandwritten"] == "no"
+          and r["isHandwrittenConfidence"] == 0.7, str(r["isHandwrittenConfidence"]))
+    # generate twin absent (older analyzer) -> classify alone, exactly as before
+    r = ev(commercial_fields(is_handwritten=fstr("no", 0.88)))
+    check("generate absent -> classify value unchanged", r["isHandwritten"] == "no"
+          and r["isHandwrittenConfidence"] == 0.88, str(r["isHandwrittenConfidence"]))
+
     # category other -> reject
     r = ev(commercial_fields(), category="other")
     check("category other -> reject", r["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY)
