@@ -219,3 +219,40 @@ labels near the decision boundary are unstable run-to-run, so judge fixes on sev
 replicate analyze calls, never one; (3) iterate prompt candidates on a scratch analyzer id
 (`create_analyzer.py --analyzer-id <scratch>` — ids cannot contain `-`) so the analyzer
 the Function uses stays untouched until the wording is proven.
+
+---
+
+## Investigating a bad extraction (runbook, added 2026-07-10)
+
+Every processed run persists its raw CU result and decision JSON as blobs in the
+`invoice-diagnostics` container, with paths stamped on the ledger row
+(`RawResultBlob`/`DecisionBlob`, plus `AnalyzerId`, `CuDurationMs`, and — on failed
+runs — `FailedStage`/`LastError`). Full design/decision record:
+`docs/invoice-diagnostics-design.html`.
+
+1. **Look up the run** by the SharePoint item GUID — prints the ledger row and downloads
+   both blobs to `out\diag\<rk>\`:
+
+   ```powershell
+   .\.venv\Scripts\python.exe scripts\diag.py --source-id <guid>
+   ```
+
+   A row stuck at `Received`: read `FailedStage`/`LastError` (CU timeout, auth, throttle).
+   Runs that predate the sidecar have no blobs — only the ledger stamps.
+
+2. **Read the raw confidences** in `<ts>-raw.json` — the per-field values/confidences CU
+   actually returned for that run (a re-run is not evidence; labels flap, see the entry
+   above).
+
+3. **Split the fault domain** with an offline replay (runs `gates.evaluate` on the stored
+   raw JSON, no CU call, no cost):
+
+   ```powershell
+   .\.venv\Scripts\python.exe scripts\diag.py --replay out\diag\<rk>\<ts>-raw.json
+   ```
+
+   Replay matches the stored `<ts>-decision.json` but the values are wrong → the CU
+   analyzer misread the document: fix the prompt on a scratch analyzer with replicates
+   (previous entry). Replay differs from what you expect → the bug is in
+   `gates.py`/`field_policy.py`: fix the code and re-replay the same stored JSON as the
+   regression check (`--field-threshold` to test threshold sensitivity).

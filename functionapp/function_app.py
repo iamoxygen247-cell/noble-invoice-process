@@ -20,10 +20,12 @@ Flow per request:
      re-processed (a corrected invoice may arrive as the same file again).
   3. Call Content Understanding with the document bytes (binary transport).
   4. gates.evaluate -> routingDecision, bill_type bucket, write values, ledger fields.
-  5. Write ledger Status=Extracted + decision/bucket/policy stamps. If this write
-     fails, the response reports status=Received (the row's true state) plus
-     ledgerWriteError; the decision payload is still returned.
-  6. Return the decision JSON (writeValues included for the flow to consume).
+  5. Persist the raw CU result + decision JSON as diagnostics blobs (best-effort,
+     never fails the request; see diagnostics.py).
+  6. Write ledger Status=Extracted + decision/bucket/policy stamps + diagnostics
+     blob paths. If this write fails, the response reports status=Received (the
+     row's true state) plus ledgerWriteError; the decision payload is still returned.
+  7. Return the decision JSON (writeValues included for the flow to consume).
 
 There is NO duplicate-invoice verification anywhere in the pipeline (requirement),
 and no re-upload dedup: the same SharePoint item posted again is re-processed in
@@ -49,6 +51,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import PurePath
 from typing import Optional, Tuple
 
@@ -56,6 +59,7 @@ import azure.functions as func
 
 import gates
 import cu_client
+import diagnostics
 import ledger
 import field_policy
 
@@ -231,6 +235,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
     # --- Content Understanding ----------------------------------------------
     # content/url were validated and decoded before the A1 claim, so an error
     # here is a genuine CU failure (502), never a bad request.
+    cu_started = time.monotonic()
     try:
         if content is not None:
             full = cu_client.analyze_binary(content, file_name)
@@ -238,14 +243,27 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
             full = cu_client.analyze_url(url)
     except Exception as exc:
         # Leave the row at Received: it shows as in-flight/stuck and will be
-        # resumed on the next trigger once it is older than the A1 lease.
+        # resumed on the next trigger once it is older than the A1 lease. Stamp
+        # the failure reason so the stuck row is diagnosable from the ledger;
+        # best-effort — the 502 is returned either way (merge mode leaves
+        # Status=Received untouched, so reclaim semantics are unchanged).
         logging.exception("Content Understanding analyze failed")
+        try:
+            ledger.upsert(table, source_id,
+                          FailedStage="cu_analyze", LastError=str(exc)[:1024])
+        except Exception:
+            logging.exception("Ledger failure-stamp write failed")
         return _json(502, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
                            "status": "Received",
                            "error": f"Content Understanding analyze failed: {exc}"})
+    cu_duration_ms = int((time.monotonic() - cu_started) * 1000)
 
     # --- Gates / decision ----------------------------------------------------
     result = gates.evaluate(full, field_threshold, general_analyzer_id, file_name=file_name)
+
+    # --- Diagnostics sidecar: raw CU result + decision JSON (best-effort) -----
+    blob_paths = diagnostics.save_run(source_id, full, result)
+    raw_blob, decision_blob = blob_paths if blob_paths else ("", "")
 
     # --- Ledger: Extracted + decision + bill-type/policy stamps ---------------
     ledger_write_error: Optional[str] = None
@@ -263,6 +281,12 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
             IsHandwritten=result.get("isHandwritten") or "",
             FileName=file_name,
             SharePointUrl=sharepoint_url,
+            AnalyzerId=result.get("analyzerUsed") or "",
+            CuDurationMs=cu_duration_ms,
+            RawResultBlob=raw_blob,
+            DecisionBlob=decision_blob,
+            FailedStage="",
+            LastError="",
         )
     except Exception as exc:
         logging.exception("Ledger Extracted write failed")

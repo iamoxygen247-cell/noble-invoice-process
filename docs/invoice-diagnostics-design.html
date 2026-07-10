@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Diagnostics Sidecar (Design &amp; Decision Record)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  ul { margin:10px 0 10px 22px; } li { margin:5px 0; }
+  ol { margin:10px 0 10px 22px; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  .lock { display:inline-block; background:var(--ok-bg); border:1px solid var(--ok-bd); color:#1c6b3f;
+          border-radius:6px; padding:1px 8px; font-size:12px; font-weight:600; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Diagnostics Sidecar — Design &amp; Decision Record</h1>
+  <p class="sub">Noble Invoice Processor · persisting the evidence needed to troubleshoot a bad extraction</p>
+
+  <p>
+    <span class="tag">date: 2026-07-10</span>
+    <span class="tag">store: blob sidecar + ledger pointers</span>
+    <span class="tag">retention: 90 days (lifecycle rule)</span>
+    <span class="tag">tooling: scripts/diag.py</span>
+  </p>
+
+  <h2><span class="num">1</span>Problem</h2>
+  <p>
+    Before this change, the pipeline's only durable store was the
+    <code>InvoiceExtractProcessLog</code> table, and it held only the routing decision plus policy
+    stamps (<code>RoutingDecision</code>, <code>BillType</code>, <code>SubBillType</code>,
+    <code>PolicyBucket</code>, <code>PolicyVersion</code>, <code>DefaultedFields</code>,
+    <code>IsHandwritten</code>, filename/URL, timestamps). Everything needed to diagnose a bad
+    extraction was discarded on every run:
+  </p>
+  <ul>
+    <li>the <strong>raw Content Understanding result</strong> (per-field values, confidences, source
+        detail) — returned by <code>cu_client</code>, consumed by <code>gates.evaluate</code>, then
+        dropped; never logged;</li>
+    <li>the <strong>extracted field values</strong> — present only in the HTTP response to the
+        Power Automate flow;</li>
+    <li>the <strong>analyzer id in effect</strong> — analyzers are re-provisioned in place
+        (<code>scripts/create_analyzer.py</code> uses <code>allow_replace=True</code>), so runs under
+        different prompt revisions were indistinguishable;</li>
+    <li>any <strong>failure detail</strong> — a failed CU call left a row stuck at
+        <code>Status="Received"</code> with no reason recorded.</li>
+  </ul>
+  <div class="warn">
+    <strong>Why a re-run is not a substitute.</strong> CU classification labels and confidences flap
+    run-to-run on borderline documents (documented in <code>docs/ai/troubleshooting.md</code>).
+    Re-processing the SharePoint file does not reproduce the original run; only the stored raw
+    result shows what CU actually said at the time.
+  </div>
+
+  <h2><span class="num">2</span>Decision record</h2>
+  <table>
+    <tr><th>Option</th><th>Decision</th><th>Why</th></tr>
+    <tr>
+      <td>Store the whole CU JSON <em>in the ledger</em></td>
+      <td><strong>Rejected</strong></td>
+      <td>Table Storage caps a property at <strong>64&nbsp;KB</strong> and an entity at
+          <strong>1&nbsp;MB</strong>. The analyzers run with <code>returnDetails</code>,
+          <code>enableLayout</code>, and <code>estimateFieldSourceAndConfidence</code>, so multi-page
+          raw responses exceed both limits — writes would fail on exactly the large documents most
+          worth debugging.</td>
+    </tr>
+    <tr>
+      <td>Blob sidecar + ledger pointers</td>
+      <td><strong>Chosen</strong></td>
+      <td>No practical size limit, negligible cost, lifecycle-management retention, and stored raw
+          results enable <em>offline replay</em> of the gates (no CU spend, deterministic).</td>
+    </tr>
+    <tr>
+      <td>Also store a copy of the original PDF bytes</td>
+      <td><strong>Rejected</strong></td>
+      <td>SharePoint remains the source of the file (<code>SharePointUrl</code>/<code>FileName</code>
+          on the row point back to it); duplicating it would double the PII at rest.</td>
+    </tr>
+    <tr>
+      <td>App Insights custom events / dimensions</td>
+      <td><strong>Deferred</strong></td>
+      <td>32&nbsp;KB property cap, sampling can drop events, and it would push full invoice PII into
+          telemetry. Invocation-id correlation remains open as hardening item <strong>HG-05</strong>.</td>
+    </tr>
+  </table>
+
+  <h2><span class="num">3</span>Design</h2>
+  <h3>3.1 Blob layout</h3>
+  <p>
+    <code>functionapp/diagnostics.py</code> writes two blobs per run into the container
+    <code>invoice-diagnostics</code> (override: env <code>DIAGNOSTICS_CONTAINER</code>), under the
+    ledger row's <code>RowKey</code> prefix. The timestamp keeps a run history when the same
+    SharePoint item is re-uploaded and re-processed:
+  </p>
+<pre><code>{rk}/{yyyymmddThhmmssZ}-raw.json       full cu_client analyze result (values, confidences)
+{rk}/{yyyymmddThhmmssZ}-decision.json  gates.evaluate result (what the flow received)</code></pre>
+  <p>
+    Auth mirrors <code>ledger.py</code>: <code>AZURE_TABLES_CONNECTION_STRING</code> if set (a full
+    storage connection string — covers Azurite locally), otherwise
+    <code>AZURE_STORAGE_ACCOUNT</code> + <code>DefaultAzureCredential</code>. No new secrets.
+  </p>
+
+  <h3>3.2 New ledger columns</h3>
+  <table>
+    <tr><th>Column</th><th>Written when</th><th>Meaning</th></tr>
+    <tr><td><code>RawResultBlob</code></td><td>Extracted</td><td>Blob path of the raw CU result (<code>""</code> if the sidecar write failed).</td></tr>
+    <tr><td><code>DecisionBlob</code></td><td>Extracted</td><td>Blob path of the decision JSON (<code>""</code> if the sidecar write failed).</td></tr>
+    <tr><td><code>AnalyzerId</code></td><td>Extracted</td><td>The child analyzer that produced the fields (<code>analyzerUsed</code> from the result).</td></tr>
+    <tr><td><code>CuDurationMs</code></td><td>Extracted</td><td>Wall-clock duration of the CU analyze call; watch for creep toward the 120&nbsp;s timeout.</td></tr>
+    <tr><td><code>FailedStage</code></td><td>CU failure</td><td><code>"cu_analyze"</code> when the analyze call raised; cleared to <code>""</code> on the next successful run.</td></tr>
+    <tr><td><code>LastError</code></td><td>CU failure</td><td><code>str(exc)</code> truncated to 1024 chars; cleared to <code>""</code> on the next successful run.</td></tr>
+  </table>
+
+  <h3>3.3 Contracts</h3>
+  <ul>
+    <li><strong>Best-effort sidecar.</strong> <code>diagnostics.save_run</code> catches every
+        exception, logs a warning, and returns <code>None</code>. A diagnostics outage can never fail
+        invoice processing; the ledger pointers are simply empty for that run.</li>
+    <li><strong>Failure stamp preserves reclaim semantics.</strong> The CU-failure stamp is a merge
+        upsert that does not touch <code>Status</code>, so the row stays at <code>Received</code> and
+        gate A1's staleness lease still governs when a retry may reclaim it. The stamp refreshes
+        <code>LastUpdatedUtc</code>, extending the lease only by the failed CU call's own duration.
+        The stamp itself is wrapped in try/except — the 502 is returned either way.</li>
+    <li><strong>No stamp on ledger-write failure.</strong> If the <em>Extracted</em> write fails, the
+        ledger just proved unavailable; the existing <code>ledgerWriteError</code> response field and
+        the exception log line are the record.</li>
+  </ul>
+
+  <h2><span class="num">4</span>Tooling — scripts/diag.py</h2>
+  <p><strong>Inspect a processed invoice</strong> (ledger row + download its diagnostics blobs to <code>out\diag\&lt;rk&gt;\</code>):</p>
+<pre><code>.\.venv\Scripts\python.exe scripts\diag.py --source-id &lt;sharepoint-item-guid&gt;</code></pre>
+  <p><strong>Replay a stored raw result offline</strong> — runs <code>gates.evaluate</code> on the stored
+     JSON with no CU call. Use it to reproduce the original decision, or to test a
+     <code>gates.py</code>/<code>field_policy.py</code> change against real historical responses:</p>
+<pre><code>.\.venv\Scripts\python.exe scripts\diag.py --replay out\diag\&lt;rk&gt;\&lt;ts&gt;-raw.json
+.\.venv\Scripts\python.exe scripts\diag.py --replay ...-raw.json --field-threshold 0.8 --file-name invoice1.pdf</code></pre>
+  <div class="note">
+    <strong>Fault-domain split.</strong> If the replayed decision differs from the stored
+    <code>-decision.json</code>, the gates/policy code changed since the run. If the stored raw values
+    themselves are wrong, the problem is on the CU/analyzer side — iterate the prompt on a scratch
+    analyzer with replicates (see <code>docs/ai/troubleshooting.md</code>).
+  </div>
+
+  <h2><span class="num">5</span>Operations</h2>
+  <ul>
+    <li><strong>RBAC:</strong> the Function's managed identity needs
+        <span class="lock">Storage Blob Data Contributor</span> on the storage account (it previously
+        had only a table role). Dev: <code>stinvoicedevwestus</code>.</li>
+    <li><strong>Retention:</strong> add a blob lifecycle-management rule deleting blobs in
+        <code>invoice-diagnostics</code> older than <strong>90 days</strong>, matching
+        <code>ledger.DEFAULT_RETENTION_DAYS</code>. Azurite ignores lifecycle rules (local dev
+        unaffected).
+<pre><code>az storage account management-policy create --account-name &lt;account&gt; -g &lt;rg&gt; --policy '{
+  "rules": [{ "enabled": true, "name": "purge-invoice-diagnostics", "type": "Lifecycle",
+    "definition": {
+      "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["invoice-diagnostics/"] },
+      "actions": { "baseBlob": { "delete": { "daysAfterModificationGreaterThan": 90 } } } } }]
+}'</code></pre></li>
+    <li><strong>PII:</strong> the raw CU JSON contains the full invoice text. The container is
+        private, in the same storage account and under the same access controls as the ledger,
+        auto-deleted at 90 days; field values are never written to logs.</li>
+  </ul>
+
+  <footer>
+    Related: <code>functionapp/diagnostics.py</code> · <code>functionapp/function_app.py</code> ·
+    <code>scripts/diag.py</code> · <code>tests/test_diagnostics.py</code> ·
+    <code>docs/ai/troubleshooting.md</code> ("Investigating a bad extraction") ·
+    <code>docs/hardening-review-2026-07-10.html</code> (HG-05, deferred correlation)
+  </footer>
+
+</div>
+</body>
+</html>
