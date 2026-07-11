@@ -228,7 +228,8 @@ Every processed run persists its raw CU result and decision JSON as blobs in the
 `invoice-diagnostics` container, with paths stamped on the ledger row
 (`RawResultBlob`/`DecisionBlob`, plus `AnalyzerId`, `CuDurationMs`, and — on failed
 runs — `FailedStage`/`LastError`). Full design/decision record:
-`docs/invoice-diagnostics-design.html`.
+`docs/invoice-diagnostics-design.html`; detailed step-by-step runbook (env setup, RBAC,
+fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.html`.
 
 1. **Look up the run** by the SharePoint item GUID — prints the ledger row and downloads
    both blobs to `out\diag\<rk>\`:

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Invoice Diagnostics &amp; Troubleshooting (Runbook)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  ul { margin:10px 0 10px 22px; } li { margin:5px 0; }
+  ol { margin:10px 0 10px 22px; }
+  ol.steps > li { margin:9px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Invoice Diagnostics &amp; Troubleshooting — Runbook</h1>
+  <p class="sub">Noble Invoice Processor · how to diagnose a past invoice run (wrong value, wrong routing, or a stuck row)</p>
+
+  <p>
+    <span class="tag">tool: scripts\diag.py</span>
+    <span class="tag">evidence: invoice-diagnostics blobs + ledger stamps</span>
+    <span class="tag">replay: offline, no CU cost</span>
+    <span class="tag">design record: invoice-diagnostics-design.html</span>
+  </p>
+
+  <div class="note">
+    <strong>What exists per run.</strong> Every invoice processed by the Function leaves: a ledger row in
+    <code>InvoiceExtractProcessLog</code> (routing decision, policy stamps, <code>AnalyzerId</code>,
+    <code>CuDurationMs</code>, failure stamps, blob paths) and two blobs in the
+    <code>invoice-diagnostics</code> container — <code>&lt;rk&gt;/&lt;ts&gt;-raw.json</code> (the full raw
+    Content Understanding result: every field twin, value, confidence) and
+    <code>&lt;rk&gt;/&lt;ts&gt;-decision.json</code> (exactly what Power Automate received). Blobs are
+    auto-deleted after 90 days by a lifecycle rule.
+  </div>
+  <div class="warn">
+    <strong>Deployment boundary.</strong> The sidecar records runs processed <em>after</em> the diagnostics
+    code was deployed (<code>func azure functionapp publish func-invoiceprocess-westus --build remote</code>).
+    Older runs have only the basic ledger stamps — see §8.
+  </div>
+
+  <h2><span class="num">1</span>Point your shell at the right storage</h2>
+  <h3>Deployed runs (real Azure storage)</h3>
+<pre><code># the connection string wins if set, and would silently hit Azurite instead
+Remove-Item Env:AZURE_TABLES_CONNECTION_STRING -ErrorAction SilentlyContinue
+$env:AZURE_STORAGE_ACCOUNT = "stinvoicedevwestus"
+$env:PYTHONPATH = "$env:LOCALAPPDATA\az-truststore"   # TLS-inspection fix for venv Python
+az login                                              # DefaultAzureCredential uses your CLI login</code></pre>
+  <p>
+    Your <em>user account</em> needs data-plane roles on the storage account:
+    <strong>Storage Blob Data Reader</strong> and <strong>Storage Table Data Reader</strong>.
+    Owner/Contributor alone does not grant data access — a <code>403 AuthorizationPermissionMismatch</code>
+    means these roles are missing (assign them via Access Control (IAM) exactly like the Function's role;
+    RBAC takes a few minutes to propagate).
+  </p>
+  <h3>Local runs (Azurite)</h3>
+<pre><code>$env:AZURE_TABLES_CONNECTION_STRING = "UseDevelopmentStorage=true"   # Azurite must be running</code></pre>
+
+  <h2><span class="num">2</span>Find the sourceId</h2>
+  <p>
+    <code>diag.py</code> is keyed on the <strong>SharePoint item UniqueId GUID</strong>. If you only know the
+    filename: Azure portal &rarr; storage account &rarr; <strong>Storage browser</strong> &rarr;
+    <strong>Tables</strong> &rarr; <code>InvoiceExtractProcessLog</code> &rarr; filter
+    <code>FileName</code> eq <code>&lt;name&gt;.pdf</code> — the <code>RowKey</code> is the sourceId.
+    The Power Automate run history also shows it in the Function's response body.
+  </p>
+
+  <h2><span class="num">3</span>Pull everything for the run</h2>
+<pre><code>.\.venv\Scripts\python.exe scripts\diag.py --source-id &lt;guid&gt;</code></pre>
+  <p>Prints the ledger row and downloads both artifacts to <code>out\diag\&lt;guid&gt;\</code>. Read the row top-down:</p>
+  <table>
+    <tr><th>Column</th><th>What it tells you</th></tr>
+    <tr><td><code>Status</code> / <code>RoutingDecision</code></td>
+        <td>Did the run finish, and which path — <code>HAPPY_PATH_CANDIDATE</code>,
+            <code>REVIEW_B4_CRITICAL_FIELD</code>, <code>REJECT_B2_OTHER_CATEGORY</code>,
+            <code>REVIEW_NO_CHILD_EXTRACTION</code>.</td></tr>
+    <tr><td><code>FailedStage</code> / <code>LastError</code></td>
+        <td>For a row stuck at <code>Received</code>: the verbatim CU failure (timeout, auth, throttle,
+            <code>ContentSourceNotAccessible</code>…). For infrastructure failures the diagnosis usually
+            ends here.</td></tr>
+    <tr><td><code>AnalyzerId</code> / <code>PolicyVersion</code></td>
+        <td>Which child analyzer produced the fields, and which field-policy code version stamped the
+            decision. Compare <code>PolicyVersion</code> to the current <code>field_policy.POLICY_VERSION</code>
+            before trusting a replay comparison (§6).</td></tr>
+    <tr><td><code>CuDurationMs</code></td>
+        <td>CU analyze wall-clock. Values creeping toward the 120&nbsp;s timeout signal service degradation.</td></tr>
+    <tr><td><code>DefaultedFields</code> / <code>IsHandwritten</code></td>
+        <td>Which date fields were defaulted by policy; the advisory handwriting label.</td></tr>
+    <tr><td><code>RawResultBlob</code> / <code>DecisionBlob</code></td>
+        <td>Blob paths of the two artifacts. Empty strings = the best-effort sidecar write failed for that
+            run (reason in the Function's App Insights logs) or the run predates the sidecar.</td></tr>
+  </table>
+
+  <h2><span class="num">4</span>Read the decision JSON (<code>&lt;ts&gt;-decision.json</code>)</h2>
+  <p>This is exactly what the flow received. For the field that came out wrong, check:</p>
+  <ul>
+    <li><code>fields.&lt;name&gt;</code> — the final value and confidence.</li>
+    <li><code>resolutions.&lt;name&gt;</code> — which twin won (<code>extract</code>, <code>generate</code>,
+        or <code>agreement</code>) and whether it passed the B4 gate. A correct value losing to a wrong twin
+        is a <code>field_policy.py</code> resolution problem, <em>not</em> a CU problem.</li>
+    <li><code>reviewReasons</code> / <code>advisoryFlags</code> — why it routed to review, if it did.</li>
+    <li><code>writeValues</code> — what the flow would have written to Dynamics.</li>
+  </ul>
+
+  <h2><span class="num">5</span>Read the raw CU result (<code>&lt;ts&gt;-raw.json</code>)</h2>
+  <p>
+    Find the field in the child content's <code>fields</code> block and look at <strong>both twins</strong>
+    (<code>&lt;name&gt;_extract</code>, <code>&lt;name&gt;_generate</code>) with their confidences. This is
+    what CU actually returned <em>on that run</em>.
+  </p>
+  <div class="warn">
+    <strong>A re-run is not evidence.</strong> CU output is not deterministic — classification labels and
+    confidences flap run-to-run on borderline documents (see the worked example in
+    <code>docs/ai/troubleshooting.md</code>). Only the stored raw result shows what happened at the time.
+  </div>
+
+  <h2><span class="num">6</span>Split the fault domain with an offline replay</h2>
+<pre><code>.\.venv\Scripts\python.exe scripts\diag.py --replay out\diag\&lt;guid&gt;\&lt;ts&gt;-raw.json --file-name &lt;original&gt;.pdf</code></pre>
+  <p>
+    Runs <code>gates.evaluate</code> on the stored raw response — no CU call, free, deterministic.
+    <code>--file-name</code> matters only for the municipal invoice-number filename fallback;
+    <code>--field-threshold 0.8</code> tests threshold sensitivity.
+  </p>
+  <table>
+    <tr><th>Observation</th><th>Fault domain</th><th>Next step</th></tr>
+    <tr>
+      <td>Replay <strong>matches</strong> the stored decision, and the raw twin values are
+          <strong>wrong</strong></td>
+      <td>CU analyzer misread the document</td>
+      <td>Prompt work — §7</td>
+    </tr>
+    <tr>
+      <td>Replay <strong>matches</strong>, raw values are <strong>right</strong>, final decision is
+          <strong>wrong</strong></td>
+      <td>Twin resolution / gate / policy logic</td>
+      <td>Fix <code>gates.py</code> / <code>field_policy.py</code>, then re-run the same
+          <code>--replay</code> as the regression check — the stored raw JSON is your test fixture.</td>
+    </tr>
+    <tr>
+      <td>Replay <strong>differs</strong> from the stored decision</td>
+      <td>Gate/policy code changed since that run</td>
+      <td>Compare the row's <code>PolicyVersion</code> with the current
+          <code>field_policy.POLICY_VERSION</code>; check git history between the two.</td>
+    </tr>
+  </table>
+
+  <h2><span class="num">7</span>If CU misread the document (prompt work)</h2>
+  <ol class="steps">
+    <li>Get the original PDF from SharePoint (<code>SharePointUrl</code> / <code>FileName</code> on the row).</li>
+    <li>Iterate the field description on a <strong>scratch analyzer</strong> so the production analyzer stays
+        untouched (analyzer ids cannot contain <code>-</code>):
+<pre><code>.\.venv\Scripts\python.exe scripts\create_analyzer.py --analyzer-id &lt;scratchid&gt;</code></pre></li>
+    <li>Judge every candidate on <strong>3+ replicate analyze calls</strong>, never one — labels flap near the
+        decision boundary.</li>
+    <li>Before concluding a fix "doesn't work", <strong>GET the live analyzer definition</strong> and confirm
+        the JSON edit was actually provisioned.</li>
+    <li>When proven, provision the real analyzer (<code>create_analyzer.py</code> with no override) and
+        re-run the affected document via <code>scripts\test.py</code>.</li>
+  </ol>
+
+  <h2><span class="num">8</span>Runs that predate the sidecar (or blobs already purged)</h2>
+  <p>
+    Only the decision stamps exist. The single option is a fresh live run — treat its output as
+    <em>indicative, not forensic</em> (§5 warning applies):
+  </p>
+<pre><code>.\.venv\Scripts\python.exe scripts\test.py --file ".\path\to\the.pdf"</code></pre>
+  <div class="warn">
+    <strong>Do not pass <code>--source-id &lt;original-guid&gt;</code> casually.</strong> Re-posting the same
+    sourceId re-processes the item and <em>overwrites the historical ledger row's decision</em>. By default
+    <code>test.py</code> generates a fresh GUID and leaves the original row untouched.
+  </div>
+
+  <h2><span class="num">9</span>Quick reference — common symptoms</h2>
+  <table>
+    <tr><th>Symptom</th><th>Meaning / action</th></tr>
+    <tr><td>Row stuck at <code>Received</code>, <code>FailedStage=cu_analyze</code></td>
+        <td>CU call failed; <code>LastError</code> has the reason. The row is re-claimed automatically on the
+            next trigger once older than the A1 lease (default 600&nbsp;s).</td></tr>
+    <tr><td>Row stuck at <code>Received</code>, no failure stamps</td>
+        <td>Run crashed before the stamp existed (pre-sidecar), the stamp write itself failed (see Function
+            logs), or a run is genuinely in flight right now.</td></tr>
+    <tr><td><code>RawResultBlob</code> / <code>DecisionBlob</code> empty on an <code>Extracted</code> row</td>
+        <td>The best-effort blob write failed (RBAC missing, container/network issue) or the run predates the
+            sidecar. Check App Insights for the "Diagnostics blob write failed" warning.</td></tr>
+    <tr><td><code>diag.py</code> fails with <code>AuthorizationPermissionMismatch</code> (403)</td>
+        <td>Your user lacks Storage Blob/Table <em>Data</em> Reader roles on the account (§1).</td></tr>
+    <tr><td><code>diag.py</code> fails with <code>CERTIFICATE_VERIFY_FAILED</code></td>
+        <td>TLS-inspection proxy: set <code>$env:PYTHONPATH = "$env:LOCALAPPDATA\az-truststore"</code> first
+            (see <code>docs/ai/troubleshooting.md</code>).</td></tr>
+    <tr><td><code>diag.py</code> shows the Azurite row when you expected the Azure one (or vice versa)</td>
+        <td><code>AZURE_TABLES_CONNECTION_STRING</code> takes precedence over
+            <code>AZURE_STORAGE_ACCOUNT</code> — set exactly one (§1).</td></tr>
+  </table>
+
+  <footer>
+    Related: <code>docs/invoice-diagnostics-design.html</code> (design &amp; decision record) ·
+    <code>scripts/diag.py</code> · <code>functionapp/diagnostics.py</code> ·
+    <code>docs/ai/troubleshooting.md</code> (condensed entry + prompt-fix method) ·
+    <code>docs/hardening-review-2026-07-10.html</code>
+  </footer>
+
+</div>
+</body>
+</html>
