@@ -276,3 +276,28 @@ fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.
    (previous entry). Replay differs from what you expect → the bug is in
    `gates.py`/`field_policy.py`: fix the code and re-replay the same stored JSON as the
    regression check (`--field-threshold` to test threshold sensitivity).
+
+---
+
+## A word-count budget in a generate prompt does not cap characters
+
+**Symptoms (confirmed 2026-07-14, `invoice_description`):** the requirement was a
+character limit (< 44 chars incl. spaces/punctuation, the UI report truncates beyond
+that), and the first prompt phrased it as "6 words or fewer and under 44 characters".
+On `samples/commercial/trade1.pdf` the model returned
+`'Intrusion security monitoring and GSM service'` — exactly 6 words, but 45 chars
+(2/3 replicates over). The model satisfies the word budget and ignores the char count;
+long words blow through.
+
+**Fix (verified 2026-07-14, 18/18 replicates ≤ 41 chars):** make the character limit the
+primary rule and tell the model *how to shorten* instead of asking it to count: "Hard
+limit: under 44 characters — about 4 to 6 short words. Name only the primary service;
+drop adjectives, brand or product names, and secondary services rather than exceed the
+limit", plus a write-this-never-that counter-example built from the actual failure
+(`'Security monitoring service'`, never
+`'Intrusion security monitoring and GSM service'`). After that the same document
+returned the short form 3/3.
+
+**Reusable lesson:** LLMs can't count characters; a char limit in a prompt only works as
+"aim well under, prefer fewer/shorter words, here is what to drop". Judge on 3+
+replicates per document (same scratch-analyzer workflow as the entries above).
