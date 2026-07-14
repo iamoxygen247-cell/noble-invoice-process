@@ -83,6 +83,13 @@ GST_EXTRACT = "gst_amount_extract"
 GST_GENERATE = "gst_amount_generate"
 GST_FINAL = "gst_amount"
 
+# pst_amount is twinned like gst_amount but is informational only (never critical):
+# most invoices are service-only and charge no BC PST. The written value defaults
+# to 0 when the twins resolve to nothing or N/A (see build_write_values).
+PST_EXTRACT = "pst_amount_extract"
+PST_GENERATE = "pst_amount_generate"
+PST_FINAL = "pst_amount"
+
 PO_EXTRACT = "po_or_job_number_extract"
 PO_GENERATE = "po_or_job_number_generate"
 PO_FINAL = "po_or_job_number"
@@ -110,6 +117,7 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "invoice_number",
     "po_or_job_number",
     "gst_amount",
+    "pst_amount",
     "account_number",
     "bill_type",
     "sub_bill_type",
@@ -532,7 +540,8 @@ def resolve_service_address(
     )
 
 
-# Every twin-resolved critical field: final name -> (extract key, generate key, agree fn,
+# Every twin-resolved field (all critical in some bucket except pst_amount, which is
+# informational only): final name -> (extract key, generate key, agree fn,
 # prefer the clean generate value on agreement). vendor prefers the normalised generate
 # name; the rest keep the literal extract value (the twin only validates).
 TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
@@ -540,6 +549,7 @@ TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
     SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, False),
     TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, False),
     GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, False),
+    PST_FINAL: (PST_EXTRACT, PST_GENERATE, _amounts_agree, False),
     PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, False),
     INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, False),
     ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, False),
@@ -576,6 +586,8 @@ def build_write_values(
           payment_due_date -> today + 30 PST) and the field name is recorded in
           ``defaulted_fields`` for the ledger;
         * non-date fields pass through unchanged (values only);
+        * ``pst_amount`` defaults to 0 when the twins resolve to nothing, an
+          empty string, or N/A (no PST charged -- the common, service-only case);
         * ``amount_excluding_gst`` is the derived total - gst (or None).
 
     This is identical for both buckets -- defaulting is not bucket-dependent.
@@ -606,6 +618,12 @@ def build_write_values(
     # receives the resolved value for each. CU no longer returns these names directly.
     for final_name in TWIN_FIELDS:
         write[final_name] = resolve_field(final_name, parsed, threshold)[0]
+
+    # pst_amount is written as 0 when no PST is charged (most invoices are
+    # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.
+    pst = write[PST_FINAL]
+    if pst is None or (isinstance(pst, str) and pst.strip().lower() in ("", "n/a", "na")):
+        write[PST_FINAL] = 0
 
     # sub_bill_type is derived too: commercial from the resolved PO's prefix,
     # municipal from the classified label (confidence bar / generate-twin

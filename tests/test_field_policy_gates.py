@@ -729,6 +729,63 @@ def test_amount_and_po_twins():
     check("empty po does not agree", not field_policy._po_values_agree("", "12345678"))
 
 
+def test_pst_twin_and_zero_default():
+    print("\n[gates: pst twin (informational only) + written 0 default]")
+
+    # pst is in no bucket's critical set: absent twins (the common service-only
+    # invoice) never gate, and the written value defaults to 0.
+    r = ev(commercial_fields())
+    check("no pst twins -> still happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("no pst twins -> resolution is none/failed (informational)",
+          r["resolutions"]["pst_amount"]["passed"] is False
+          and r["resolutions"]["pst_amount"]["source"] == "none",
+          str(r["resolutions"].get("pst_amount")))
+    check("no pst twins -> writeValues carries 0", r["writeValues"]["pst_amount"] == 0,
+          str(r["writeValues"].get("pst_amount")))
+    check("pst not in commercial criticals",
+          "pst_amount" not in field_policy.critical_fields("commercial"))
+    check("pst not in municipal criticals",
+          "pst_amount" not in field_policy.critical_fields("municipal"))
+
+    # confident extract flows to writeValues; amount_excluding_gst stays total - gst.
+    r = ev(commercial_fields(pst_amount_extract=fnum(18.90, 0.93)))
+    check("pst extract writes the amount", r["writeValues"]["pst_amount"] == 18.90,
+          str(r["writeValues"].get("pst_amount")))
+    check("pst source = extract", r["resolutions"]["pst_amount"]["source"] == "extract")
+    check("amount_excluding_gst unchanged by pst (105 - 5)",
+          r["writeValues"]["amount_excluding_gst"] == 100.0, str(r["writeValues"].get("amount_excluding_gst")))
+
+    # both twins below threshold but equal -> agreement carries it, like gst.
+    r = ev(commercial_fields(
+        pst_amount_extract=fnum(34.75, 0.60),
+        pst_amount_generate=fnum(34.75, 0.65),
+    ))
+    check("pst both below + equal -> agreement", r["resolutions"]["pst_amount"]["source"] == "agreement")
+    check("pst agreement writes the value", r["writeValues"]["pst_amount"] == 34.75,
+          str(r["writeValues"].get("pst_amount")))
+
+    # a low-confidence, disagreeing pst never routes to review (informational only).
+    r = ev(commercial_fields(
+        pst_amount_extract=fnum(18.90, 0.40),
+        pst_amount_generate=fnum(5.0, 0.40),
+    ))
+    check("low/conflicting pst still happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # 'N/A' and empty-string resolutions normalise to 0 in the written values.
+    parsed = gates.parse_fields(commercial_fields(pst_amount_generate=fstr("N/A", 0.90)))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("'N/A' pst -> written 0", wv["pst_amount"] == 0, str(wv["pst_amount"]))
+
+    parsed = gates.parse_fields(commercial_fields(pst_amount_extract=fstr("", None)))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("empty-string pst -> written 0", wv["pst_amount"] == 0, str(wv["pst_amount"]))
+
+    # a genuine 0.0 from CU passes through (0 is not missing), source generate rescue.
+    parsed = gates.parse_fields(commercial_fields(pst_amount_generate=fnum(0.0, 0.95)))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("explicit 0.0 pst stays 0", wv["pst_amount"] == 0.0, str(wv["pst_amount"]))
+
+
 def test_po_ocr_rescue():
     print("\n[gates: PO rescue from OCR markdown]")
 

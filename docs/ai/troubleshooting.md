@@ -187,6 +187,25 @@ CU call, and run Azurite for the ledger.
 
 ---
 
+## Python `json.loads` on `functionapp/local.settings.json` fails: `Unexpected UTF-8 BOM`
+
+**Symptoms (verified 2026-07-13):** a Python script reading the gitignored
+`functionapp/local.settings.json` with `read_text(encoding="utf-8")` dies with
+`json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig)`.
+
+**Cause:** the file is saved with a UTF-8 BOM (normal for files created by Windows
+tooling). PowerShell's `ConvertFrom-Json` strips it silently, so the PowerShell recipes
+elsewhere in this doc are unaffected — only Python reads hit it.
+
+**Fix:** read with `encoding="utf-8-sig"` (strips the BOM when present, harmless when
+absent):
+
+```python
+settings = json.loads(path.read_text(encoding="utf-8-sig"))["Values"]
+```
+
+---
+
 ## CU misreads handwritten receipt-book amounts (drops the cents) and mislabels `is_handwritten`
 
 **Symptoms (confirmed 2026-07-09, `samples/handwritten/260105_0007.pdf`):** a carbon-copy
