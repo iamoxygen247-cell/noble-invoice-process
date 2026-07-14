@@ -131,7 +131,7 @@
       "invoice_description": {
         "type": "string",
         "method": "generate",
-        "description": "One very short phrase, 6 words or fewer and under 44 characters including spaces and punctuation, describing what this invoice is for, from the line items, Service For, or notes. Do not include vendor name, numbers, address, date, tax, or total. Do not mention GST. Examples: 'Lawn maintenance service in March.' 'Electrical repair work.' 'Monthly water utility charges in June.' 'Annual business license renewal for 2026.' Return an empty string if undeterminable."
+        "description": "One very short phrase describing what this invoice is for, from the line items, Service For, or notes. Hard limit: under 44 characters including spaces and punctuation — about 4 to 6 short words. Name only the primary service; when the phrase would be too long, drop adjectives, brand or product names, and secondary services rather than exceed the limit: write 'Security monitoring service', never 'Intrusion security monitoring and GSM service'. Do not include vendor name, numbers, address, date, tax, or total. Do not mention GST. Examples: 'Lawn maintenance service in March.' 'Electrical repair work.' 'Monthly water utility charges in June.' 'Annual business license renewal for 2026.' Return an empty string if undeterminable."
       },
       "anomaly_flag": {
         "type": "string",
