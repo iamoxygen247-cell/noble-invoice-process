@@ -93,7 +93,9 @@ $env:AZURE_CU_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.az
   <h2><span class="num">2</span>Deploy the Function code</h2>
   <h3>Option A — Core Tools (CLI)</h3>
   <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\functionapp"
-func azure functionapp publish &lt;APP&gt; --build remote</code></pre>
+$APP= "func-invoiceprocess-westus"
+$RG = "rg-content-understanding-dev"
+func azure functionapp publish &#36;APP; --build remote</code></pre>
   <h3>Option B — VS Code</h3>
   <p>Azure extension → <strong>Workspace</strong> → <strong>Deploy to Function App…</strong> → pick
      <span class="ph">&lt;APP&gt;</span>. It uses <code>deploySubpath: functionapp</code> automatically;
@@ -102,7 +104,7 @@ func azure functionapp publish &lt;APP&gt; --build remote</code></pre>
 
   <h2><span class="num">3</span>Confirm Azure App Settings + identity (critical)</h2>
   <p>Because <code>local.settings.json</code> is not deployed, verify these exist on <span class="ph">&lt;APP&gt;</span>:</p>
-  <pre><code>az functionapp config appsettings list -g &lt;RG&gt; -n &lt;APP&gt; `
+  <pre><code>az functionapp config appsettings list -g $RG -n $APP `
   --query "[?contains(name,'AZURE_') || name=='FIELD_CONFIDENCE_THRESHOLD'].{name:name, value:value}" -o table</code></pre>
   <table>
     <tr><th>Setting</th><th>Value</th></tr>
