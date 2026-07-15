@@ -133,10 +133,10 @@ func azure functionapp publish &#36;APP; --build remote</code></pre>
 
   <h2><span class="num">4</span>Get the base URL + function key</h2>
   <pre><code># Base URL — Flex apps get a HASHED default host name; the bare &lt;APP&gt;.azurewebsites.net does NOT resolve
-az functionapp show -g &lt;RG&gt; -n &lt;APP&gt; --query "defaultHostName" -o tsv   # -> &lt;APP&gt;-&lt;hash&gt;.westus-01.azurewebsites.net
+az functionapp show -g $RG -n $APP --query "defaultHostName" -o tsv   # -> &lt;APP&gt;-&lt;hash&gt;.westus-01.azurewebsites.net
 
 # Function key (route auth_level is FUNCTION)
-az functionapp keys list -g &lt;RG&gt; -n &lt;APP&gt; --query "functionKeys.default" -o tsv</code></pre>
+az functionapp keys list -g $RG -n $APP --query "functionKeys.default" -o tsv</code></pre>
   <p>Call these <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span>. On this machine the
      <code>az functionapp …</code> commands can die on TLS-inspector resets (<code>10054</code>) — fall back to the
      portal (<strong>Overview → Default domain</strong>; <strong>App keys</strong>) or the ARM REST recipe in
