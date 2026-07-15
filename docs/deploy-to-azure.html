@@ -72,7 +72,7 @@
   <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
 
 # 1. Confirm the offline suite is green
-.\.venv\Scripts\python.exe -m pytest          # expect: 8 passed
+.\.venv\Scripts\python.exe -m pytest          # expect: all green
 
 # 2. Confirm auth + subscription
 az account show --query name -o tsv           # -> dev-Document Intelligence
@@ -120,36 +120,44 @@ func azure functionapp publish &lt;APP&gt; --build remote</code></pre>
   <div class="warn">
     <strong>Identity / RBAC</strong> — the part <code>az login</code> can't simulate (production runs as the
     <em>managed identity</em>, not you). The app's identity <code>id-invoice-processing-dev</code> must have
-    <strong>Cognitive Services User</strong> on the CU resource and <strong>Storage Table Data Contributor</strong>
-    on <code>stinvoicedevwestus</code>. Leave <code>AZURE_CU_KEY</code> and
-    <code>AZURE_TABLES_CONNECTION_STRING</code> unset to stay keyless. <strong>Do not</strong> copy local's
-    <code>AzureWebJobsStorage=UseDevelopmentStorage=true</code> to Azure — keep the platform's real storage connection.
+    <strong>Cognitive Services User</strong> on the CU resource, <strong>Storage Table Data Contributor</strong>
+    on <code>stinvoicedevwestus</code>, and (since 2026-07-14) <strong>Storage Blob Data Owner</strong> on
+    <code>stinvoicefuncdevwestus</code> — host + deployment storage are identity-based
+    (<code>AzureWebJobsStorage__accountName/__credential/__clientId</code>; no storage connection strings anywhere).
+    Leave <code>AZURE_CU_KEY</code> and <code>AZURE_TABLES_CONNECTION_STRING</code> unset to stay keyless, and
+    <strong>never</strong> add an <code>AzureWebJobsStorage</code> connection-string setting (local's
+    <code>UseDevelopmentStorage=true</code> included) — it would override the keyless host storage.
   </div>
 
   <h2><span class="num">4</span>Get the base URL + function key</h2>
-  <pre><code># Base URL
-az functionapp show -g &lt;RG&gt; -n &lt;APP&gt; --query "defaultHostName" -o tsv   # -> &lt;APP&gt;.azurewebsites.net
+  <pre><code># Base URL — Flex apps get a HASHED default host name; the bare &lt;APP&gt;.azurewebsites.net does NOT resolve
+az functionapp show -g &lt;RG&gt; -n &lt;APP&gt; --query "defaultHostName" -o tsv   # -> &lt;APP&gt;-&lt;hash&gt;.westus-01.azurewebsites.net
 
 # Function key (route auth_level is FUNCTION)
 az functionapp keys list -g &lt;RG&gt; -n &lt;APP&gt; --query "functionKeys.default" -o tsv</code></pre>
-  <p>Call these <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span>.</p>
+  <p>Call these <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span>. On this machine the
+     <code>az functionapp …</code> commands can die on TLS-inspector resets (<code>10054</code>) — fall back to the
+     portal (<strong>Overview → Default domain</strong>; <strong>App keys</strong>) or the ARM REST recipe in
+     <code>docs/ai/troubleshooting.md</code>. All keys minted before 2026-07-14 are invalid (host storage was replaced).</p>
 
   <h2><span class="num">5</span>End-to-end smoke test the deployed Function</h2>
-  <p>Use the dedicated deployed-function tester (<code>scripts\verify_fn.py</code>, stdlib only):</p>
-  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\scripts"
+  <p>Use the harness <code>scripts\test.py</code> (its predecessor <code>verify_fn.py</code> was retired; the flags
+     are the same). Run from the repo root so the scorecard's gate column stays in sync with <code>gates.py</code>:</p>
+  <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
 
 # 1. Validation path (no Azure data touched) -> expect HTTP 400
-python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --bad-payload
+.\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --bad-payload
 
 # 2. Real invoice -> expect HTTP 200 + a routingDecision, writes a ledger row
-python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf"
+.\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\trade1.pdf"
 
 # 3. 8-digit PO rule end-to-end: a non-8-digit PO should now route to REVIEW_B4_CRITICAL_FIELD
-python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\landscaping.pdf"
+.\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\landscaping.pdf"
 
 # 4. Re-post the same source id -> alreadyProcessed:true (gate A1)
-python verify_fn.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file "..\samples\trade1.pdf" --source-id &lt;SID_FROM_STEP_2&gt;</code></pre>
-  <p>Add <code>--insecure</code> to any call if a corporate proxy intercepts TLS. Watch for
+.\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\trade1.pdf" --source-id &lt;SID_FROM_STEP_2&gt;</code></pre>
+  <p>If the corporate TLS inspector breaks the calls (<code>CERTIFICATE_VERIFY_FAILED</code>), prefer the
+     truststore bootstrap from <code>docs/ai/troubleshooting.md</code> over <code>--insecure</code>. Watch for
      <code>--&gt; routingDecision: …</code> and no <code>ledgerWriteError</code>.
      A <code>502</code> = CU/role issue; <code>500</code> = storage/role issue (Phase 3).</p>
 

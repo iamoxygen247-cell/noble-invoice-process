@@ -84,7 +84,9 @@
   </div>
 
   <p style="margin-top:18px;">Placeholders used throughout:
-    <span class="ph">&lt;HOST&gt;</span> (Function default host name, e.g. <code>func-invoiceprocess-westus.azurewebsites.net</code>),
+    <span class="ph">&lt;HOST&gt;</span> (Function default host name — Flex apps get a <em>hashed</em> domain, e.g.
+    <code>func-invoiceprocess-westus-exg8hzhke9c9ajgs.westus-01.azurewebsites.net</code>; the bare
+    <code>func-invoiceprocess-westus.azurewebsites.net</code> does not resolve),
     <span class="ph">&lt;KEY&gt;</span> (function key),
     <span class="ph">&lt;site&gt;</span> / <span class="ph">&lt;library&gt;</span> (SharePoint target),
     <span class="ph">&lt;environment&gt;</span> (Power Platform environment).
@@ -294,7 +296,7 @@
     <li>Go to <strong>portal.azure.com</strong> &rarr; search <strong>Function App</strong> &rarr; open
         <code>func-invoiceprocess-westus</code>.</li>
     <li><strong>Overview</strong> shows the <strong>Default domain</strong> &mdash; that is <span class="ph">&lt;HOST&gt;</span>
-        (e.g. <code>func-invoiceprocess-westus.azurewebsites.net</code>).</li>
+        (the hashed form, e.g. <code>func-invoiceprocess-westus-exg8hzhke9c9ajgs.westus-01.azurewebsites.net</code>).</li>
     <li>For the key, either scope works with <code>auth_level=FUNCTION</code>:
       <ul>
         <li><strong>Least privilege (recommended):</strong> on the <strong>Overview</strong> page open the

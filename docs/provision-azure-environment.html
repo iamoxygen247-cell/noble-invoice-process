@@ -255,7 +255,13 @@ az functionapp identity assign -g $RG -n $APP --identities $UAMI_ID</code></pre>
     <strong>Two platform-managed leftovers.</strong> (1) The Flex Consumption <em>plan</em> is auto-created by
     this command with a generated name — it is exempt from the naming convention (see the naming doc).
     (2) The CLI wires <code>AzureWebJobsStorage</code> and <code>DEPLOYMENT_STORAGE_CONNECTION_STRING</code>
-    to <code>$ST_FUNC</code> automatically — do not edit them.
+    to <code>$ST_FUNC</code> automatically as <em>connection strings</em>. For the keyless end-state, switch both to
+    the identity afterwards, as done on dev 2026-07-14: replace them with
+    <code>AzureWebJobsStorage__accountName=$ST_FUNC</code> / <code>__credential=managedidentity</code> /
+    <code>__clientId=$UAMI_CLIENT_ID</code>, set the deployment-storage authentication to
+    <code>UserAssignedIdentity</code>, and grant the UAMI <strong>Storage Blob Data Owner</strong> on
+    <code>$ST_FUNC</code>. After changing deployment storage, a full <strong>stop&nbsp;→&nbsp;start</strong> (a plain
+    restart is not enough) is required before the next deploy — see <code>docs/ai/troubleshooting.md</code>.
     <strong>Stay on Python 3.13:</strong> 3.14 has no remote-build support on Flex Consumption and step&nbsp;9
     deploys with <code>--build remote</code>.
   </div>
