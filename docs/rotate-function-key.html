@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Function Keys: Fix Dead Keys / Rotate</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:20px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  ul, ol { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Function Keys — Fix Dead Keys / Rotate</h1>
+  <p class="sub">Noble Invoice Processor · <code>func-invoiceprocess-westus</code> · get a fresh key, replace it at every consumer, verify</p>
+
+  <p>
+    <span class="tag">app: func-invoiceprocess-westus</span>
+    <span class="tag">endpoint: /api/process-invoice</span>
+    <span class="tag">auth_level: FUNCTION</span>
+  </p>
+
+  <div class="warn">
+    <strong>All keys issued before 2026-07-14 are dead.</strong> On Flex Consumption the key secrets live in the
+    app's <em>host storage account</em>. That account (<code>stinvoicefuncappwestus</code>) was deleted and replaced
+    by <code>stinvoicefuncdevwestus</code>, so the host minted a completely new key set — the old values are
+    unrecoverable and every stored copy (Power Automate connection, Postman, notes) returns
+    <code>401 Unauthorized</code> until replaced. The same runbook applies to any future rotation
+    (deliberate renewal or leak response).
+  </div>
+
+  <p>Placeholders used throughout:
+    <span class="ph">&lt;HOST&gt;</span> = <code>func-invoiceprocess-westus-exg8hzhke9c9ajgs.westus-01.azurewebsites.net</code>
+    (the <em>hashed</em> default domain — the bare <code>func-invoiceprocess-westus.azurewebsites.net</code> does <strong>not</strong> resolve),
+    <span class="ph">&lt;KEY&gt;</span> = the function key value. Never write a real key into this repo, a doc, or a screenshot.
+  </p>
+
+  <h2><span class="num">1</span>Get a fresh key</h2>
+  <h3>Portal (recommended — immune to the local TLS-inspection problem)</h3>
+  <ol>
+    <li>Go to <strong>portal.azure.com</strong> → search <strong>Function App</strong> → open <code>func-invoiceprocess-westus</code>.</li>
+    <li><strong>Least privilege (use this for Power Automate):</strong> on <strong>Overview</strong> open the
+        <strong>Functions</strong> tab → select <code>process_invoice</code> → <strong>Function keys</strong> tab →
+        next to <code>default</code> click <strong>Show value</strong> → copy. This key opens <em>only</em> the
+        <code>/api/process-invoice</code> endpoint.</li>
+    <li><strong>App-wide alternative:</strong> left menu → <strong>Functions → App keys</strong> → under
+        <em>Host keys (all functions)</em> copy <code>default</code>. Broader than needed; acceptable for ad-hoc testing.
+        <strong>Never hand out <code>_master</code></strong> — it also opens the admin API.</li>
+  </ol>
+  <h3>CLI / scripted (fallbacks)</h3>
+  <pre><code># az (may die on this machine's TLS-inspector resets, WinError 10054 — just re-run, or use the ARM recipe)
+az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-westus `
+  --query "functionKeys.default" -o tsv</code></pre>
+  <p>The reliable scripted path on this machine is the ARM REST call
+     (<code>POST …/host/default/listkeys</code>) with the truststore retry recipe — see the 2026-07-14 entries in
+     <code>docs/ai/troubleshooting.md</code>. Capture the key into <code>$env:FKEY</code>; never echo it.</p>
+
+  <h2><span class="num">2</span>Replace the key at every consumer</h2>
+
+  <h3>A — A Power Automate custom connector / connection already exists</h3>
+  <ol>
+    <li>Go to <strong>make.powerautomate.com</strong> → pick the correct <strong>environment</strong> (top right).</li>
+    <li>Left menu → <strong>Connections</strong> (under <em>Data</em>; click <em>More</em> if hidden).</li>
+    <li>Find the connection bound to the invoice custom connector → <strong>⋯ → Edit</strong> — an API-key connection
+        re-prompts for the secret → paste the new <span class="ph">&lt;KEY&gt;</span> → save.</li>
+    <li>If no <em>Edit</em> is offered: create <strong>+ New connection</strong> for the same connector, paste the key,
+        then open the flow → every action that uses the connector → <strong>Change connection</strong> → pick the new
+        one → save the flow → delete the stale connection.</li>
+    <li>While you are there, open the custom connector definition and confirm its <strong>Host</strong> is the hashed
+        domain <span class="ph">&lt;HOST&gt;</span>. An older build may carry the bare hostname, which never resolves —
+        that failure looks like a network error, not a 401.</li>
+  </ol>
+
+  <h3>B — Connector not built yet</h3>
+  <p>Nothing to repair. Use the fresh <span class="ph">&lt;KEY&gt;</span> and the hashed <span class="ph">&lt;HOST&gt;</span>
+     when you create the connector + connection (walkthrough: <code>docs/power-automate-design.html</code>).</p>
+
+  <h3>C — Ad-hoc copies</h3>
+  <p>Postman collections, terminal history, OneNote/notes, saved <code>test.py</code> command lines: replace the key or
+     delete the copy. Keys never go into git — <code>local.settings.json</code> holds no function keys and stays gitignored.</p>
+
+  <h2><span class="num">3</span>Verify</h2>
+  <h3>Power Automate side</h3>
+  <ul>
+    <li>Custom connector → <strong>Test</strong> tab → invoke with a small payload, or drop a test PDF into the
+        SharePoint library and watch the flow run.</li>
+    <li><strong>Expect</strong> HTTP <code>200</code> with a <code>routingDecision</code> in the body.</li>
+    <li><code>401</code> → the connection still holds a stale key (redo step 2A).
+        DNS / "name not resolved" → the connector Host is the bare hostname (step 2A.5).</li>
+  </ul>
+  <h3>Scripted, from this machine</h3>
+  <pre><code># $env:FKEY holds the fresh key (from step 1); truststore bootstrap beats the TLS inspector
+.\.venv\Scripts\python.exe -c "import truststore; truststore.inject_into_ssl(); import os, runpy, sys; sys.argv = ['test.py', '--base-url', 'https://func-invoiceprocess-westus-exg8hzhke9c9ajgs.westus-01.azurewebsites.net', '--key', os.environ['FKEY'], '--file', '.\\samples\\trade1.pdf']; runpy.run_path('scripts/test.py', run_name='__main__')"</code></pre>
+  <p>Expect <code>HTTP 200</code>, a <code>routingDecision</code>, and a fresh ledger row in
+     <code>stinvoicedevwestus</code> / <code>InvoiceExtractProcessLog</code>.</p>
+
+  <div class="note">
+    <strong>Deliberate rotation / leak response.</strong> Portal → <strong>App keys</strong> (or the function's
+    <strong>Function keys</strong> tab) → <strong>Renew key value</strong> on the compromised key, then repeat
+    steps 1–3 of this runbook. Renewing invalidates the old value immediately — update consumers right away.
+  </div>
+
+  <footer>
+    Written 2026-07-14 after the host-storage repair (see <code>docs/naming-convention.html</code> and the 2026-07-14
+    entries in <code>docs/ai/troubleshooting.md</code>). Companion docs: <code>docs/power-automate-design.html</code>
+    (connector build), <code>docs/deploy-to-azure.html</code> (deploy + smoke test).
+  </footer>
+
+</div>
+</body>
+</html>

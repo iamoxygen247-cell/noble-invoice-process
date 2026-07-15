@@ -292,6 +292,8 @@
         <td>For the SharePoint connection (Boundary 1) instead of your personal account.</td></tr>
   </table>
   <h4>Get <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span> &mdash; Azure portal (recommended if <code>az</code> hits TLS-inspection errors)</h4>
+  <p><strong>Keys rotated 2026-07-14</strong> (host storage was replaced) — any key noted before then is dead.
+     Full fetch/replace/verify runbook: <code>docs/rotate-function-key.html</code>.</p>
   <ol class="steps">
     <li>Go to <strong>portal.azure.com</strong> &rarr; search <strong>Function App</strong> &rarr; open
         <code>func-invoiceprocess-westus</code>.</li>
