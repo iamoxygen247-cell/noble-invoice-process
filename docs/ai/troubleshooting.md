@@ -301,3 +301,61 @@ returned the short form 3/3.
 **Reusable lesson:** LLMs can't count characters; a char limit in a prompt only works as
 "aim well under, prefer fewer/shorter words, here is what to drop". Judge on 3+
 replicates per document (same scratch-analyzer workflow as the entries above).
+
+---
+
+## `az rest` / `az functionapp` die with 10054 even through the truststore bootstrap
+
+**Symptoms (verified 2026-07-14):** with the truststore `azrun.py` bootstrap in place,
+`az resource show` / `az storage account list` work, but `az functionapp config
+appsettings list` and `az rest` fail every time with
+`('Connection aborted.', ConnectionResetError(10054, ...))`.
+
+**Cause:** the TLS-inspecting agent intermittently resets handshakes to
+`management.azure.com`. SDK-path az commands go through azure-core's pipeline, which
+retries and absorbs the resets; `az rest` and the appservice module's
+`send_raw_request` path use a bare `requests` call with no retry, so one reset kills the
+command. The same applies to hand-rolled `urllib`/`requests` calls from the venv.
+
+**Fix:** wrap raw ARM REST calls in a short retry loop (≤6 attempts, linear backoff —
+1–2 resets per success are typical), calling the endpoint directly from venv Python with
+`truststore.inject_into_ssl()` and a token from
+`az account get-access-token --resource https://management.azure.com` (SDK path, works).
+For app settings the endpoint is
+`POST .../sites/<app>/config/appsettings/list?api-version=2024-04-01`.
+
+**Bonus gotcha (same session):** the Flex Consumption app's default hostname is the
+*hashed* form `func-invoiceprocess-westus-<hash>.westus-01.azurewebsites.net`
+(`properties.defaultHostName` on the site resource). The bare
+`func-invoiceprocess-westus.azurewebsites.net` does **not** resolve — a DNS failure
+there is not evidence of an outage.
+
+---
+
+## Changing Flex deployment storage: restart is NOT enough — stop/start is
+
+**Symptoms (verified 2026-07-14):** after repointing
+`functionAppConfig.deployment.storage` (and the `AzureWebJobsStorage__*` settings) to a
+new storage account — with an ARM readback confirming the new values —
+`func azure functionapp publish --build remote` still failed in
+`[Kudu-ValidationStep]` with `InaccessibleStorageException … Name or service not known
+(<OLD-account>.blob.core.windows.net)`. An ARM `POST …/restart` did not help; the next
+publish failed identically.
+
+**Cause:** the Flex deployment (Kudu/Legion) environment is provisioned with the site's
+storage config and does not re-read it on a plain restart.
+
+**Fix:** full **stop → start** (ARM `POST …/stop`, wait ~20 s, `POST …/start`), wait
+~60 s, then publish. First publish after that validated against the new account and
+succeeded end-to-end.
+
+**Also seen:** a one-off `Can't find app with name "…"` from `func publish` while the
+site verifiably existed — the same TLS-inspector reset hitting func's site enumeration;
+just re-run. And `scripts/test.py` against the deployed app needs the truststore
+bootstrap like every other venv script (`CERTIFICATE_VERIFY_FAILED: Basic Constraints
+of CA cert not marked critical`):
+
+```powershell
+# $env:FKEY holds the function key (never inline it on the command line)
+.\.venv\Scripts\python.exe -c "import truststore; truststore.inject_into_ssl(); import os, runpy, sys; sys.argv = ['test.py', '--base-url', 'https://<hashed-host>', '--key', os.environ['FKEY'], '--file', 'samples\\commercial\\trade1.pdf']; runpy.run_path('scripts/test.py', run_name='__main__')"
+```
