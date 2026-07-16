@@ -95,7 +95,7 @@ $env:AZURE_CU_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.az
   <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\functionapp"
 $APP= "func-invoiceprocess-westus"
 $RG = "rg-content-understanding-dev"
-func azure functionapp publish &#36;APP; --build remote</code></pre>
+func azure functionapp publish $APP --build remote</code></pre>
   <h3>Option B — VS Code</h3>
   <p>Azure extension → <strong>Workspace</strong> → <strong>Deploy to Function App…</strong> → pick
      <span class="ph">&lt;APP&gt;</span>. It uses <code>deploySubpath: functionapp</code> automatically;
