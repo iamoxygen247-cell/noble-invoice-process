@@ -136,7 +136,7 @@
     <tr><td><code>RawResultBlob</code></td><td>Extracted</td><td>Blob path of the raw CU result (<code>""</code> if the sidecar write failed).</td></tr>
     <tr><td><code>DecisionBlob</code></td><td>Extracted</td><td>Blob path of the decision JSON (<code>""</code> if the sidecar write failed).</td></tr>
     <tr><td><code>AnalyzerId</code></td><td>Extracted</td><td>The child analyzer that produced the fields (<code>analyzerUsed</code> from the result).</td></tr>
-    <tr><td><code>CuDurationMs</code></td><td>Extracted</td><td>Wall-clock duration of the CU analyze call; watch for creep toward the 120&nbsp;s timeout.</td></tr>
+    <tr><td><code>CuDurationMs</code></td><td>Extracted</td><td>Wall-clock duration of the CU analyze call; watch for creep toward the 100&nbsp;s timeout.</td></tr>
     <tr><td><code>FailedStage</code></td><td>CU failure</td><td><code>"cu_analyze"</code> when the analyze call raised; cleared to <code>""</code> on the next successful run.</td></tr>
     <tr><td><code>LastError</code></td><td>CU failure</td><td><code>str(exc)</code> truncated to 1024 chars; cleared to <code>""</code> on the next successful run.</td></tr>
   </table>

@@ -8,9 +8,11 @@ Guards the diagnostics contract:
     CuDurationMs on the Extracted ledger row.
   * D2: a diagnostics outage is best-effort — the request still returns the full
     decision, the ledger pointers are empty strings, no exception escapes.
-  * D3: a CU analyze failure stamps FailedStage/LastError (truncated) on the row
-    while leaving Status=Received, so a stuck row is diagnosable; a later
-    successful re-run (after the A1 lease) clears the stamps.
+  * D3: a CU analyze failure releases the claim — Status=Failed plus
+    FailedStage/LastError (truncated) — so the caller's immediate retry reclaims
+    and re-processes; a successful re-run clears the stamps. The release is
+    conditioned on the failing invocation's own claim etag: if a foreign writer
+    touched the row first, nothing is stamped and the row is left as-is.
 
 Offline, same harness as test_function_app_hardening.py: the route is invoked
 directly, the REAL ledger.py and diagnostics.save_run code paths execute over
@@ -25,7 +27,6 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -176,9 +177,10 @@ def test_cu_failure_stamps_stage_and_error(fake_table, fake_container, monkeypat
 
     resp = post(valid_body())
     assert resp.status_code == 502
+    assert as_json(resp)["status"] == "Failed"
 
     row = ledger_row(fake_table)
-    assert row["Status"] == "Received", "a CU failure must leave the row resumable"
+    assert row["Status"] == "Failed", "a CU failure must release the claim"
     assert row["FailedStage"] == "cu_analyze"
     assert row["LastError"].startswith("CU exploded")
     assert len(row["LastError"]) == 1024
@@ -188,7 +190,7 @@ def test_cu_failure_stamps_stage_and_error(fake_table, fake_container, monkeypat
 def test_failure_stamp_write_error_still_returns_502(fake_table, fake_container, monkeypatch):
     monkeypatch.setattr(cu_client, "analyze_binary",
                         lambda content, file_name=None: (_ for _ in ()).throw(RuntimeError("CU down")))
-    monkeypatch.setattr(ledger, "upsert",
+    monkeypatch.setattr(ledger, "reclaim",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("table down")))
 
     resp = post(valid_body())
@@ -196,16 +198,68 @@ def test_failure_stamp_write_error_still_returns_502(fake_table, fake_container,
     assert "CU down" in as_json(resp)["error"]
 
 
-def test_successful_rerun_clears_failure_stamps(fake_table, fake_container, cu_stub, monkeypatch):
-    # First run: CU fails, row gets the stamps.
+def test_failure_release_lost_etag_leaves_row_untouched(fake_table, fake_container, monkeypatch):
+    """The release is conditioned on OUR claim's etag: if a foreign writer bumps
+    the row between our claim and our failure release, the release must lose
+    (412) and stamp nothing — a delayed release must never clobber a newer
+    claim (that would let a third request reclaim mid-flight work)."""
+    def foreign_write_then_explode(content, file_name=None):
+        ledger.upsert(fake_table, SOURCE_ID, Note="foreign")  # bumps the etag
+        raise RuntimeError("CU down")
+
+    monkeypatch.setattr(cu_client, "analyze_binary", foreign_write_then_explode)
+
+    resp = post(valid_body())
+    assert resp.status_code == 502
+    assert as_json(resp)["status"] == "Received"
+
+    row = ledger_row(fake_table)
+    assert row["Status"] == "Received", "a lost release must not stamp Failed"
+    assert row.get("FailedStage", "") == ""
+
+
+def test_decision_crash_releases_claim_and_immediate_retry_reprocesses(
+        fake_table, fake_container, cu_stub, monkeypatch):
+    """An unhandled decision-path bug (gates.evaluate raising) must release the
+    claim like a CU failure — Status=Failed, FailedStage=decision, 500 — so the
+    caller's automatic retry (which can arrive inside the A1 lease) re-claims
+    and re-processes instead of getting a 200 no-op that ends the retry chain."""
+    real_evaluate = gates.evaluate
+    monkeypatch.setattr(gates, "evaluate",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gates bug")))
+
+    resp = post(valid_body())
+    assert resp.status_code == 500
+    assert as_json(resp)["status"] == "Failed"
+    row = ledger_row(fake_table)
+    assert row["Status"] == "Failed", "a decision crash must release the claim"
+    assert row["FailedStage"] == "decision"
+    assert row["LastError"].startswith("gates bug")
+
+    # Immediate retry with the bug gone: reclaims and fully re-processes.
+    monkeypatch.setattr(gates, "evaluate", real_evaluate)
+    resp = post(valid_body())
+    payload = as_json(resp)
+    assert resp.status_code == 200
+    assert payload["status"] == "Extracted"
+    assert payload["alreadyProcessed"] is False
+    row = ledger_row(fake_table)
+    assert row["Status"] == "Extracted"
+    assert row["FailedStage"] == ""
+
+
+def test_cu_failure_then_immediate_retry_reprocesses(fake_table, fake_container, cu_stub, monkeypatch):
+    # First run: CU fails; the released (Failed) row must be reclaimable at
+    # once — the caller's automatic retry fires within seconds, NOT after the
+    # A1 lease, so no row-aging here.
     monkeypatch.setattr(cu_client, "analyze_binary",
                         lambda content, file_name=None: (_ for _ in ()).throw(RuntimeError("blip")))
     assert post(valid_body()).status_code == 502
     row = ledger_row(fake_table)
+    assert row["Status"] == "Failed"
     assert row["FailedStage"] == "cu_analyze"
 
-    # Age the row past the A1 lease so the retry may reclaim it, restore CU.
-    row["LastUpdatedUtc"] = datetime.now(timezone.utc) - timedelta(seconds=700)
+    # Immediate retry with CU healthy again: reclaims and fully re-processes.
     monkeypatch.setattr(cu_client, "analyze_binary",
                         lambda content, file_name=None: cu_result(commercial_fields()))
 
@@ -213,8 +267,10 @@ def test_successful_rerun_clears_failure_stamps(fake_table, fake_container, cu_s
     payload = as_json(resp)
     assert resp.status_code == 200
     assert payload["status"] == "Extracted"
+    assert payload["alreadyProcessed"] is False
 
     row = ledger_row(fake_table)
+    assert row["Status"] == "Extracted"
     assert row["FailedStage"] == ""
     assert row["LastError"] == ""
     assert row["RawResultBlob"].endswith("-raw.json")

@@ -101,12 +101,15 @@ def has_decision(entity: Optional[Dict[str, Any]]) -> bool:
     return status not in ("", "Received")
 
 
-def claim(table, source_id: str, retention_days: int = DEFAULT_RETENTION_DAYS, **fields: Any) -> bool:
+def claim(table, source_id: str, retention_days: int = DEFAULT_RETENTION_DAYS,
+          **fields: Any) -> Optional[str]:
     """
-    Atomically claim a source id by INSERTING its row. Returns True if this call
-    created the row, False if it already existed (a concurrent claim won the
-    race). Insert is atomic in Table Storage: of two concurrent inserts for the
-    same (PartitionKey, RowKey), exactly one succeeds and the other gets 409.
+    Atomically claim a source id by INSERTING its row. Returns the new row's
+    etag if this call created it, None if it already existed (a concurrent claim
+    won the race). Insert is atomic in Table Storage: of two concurrent inserts
+    for the same (PartitionKey, RowKey), exactly one succeeds and the other gets
+    409. The winner's etag lets it later release its own claim (see reclaim)
+    without ever touching a row a newer invocation has re-claimed.
 
     This replaces the Dataverse alternate key's atomic role at the ingestion
     level, so a re-fired SharePoint trigger cannot produce two Dynamics rows for
@@ -126,10 +129,10 @@ def claim(table, source_id: str, retention_days: int = DEFAULT_RETENTION_DAYS, *
     }
     entity.update({k: ("" if v is None else v) for k, v in fields.items()})
     try:
-        table.create_entity(entity)
-        return True
+        metadata = table.create_entity(entity)
+        return (metadata or {}).get("etag")
     except ResourceExistsError:
-        return False
+        return None
 
 
 def is_stale(entity: Optional[Dict[str, Any]], lease_seconds: int) -> bool:
@@ -169,11 +172,15 @@ def entity_etag(entity: Any) -> Optional[str]:
 
 
 def reclaim(table, source_id: str, etag: Optional[str],
-            retention_days: int = DEFAULT_RETENTION_DAYS, **fields: Any) -> bool:
+            retention_days: int = DEFAULT_RETENTION_DAYS, **fields: Any) -> Optional[str]:
     """
-    Atomically re-claim an EXISTING row for re-processing (a re-uploaded item, or
-    a crashed run older than the lease): merge-update conditioned on the etag the
-    caller read. Returns True if this call won the row; False if a concurrent
+    Etag-conditioned atomic merge on an EXISTING row. Used two ways:
+      - re-claim a row for re-processing (a re-uploaded item, or a crashed run
+        older than the lease), conditioned on the etag the caller read;
+      - release a failed claim (Status=Failed), conditioned on the etag the
+        caller's own claim/reclaim returned, so a delayed release can never
+        touch a row a newer invocation has since re-claimed.
+    Returns the new etag if this call won the row; None if a concurrent
     invocation updated (or deleted) it first -- the loser must skip, so a
     double-fired trigger cannot re-process the same item twice. This mirrors the
     atomic insert in claim() for first-seen items. Merge mode preserves
@@ -188,7 +195,7 @@ def reclaim(table, source_id: str, etag: Optional[str],
     from azure.data.tables import UpdateMode
 
     if not etag:
-        return False
+        return None
     pk, rk = keys_for_source_id(source_id)
     now = datetime.now(timezone.utc)
     entity: Dict[str, Any] = {
@@ -200,14 +207,14 @@ def reclaim(table, source_id: str, etag: Optional[str],
     }
     entity.update({k: ("" if v is None else v) for k, v in fields.items()})
     try:
-        table.update_entity(entity, mode=UpdateMode.MERGE, etag=etag,
-                            match_condition=MatchConditions.IfNotModified)
-        return True
+        metadata = table.update_entity(entity, mode=UpdateMode.MERGE, etag=etag,
+                                       match_condition=MatchConditions.IfNotModified)
+        return (metadata or {}).get("etag") or etag
     except (ResourceModifiedError, ResourceNotFoundError):
-        return False
+        return None
     except HttpResponseError as exc:  # some SDK versions raise the base type for 412
         if getattr(exc, "status_code", None) == 412:
-            return False
+            return None
         raise
 
 

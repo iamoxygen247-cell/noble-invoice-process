@@ -134,6 +134,7 @@ class FakeTable:
             raise ResourceExistsError("entity already exists")
         self.rows[key] = dict(entity)
         self._versions[key] = self._versions.get(key, 0) + 1
+        return {"etag": self._etag(key)}
 
     def upsert_entity(self, entity, mode=None):
         key = (entity["PartitionKey"], entity["RowKey"])
@@ -150,6 +151,7 @@ class FakeTable:
             raise ResourceModifiedError("etag mismatch")
         self.rows[key].update(entity)
         self._versions[key] += 1
+        return {"etag": self._etag(key)}
 
 
 @pytest.fixture
@@ -385,15 +387,15 @@ def test_in_flight_item_still_short_circuits(fake_table, cu_stub):
 
 def test_reclaim_is_atomic_per_etag(fake_table, cu_stub):
     """Two concurrent invocations read the same decided row: only the first
-    etag-conditioned re-claim wins; the loser gets False and must skip."""
+    etag-conditioned re-claim wins; the loser gets None and must skip."""
     post(valid_body())  # leaves a decided row
     row = ledger.get_row(fake_table, SOURCE_ID)
     etag = ledger.entity_etag(row)
     assert etag
     assert ledger.reclaim(fake_table, SOURCE_ID, etag,
-                          Status="Received", RoutingDecision="") is True
+                          Status="Received", RoutingDecision="")
     assert ledger.reclaim(fake_table, SOURCE_ID, etag,
-                          Status="Received", RoutingDecision="") is False
+                          Status="Received", RoutingDecision="") is None
 
 
 def test_non_json_body_is_400(fake_table, cu_stub):
@@ -467,7 +469,7 @@ def test_poll_result_raises_timeout_when_not_done(monkeypatch):
 
 @pytest.mark.parametrize(
     "env,expected",
-    [(None, 120.0), ("45", 45.0), ("junk", 120.0), ("-5", 120.0), ("0", 120.0)],
+    [(None, 100.0), ("45", 45.0), ("junk", 100.0), ("-5", 100.0), ("0", 100.0)],
 )
 def test_analyze_timeout_env_parsing(monkeypatch, env, expected):
     if env is None:

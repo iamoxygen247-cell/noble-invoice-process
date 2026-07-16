@@ -31,7 +31,11 @@ DEFAULT_GENERAL_ANALYZER_ID = "generalinvoice"
 # Cap on the analyze long-running operation. CU runs complete in seconds; without
 # a cap a hung LRO holds the invocation until the platform kills it and leaves the
 # A1-claimed ledger row blocking reprocessing until the lease expires.
-DEFAULT_ANALYZE_TIMEOUT_SECONDS = 120.0
+# Must undercut Power Automate's hard ~120 s connector budget (which also covers
+# request upload and cold start): the structured 502 + ledger release must reach
+# the flow before the connector times out, so its automatic retry sees the
+# released row instead of racing the failure stamp.
+DEFAULT_ANALYZE_TIMEOUT_SECONDS = 100.0
 
 
 def _env(name: str, default: str) -> str:

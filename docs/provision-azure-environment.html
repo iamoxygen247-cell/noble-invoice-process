@@ -292,7 +292,14 @@ az functionapp identity assign -g $RG -n $APP --identities $UAMI_ID</code></pre>
     <strong>Deliberately NOT set</strong> (keyless by design — same as dev):
     <code>AZURE_CU_KEY</code> and <code>AZURE_TABLES_CONNECTION_STRING</code>. Leaving them unset makes the
     Function authenticate with the managed identity. <code>A1_LEASE_SECONDS</code> and
-    <code>AZURE_CU_TIMEOUT_SECONDS</code> keep their code defaults (600&nbsp;s / 120&nbsp;s) unless tuning is needed.
+    <code>AZURE_CU_TIMEOUT_SECONDS</code> keep their code defaults (600&nbsp;s / 100&nbsp;s) unless tuning is needed
+    &mdash; the CU cap must stay below Power Automate's ~120&nbsp;s connector budget (see
+    <code>docs/incident-2026-07-16-silent-drop.html</code>). Dev tunes <code>A1_LEASE_SECONDS=300</code>
+    (app setting). Two invariants when changing it: the lease must comfortably exceed the worst
+    legitimate run (~2&nbsp;min with the 100&nbsp;s CU cap), and the flow's <strong>first</strong> retry after
+    a claim-holding failure must land beyond the lease (retry interval &gt; lease &minus; 120&nbsp;s;
+    retries stop at the first success and a 200 <code>PROCESSING_IN_PROGRESS</code> is a success) &mdash;
+    both hold at 300&nbsp;s under the Fixed 4&times;PT4M retry policy.
   </div>
   <div class="ok">
     <strong>Verify:</strong>

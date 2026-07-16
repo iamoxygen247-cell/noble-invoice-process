@@ -231,11 +231,29 @@
     want the ledger key to equal SharePoint's GUID.
   </div>
   <div class="warn">
-    <strong>Synchronous timeout.</strong> Power Automate connector actions have a ~120&nbsp;s synchronous limit.
-    The Function caps its own Content Understanding call at 120&nbsp;s (<code>AZURE_CU_TIMEOUT_SECONDS</code>) and CU +
-    a Flex Consumption cold start should be well under that for small invoice PDFs. If we ever hit a timeout,
-    the fix is the async <code>202 + Location</code> polling pattern noted in <code>functionapp/README.md</code> &mdash;
-    not a flow redesign.
+    <strong>Synchronous timeout.</strong> Power Automate connector actions have a hard ~120&nbsp;s synchronous limit.
+    The Function caps its own Content Understanding call at <strong>100&nbsp;s</strong>
+    (<code>AZURE_CU_TIMEOUT_SECONDS</code>; lowered from 120&nbsp;s after the 2026-07-16 incident, see
+    <code>docs/incident-2026-07-16-silent-drop.html</code>) so that when CU runs long, the Function's structured
+    <code>502</code> &mdash; which also <em>releases</em> the A1 claim &mdash; reaches the flow <em>before</em> the
+    connector times out. CU + a Flex Consumption cold start should be well under that for small invoice PDFs. If
+    100&nbsp;s timeouts recur, the fix is the async <code>202 + Location</code> polling pattern noted in
+    <code>functionapp/README.md</code> &mdash; not a flow redesign.
+  </div>
+  <div class="warn">
+    <strong>Retry policy (required).</strong> Set an explicit retry policy on the <code>Process_invoice</code>
+    action: <em>Settings &rarr; Networking &rarr; Retry policy</em> &rarr; <strong>Fixed Interval</strong>,
+    <strong>Count 4</strong>, <strong>Interval PT4M</strong>. Retries fire on 502/timeout automatically &mdash;
+    but they <strong>stop at the first success, and a 200 <code>PROCESSING_IN_PROGRESS</code> is a success</strong>
+    (the flow terminates as a no-op). So the binding rule is: <em>the <strong>first</strong> retry after a
+    claim-holding failure must land beyond the A1 lease</em>. A hard crash fails at the ~120&nbsp;s connector
+    timeout, so the first retry arrives at &asymp;120&nbsp;s&nbsp;+&nbsp;interval &mdash; the interval must exceed
+    <code>A1_LEASE_SECONDS &minus; 120&nbsp;s</code>. With the dev lease of 300&nbsp;s (app setting; code default
+    600&nbsp;s), PT4M puts the first retry at &asymp;360&nbsp;s &gt; 300&nbsp;s with ~60&nbsp;s margin.
+    <strong>PT2M does NOT work at a 300&nbsp;s lease</strong>: its first retry lands at &asymp;240&nbsp;s, inside
+    the lease &rarr; 200 no-op &rarr; the chain ends and the invoice is a <strong>permanent silent drop</strong>
+    (the SharePoint trigger fires only once and the run history shows green). Retune this rule whenever the
+    lease or the interval changes.
   </div>
 
   <h3>The Function's response contract (what the flow reads)</h3>
@@ -258,9 +276,12 @@
             <em>before</em> any ledger write, so a 400 <strong>never claims the A1 slot</strong>: fix the flow
             and re-run &mdash; the same file processes normally with no lease lock-out.</td></tr>
     <tr><td><code>502</code></td>
-        <td>Content Understanding genuinely failed (or timed out at 120&nbsp;s). The row stays at
-            <code>Received</code> and the Function resumes it on a retry once the A1 lease
-            (<code>A1_LEASE_SECONDS</code>, default 600&nbsp;s) expires.</td></tr>
+        <td>Content Understanding genuinely failed (or timed out at 100&nbsp;s). The Function <strong>releases
+            the A1 claim</strong> (row set to <code>Failed</code>, etag-conditioned on its own claim), so the
+            action's automatic retry re-claims and re-processes immediately &mdash; no lease wait. If all
+            retries fail, the action fails and the flow run shows <strong>Failed</strong> (loud), which is
+            correct. Only a hard crash (no release written) still waits out the A1 lease
+            (<code>A1_LEASE_SECONDS</code>, default 600&nbsp;s) &mdash; covered by the PT4M retry policy above.</td></tr>
     <tr><td><code>routingDecision</code> values</td>
         <td><code>HAPPY_PATH_CANDIDATE</code> &middot; <code>REVIEW_B4_CRITICAL_FIELD</code> &middot;
             <code>REJECT_B2_OTHER_CATEGORY</code> &middot; <code>REVIEW_NO_CHILD_EXTRACTION</code>
@@ -561,9 +582,11 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
     <ul>
       <li>Upload a clean invoice &rarr; the <strong>HAPPY</strong> case Compose ran.</li>
       <li>Upload one that should review (e.g. a non-8-digit PO/job number) &rarr; the review case / Default ran.</li>
-      <li>Open the first clean run in history &rarr; <strong>Resubmit</strong> it &rarr; the <code>alreadyProcessed</code>
-          Condition goes <em>yes</em> &rarr; <strong>Terminate</strong>. (Resubmit reuses the same Identifier, so Gate A1
-          returns <code>alreadyProcessed:true</code> &mdash; this is the idempotency proof.)</li>
+      <li>Open the first clean run in history &rarr; <strong>Resubmit</strong> it &rarr; the item is
+          <strong>re-processed in full</strong> (decided rows are re-claimed &mdash; a corrected invoice may arrive
+          as the same file, so A1 does <em>not</em> dedup re-runs). The <code>alreadyProcessed</code> &rarr;
+          <strong>Terminate</strong> no-op only fires when another invocation is <em>concurrently</em> mid-run on
+          the same item (a double-fired trigger, or a retry racing a live run).</li>
     </ul>
   </div>
 
@@ -572,8 +595,9 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
     <em>Phase 4:</em> replace the Compose placeholders &mdash; Dataverse "Add a new row" on the happy path (mapping
     <code>writeValues</code>), a SharePoint review-queue item on review/reject, and the terminal ledger
     <code>Written</code> + <code>DynamicsRecordId</code> update after Dataverse returns 201.
-    <em>Phase 5:</em> retry policy, failure notifications, run-history hygiene, and the move to managed-identity /
-    Easy Auth on Boundary 2.
+    <em>Phase 5:</em> failure notifications, run-history hygiene, and the move to managed-identity /
+    Easy Auth on Boundary 2. (The retry policy is no longer deferred &mdash; it is <strong>required</strong>,
+    see the Retry policy warn box in Section&nbsp;3.)
   </div>
 
   <div class="ok">
@@ -586,7 +610,8 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
     Generated for the Noble Invoice Processor repo. Grounded in the deployed Function contract
     (<code>functionapp/function_app.py</code>, <code>cu_client.py</code>, <code>ledger.py</code>) including the
     July&nbsp;2026 validation hardening (400s before any ledger write; <code>status: Received</code> +
-    <code>ledgerWriteError</code> on a failed ledger stamp; 120&nbsp;s CU timeout). No flow has been built yet &mdash;
+    <code>ledgerWriteError</code> on a failed ledger stamp; 100&nbsp;s CU timeout and the Failed-release A1
+    semantics from the 2026-07-16 incident fix). No flow has been built yet &mdash;
     this is the agreed, click-by-click plan. Boundaries 3&nbsp;&amp;&nbsp;4 are already wired in the Function and are not
     changed by Power Automate.
     <br><br>

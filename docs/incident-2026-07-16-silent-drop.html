@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice — Incident 2026-07-16: silent drop behind a 200 PROCESSING_IN_PROGRESS</title>
+<style>
+  :root {
+    --paper: #FBFAF8;
+    --ink: #212832;
+    --muted: #5C6572;
+    --line: #E5E2DA;
+    --accent: #2F5D50;
+    --accent-soft: #EDF3F0;
+    --crit: #A63A2B;
+    --crit-soft: #F9EEEC;
+    --high: #96660F;
+    --high-soft: #F8F1E2;
+    --med: #44607E;
+    --med-soft: #EDF1F6;
+    --mono: "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    padding: 2.5rem 1.25rem 5rem;
+    font-size: 15.5px;
+  }
+  main { max-width: 58rem; margin: 0 auto; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+  h1 { font-size: 1.9rem; font-weight: 650; letter-spacing: -0.015em; margin: 0.4rem 0 0.6rem; }
+  h2 { font-size: 1.3rem; font-weight: 650; margin: 0 0 0.25rem; }
+  h3 { font-size: 1.05rem; font-weight: 650; margin: 1.2rem 0 0.3rem; }
+  p, li { max-width: 76ch; }
+  p { margin: 0.55rem 0; }
+  section { margin-top: 2.6rem; }
+  .eyebrow {
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); margin: 0;
+  }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.5rem; }
+  code, pre { font-family: var(--mono); font-size: 0.85em; }
+  code {
+    background: #F0F1F2;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.05em 0.35em;
+    white-space: nowrap;
+  }
+  pre {
+    background: #F0F1F2;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    overflow-x: auto;
+  }
+  pre code { background: none; border: none; padding: 0; white-space: pre; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.95em; }
+  th, td { border: 1px solid var(--line); padding: 0.45rem 0.65rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 650; }
+  .crit { background: var(--crit-soft); border-left: 4px solid var(--crit); padding: 0.7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; }
+  .warn { background: var(--high-soft); border-left: 4px solid var(--high); padding: 0.7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; }
+  .note { background: var(--med-soft); border-left: 4px solid var(--med); padding: 0.7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; }
+  .ok { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 0.7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; }
+  ol li, ul li { margin: 0.3rem 0; }
+  footer { margin-top: 3.5rem; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Noble Invoice Processor · incident report &amp; fix</p>
+  <h1>2026-07-16 — a CU timeout became a green flow run that wrote nothing</h1>
+  <p class="meta">File <code>260601_0002.PDF</code> · dev environment (<code>func-invoiceprocess-westus</code>) ·
+     root cause verified against the live ledger row · fix shipped in the same repo change as this report</p>
+
+  <section>
+    <h2>1 · What was observed</h2>
+    <p>The Power Automate run showed the <code>Process_invoice</code> action succeeding with HTTP <strong>200</strong>,
+       but the body was a skip:</p>
+<pre><code>{
+  "alreadyProcessed": true,
+  "skippedCU": true,
+  "status": "Received",
+  "routingDecision": "PROCESSING_IN_PROGRESS",
+  "reviewReasons": ["A1: another invocation is currently processing this SharePoint item"]
+}</code></pre>
+    <p>The immediate question was: <em>why 200 when this looks like an error?</em> Short answer: the 200 is by
+       design — gate&nbsp;A1 skips are contractually a <em>no-op</em>, not an error. The flow branches on the body
+       (<code>alreadyProcessed&nbsp;==&nbsp;true</code> → Terminate&nbsp;Succeeded), never on the HTTP status, and the
+       custom connector declares only a single default response. The real defect is the chain of events that
+       produced this response — and what the flow did with it.</p>
+    <p class="meta">(The <code>x-ms-apihub-cached-response: true</code> header in the run output is a Power Platform
+       APIHub-layer artifact and was a red herring — the connector is POST-only and the body was a genuine,
+       freshly generated function response.)</p>
+  </section>
+
+  <section>
+    <h2>2 · Root cause — verified timeline</h2>
+    <p>The ledger row (<code>InvoiceExtractProcessLog</code> on <code>stinvoicedevwestus</code>) recorded the whole story:</p>
+<pre><code>Status          = Received
+RoutingDecision = ""
+FailedStage     = cu_analyze
+LastError       = "Content Understanding analyze did not complete within 120s"
+IngestedUtc     = 2026-07-16T16:25:17Z
+LastUpdatedUtc  = 2026-07-16T16:27:17Z   (exactly 120 s later)</code></pre>
+    <table>
+      <tr><th>Time (UTC)</th><th>Event</th></tr>
+      <tr><td>16:25:17</td>
+          <td>Invocation #1 claims the A1 row (<code>Status=Received</code>) and starts the CU analyze.</td></tr>
+      <tr><td>16:27:17</td>
+          <td>CU hits its 120&nbsp;s cap. The failure handler stamps <code>FailedStage</code>/<code>LastError</code>
+              but <strong>leaves <code>Status=Received</code></strong> (old design: “resume after the lease”), and
+              returns 502. The connector's own hard ~120&nbsp;s budget expired at almost the same moment, so the
+              flow saw a timeout.</td></tr>
+      <tr><td>16:27:19</td>
+          <td>Power Automate's <strong>default retry policy</strong> (retries timeouts and 5xx automatically)
+              re-calls the function. The retry finds a <code>Received</code> row only 2&nbsp;s old — well inside the
+              600&nbsp;s A1 lease (<code>A1_LEASE_SECONDS</code>) — and gets the 200
+              <code>PROCESSING_IN_PROGRESS</code> skip above.</td></tr>
+      <tr><td>—</td>
+          <td>The flow's <code>alreadyProcessed == true</code> Condition fires → <strong>Terminate (Succeeded)</strong>.
+              Green run. No Dataverse write. And because the SharePoint trigger fires only once per file,
+              <strong>nothing ever comes back for this invoice</strong>.</td></tr>
+    </table>
+    <div class="crit">
+      <strong>Three compounding defects.</strong>
+      <ol>
+        <li>On a <em>graceful</em> CU failure the function knew the run was over but kept the A1 claim,
+            locking out the automatic retry for up to 600&nbsp;s.</li>
+        <li>The CU cap (120&nbsp;s) did not undercut the connector budget (~120&nbsp;s), so the structured 502
+            never reached the flow — it saw an opaque timeout instead.</li>
+        <li>The retry's <code>PROCESSING_IN_PROGRESS</code> no-op terminated the run <em>Succeeded</em>,
+            making the drop invisible.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · The fix (code, shipped with this report)</h2>
+    <ul>
+      <li><strong><code>functionapp/ledger.py</code></strong> — <code>claim()</code> and <code>reclaim()</code> now
+          return the written row's <strong>etag</strong> (<code>None</code> when they lose the race) instead of a
+          boolean.</li>
+      <li><strong><code>functionapp/function_app.py</code></strong> — on a CU failure the function
+          <strong>releases its claim</strong>: an etag-conditioned merge sets <code>Status=Failed</code> (plus
+          <code>FailedStage</code>/<code>LastError</code>). A <code>Failed</code> row is immediately re-claimable,
+          so the flow's automatic retry re-processes within seconds instead of hitting
+          <code>PROCESSING_IN_PROGRESS</code>. The condition uses <em>this invocation's own claim etag</em> —
+          never a re-read — so a delayed release can never clobber a newer invocation's claim. If the etag
+          loses, nothing is stamped and the old lease fallback applies. The 502 body now reports
+          <code>status: "Failed"</code> (or <code>"Received"</code> when the release lost).</li>
+      <li><strong><code>functionapp/cu_client.py</code></strong> — default CU cap lowered
+          <code>120&nbsp;s → 100&nbsp;s</code> so the 502 + release always lands before the connector budget
+          expires.</li>
+      <li><strong>Tests</strong> — D3 contract updated (<code>Status=Failed</code>, immediate-retry re-process),
+          plus a new race-regression test proving a foreign etag bump makes the release a no-op.</li>
+    </ul>
+    <div class="note">
+      <strong>Follow-up hardening (same day):</strong> the decision path after CU (gate evaluation through
+      the response build) got the same etag-conditioned <code>Failed</code> release
+      (<code>FailedStage=decision</code>, HTTP 500), and <code>A1_LEASE_SECONDS</code> was lowered to
+      <strong>300&nbsp;s</strong> on dev (code default stays 600&nbsp;s).
+      <strong>Residual case (mitigated by the retry policy below):</strong> a <em>hard</em> crash
+      (host killed, out-of-memory — no release written) still leaves <code>Received</code> for the full
+      lease. The retry policy below is sized so the <em>first</em> retry after such a failure lands
+      <em>beyond</em> the lease and re-claims the stale row.
+    </div>
+  </section>
+
+  <section>
+    <h2>4 · Power Automate — exact steps</h2>
+
+    <h3>A. Set the retry policy on the Process_invoice action (required)</h3>
+    <ol>
+      <li>Go to <strong>make.powerautomate.com</strong> → <strong>My flows</strong> → open the invoice flow →
+          <strong>Edit</strong>.</li>
+      <li>Select the <strong>Process_invoice</strong> action (the custom connector call).</li>
+      <li>Open its <strong>Settings</strong> (new designer: the <em>Settings</em> tab in the right-hand pane;
+          classic designer: <strong>⋮ → Settings</strong>).</li>
+      <li>Under <strong>Networking → Retry policy</strong>, change <strong>Default</strong> to:
+        <ul>
+          <li><strong>Type:</strong> Fixed Interval</li>
+          <li><strong>Count:</strong> <code>4</code></li>
+          <li><strong>Interval:</strong> <code>PT4M</code> (4 minutes)</li>
+        </ul>
+      </li>
+      <li><strong>Save</strong> the flow.</li>
+    </ol>
+    <p><strong>Why these values:</strong> retries stop at the first success, and a 200
+       <code>PROCESSING_IN_PROGRESS</code> counts as a success (the flow terminates as a no-op) — so the rule
+       is that the <strong>first</strong> retry after a claim-holding failure must land beyond the A1 lease:
+       <em>interval &gt; lease − 120&nbsp;s</em> (a hard crash fails at the ~120&nbsp;s connector timeout).
+       With the lease at 300&nbsp;s (set 2026-07-16; code default 600&nbsp;s), PT4M puts the first retry at
+       ≈360&nbsp;s — past the lease with ~60&nbsp;s margin — so a hard-crashed run's stale claim is re-claimed
+       and re-processed on that first retry. A shorter interval like PT2M would land at ≈240&nbsp;s,
+       <em>inside</em> the lease, get the 200 no-op, and end the chain — a permanent silent drop. Graceful CU
+       failures don't depend on any of this: the released (<code>Failed</code>) row is re-claimable
+       immediately.</p>
+
+    <h3>B. Nothing else changes in the flow or connector</h3>
+    <ul>
+      <li>The custom connector definition stays as-is (POST, single default response).</li>
+      <li>The <code>alreadyProcessed == true</code> → Terminate (Succeeded) Condition and the
+          <code>routingDecision</code> Switch stay as-is — the response contract is unchanged.</li>
+    </ul>
+
+    <h3>C. After the code deploy — recover the dropped invoice</h3>
+    <ol>
+      <li><strong>My flows</strong> → the invoice flow → <strong>28-day run history</strong>.</li>
+      <li>Find the 2026-07-16 ~16:27&nbsp;UTC run for <code>260601_0002.PDF</code> (it shows
+          <em>Succeeded</em> despite writing nothing).</li>
+      <li>Open it → <strong>Resubmit</strong>. The ledger row is long past the lease, so the resubmit
+          re-claims and fully re-processes. (Alternative: re-upload the file to the SharePoint drop folder.)</li>
+      <li>Verify the resubmitted run took the <code>routingDecision</code> Switch branch (not Terminate),
+          and/or that the ledger row reached <code>Status=Extracted</code>.</li>
+    </ol>
+
+    <h3>D. Optional (recommended)</h3>
+    <ul>
+      <li>Add a flow-failure notification (Teams/email on run failure). After this fix, exhausted retries
+          surface as a genuinely <strong>Failed</strong> run instead of a silent green no-op — so a
+          notification now actually means something.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5 · Live remediation (dev function app)</h2>
+    <ol>
+      <li>Set the app setting <code>AZURE_CU_TIMEOUT_SECONDS=100</code> on
+          <code>func-invoiceprocess-westus</code> (resource group <code>rg-content-understanding-dev</code>)
+          — immediate mitigation, independent of the deploy.</li>
+      <li>Deploy the function:
+          <code>func azure functionapp publish func-invoiceprocess-westus --build remote</code>.</li>
+      <li>Apply the retry policy (Section&nbsp;4A) and resubmit the dropped run (Section&nbsp;4C).</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>6 · Verification checklist</h2>
+    <ul>
+      <li>☐ <code>.\.venv\Scripts\python.exe -m pytest</code> — full suite green (includes the new
+          Failed-release, immediate-retry, and etag-race regression tests).</li>
+      <li>☐ Forced CU timeout (temporarily set <code>AZURE_CU_TIMEOUT_SECONDS=1</code>): response is 502 with
+          <code>status: "Failed"</code>; ledger row shows <code>Status=Failed</code>; an immediate second call
+          re-processes (no <code>PROCESSING_IN_PROGRESS</code>). Restore the setting to <code>100</code> after.</li>
+      <li>☐ Resubmitted <code>260601_0002.PDF</code> run reaches <code>Status=Extracted</code> and takes the
+          Switch branch.</li>
+      <li>☐ Retry policy visible on the Process_invoice action (Fixed, 4 × PT4M).</li>
+      <li>☐ From now on, a CU outage shows as a <strong>Failed</strong> flow run — never a green no-op.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Grounded in <code>functionapp/function_app.py</code>, <code>functionapp/ledger.py</code>,
+    <code>functionapp/cu_client.py</code>, the live <code>InvoiceExtractProcessLog</code> row for the incident
+    file, and Power Automate connector-timeout/retry behavior (hard ~120&nbsp;s synchronous limit; default retry
+    on 408/429/5xx/timeout). Related docs: <code>docs/power-automate-design.html</code> (response contract,
+    retry-policy warn box), <code>docs/invoice-diagnostics-runbook.html</code> (Failed-row symptom table),
+    <code>functionapp/README.md</code> (gate A1 semantics).
+  </footer>
+</main>
+</body>
+</html>

@@ -124,7 +124,8 @@ response has `alreadyProcessed: true`, `skippedCU: true`, and `routingDecision`
 no-op — no Dataverse write, no review item.
 
 Status codes: `200` decision returned (including review/reject); `400` bad request;
-`502` Content Understanding failed (row left at `Received` — see A1 below); `500`
+`502` Content Understanding failed (claim released — row set to `Failed`, see A1
+below — so the caller's automatic retry re-processes immediately); `500`
 ledger/config failure.
 
 ## Gate A1 semantics — atomic concurrency claim (re-uploads re-process)
@@ -142,13 +143,24 @@ What A1 still guarantees is that two **concurrent** invocations for the same ite
 - **No row yet** → atomically claim it (insert `Received`). The insert is atomic
   in Table Storage, so of two perfectly concurrent triggers exactly one claims
   and proceeds; the other sees the row and short-circuits.
-- **Row decided, or stale at `Received`** (older than `A1_LEASE_SECONDS`, default
-  600 — a crashed prior run) → atomically **re-claim** it (etag-conditioned reset
-  to `Received`) and re-process; a concurrent invocation that loses the re-claim
-  short-circuits. A transient CU failure thus recovers on the next trigger rather
-  than being skipped forever.
+- **Row decided (incl. `Failed`), or stale at `Received`** (older than
+  `A1_LEASE_SECONDS`, default 600 — a crashed prior run) → atomically
+  **re-claim** it (etag-conditioned reset to `Received`) and re-process; a
+  concurrent invocation that loses the re-claim short-circuits.
 - **Row at `Received` within the lease** → skip with `PROCESSING_IN_PROGRESS`;
   another invocation owns the item.
+- **CU failure releases the claim**: the `502` handler resets the row to
+  `Failed` (with `FailedStage`/`LastError`), conditioned on the etag of **this
+  invocation's own claim**, so the caller's automatic retry re-claims and
+  re-processes within seconds instead of hitting `PROCESSING_IN_PROGRESS` for
+  the rest of the lease (which silently no-ops the retry and strands the
+  invoice — the SharePoint trigger fires only once). If the conditional write
+  loses (a newer invocation re-claimed first), nothing is stamped. Only a hard
+  crash (no stamp at all) still waits out the lease — the flow's retry policy
+  must put the **first** retry after such a failure beyond the lease (interval
+  > lease − 120 s; retries stop at the first success, and the 200
+  `PROCESSING_IN_PROGRESS` no-op counts as a success — see
+  `docs/power-automate-design.html`).
 
 The `reprocess` request flag was removed along with the dedup — re-processing is
 now the default. Requests that still send it are accepted; the field is ignored.

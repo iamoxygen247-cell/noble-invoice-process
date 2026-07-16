@@ -1,4 +1,4 @@
-# Troubleshooting
+﻿# Troubleshooting
 
 Confirmed, verified environment/debugging lessons for this project. Keep entries
 reusable and secret-free; machine-specific paths and account values belong in
@@ -74,7 +74,7 @@ corporate root in a form OpenSSL accepts.
 
 **Symptoms (this dev machine):** `func azure functionapp publish <app> --build remote`
 exits immediately with `Unable to connect to Azure. Make sure you have the az CLI or
-Az.Accounts PowerShell module installed and logged in` — even though `az account show`
+Az.Accounts PowerShell module installed and logged in` â€” even though `az account show`
 (via the truststore wrapper) shows a valid login.
 
 **Cause:** `func` shells out to the raw `az.cmd` on PATH (not the PowerShell profile
@@ -83,7 +83,7 @@ must refresh over the network and dies on the TLS-inspection SSL failure above, 
 `func` sees no credential.
 
 **Fix (verified 2026-07-07):** pre-warm the az token cache through the truststore
-bootstrap, then publish — `az.cmd` serves `func` the cached token without a network call:
+bootstrap, then publish â€” `az.cmd` serves `func` the cached token without a network call:
 
 ```powershell
 & 'C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe' -B "$env:LOCALAPPDATA\az-truststore\azrun.py" account get-access-token --output none
@@ -102,13 +102,13 @@ fails again after a long gap.
 **Symptoms (this dev machine):** running the decision Function locally (`func start` +
 `scripts/verify_fn.py`, which defaults to the localhost host) returns HTTP 502 with
 `Content Understanding analyze failed: [SSL: CERTIFICATE_VERIFY_FAILED] ... unable to get
-local issuer certificate`. The host, the Azurite-backed ledger, and gate A1 all work — only
+local issuer certificate`. The host, the Azurite-backed ledger, and gate A1 all work â€” only
 the outbound HTTPS call to Content Understanding fails.
 
 **Cause:** the same transparent TLS-inspecting agent as the `az` entry above, but here it hits
 the **Python worker** the func host spawns. The `.NET` func host trusts the agent root via
 SChannel, but the Python worker uses `certifi`, which doesn't include it. This is not
-`az`-specific — any venv-Python outbound HTTPS (the Functions worker, or the standalone
+`az`-specific â€” any venv-Python outbound HTTPS (the Functions worker, or the standalone
 harness scripts) is affected.
 
 **Fix:** make the worker verify via the Windows cert store with
@@ -117,7 +117,7 @@ run, put a `sitecustomize.py` on `PYTHONPATH` (auto-loaded at interpreter startu
 `func start`:
 
 ```python
-# sitecustomize.py — on a dir added to PYTHONPATH
+# sitecustomize.py â€” on a dir added to PYTHONPATH
 try:
     import truststore
     truststore.inject_into_ssl()
@@ -147,7 +147,7 @@ the ledger stays local (CU has no emulator, so analyze calls still hit the real 
 TLS-inspection `CERTIFICATE_VERIFY_FAILED` above), and even with a key the direct CU HTTPS call
 hits the same SSL failure in the venv Python.
 
-**Fix (verified 2026-07-02):** run it with key auth + the truststore bootstrap in one go —
+**Fix (verified 2026-07-02):** run it with key auth + the truststore bootstrap in one go â€”
 load `AZURE_CU_KEY` from the gitignored `functionapp/local.settings.json` into the environment,
 and inject truststore before the script runs:
 
@@ -165,13 +165,13 @@ Expected output ends with `status=ContentAnalyzerStatus.READY`. Remember: editin
 ## `func start` local run: worker dies with `ZoneInfoNotFoundError: 'No time zone found with key America/Vancouver'`
 
 **Symptoms (verified 2026-07-09):** the func host starts but the Python worker fails to
-initialize with `ModuleNotFoundError: No module named 'tzdata'` →
+initialize with `ModuleNotFoundError: No module named 'tzdata'` â†’
 `ZoneInfoNotFoundError` from `field_policy.py`'s `ZoneInfo("America/Vancouver")`, and port
 7071 never comes up.
 
 **Cause:** Core Tools spawned its own bundled Python (3.14, under
 `...\Azure Functions Core Tools\workers\python\...`) instead of the project venv. Putting
-`.venv\Scripts` on `PATH` is **not** enough — the host only picks the project interpreter
+`.venv\Scripts` on `PATH` is **not** enough â€” the host only picks the project interpreter
 when the venv is *activated*, i.e. the `VIRTUAL_ENV` environment variable is set.
 
 **Fix:** set both before `func start` (this is what `Activate.ps1` does):
@@ -195,7 +195,7 @@ CU call, and run Azurite for the ledger.
 
 **Cause:** the file is saved with a UTF-8 BOM (normal for files created by Windows
 tooling). PowerShell's `ConvertFrom-Json` strips it silently, so the PowerShell recipes
-elsewhere in this doc are unaffected — only Python reads hit it.
+elsewhere in this doc are unaffected â€” only Python reads hit it.
 
 **Fix:** read with `encoding="utf-8-sig"` (strips the BOM when present, harmless when
 absent):
@@ -210,7 +210,7 @@ settings = json.loads(path.read_text(encoding="utf-8-sig"))["Values"]
 
 **Symptoms (confirmed 2026-07-09, `samples/handwritten/260105_0007.pdf`):** a carbon-copy
 receipt-book invoice with amounts written in **split dollars | cents columns** ("94 | 50"
-with a printed vertical rule, no decimal point) extracted as integer `94`/`4` — the cents
+with a printed vertical rule, no decimal point) extracted as integer `94`/`4` â€” the cents
 sub-column was dropped by CU itself (both twins; no Python bug). The same document was
 classified `is_handwritten = no` even after a targeted classify-prompt rewrite was
 verified deployed (fetched the live analyzer definition to confirm before concluding).
@@ -222,21 +222,21 @@ verified deployed (fetched the live analyzer definition to confirm before conclu
   sub-column convention with a concrete example ("94 and 50 in adjacent sub-columns means
   94.50"). After that, extract AND generate both read 94.50 / 4.50 stably (7/7 replicate
   analyze calls).
-* **is_handwritten:** a classify-prompt rewrite alone was NOT enough — the label itself
+* **is_handwritten:** a classify-prompt rewrite alone was NOT enough â€” the label itself
   flips run-to-run on borderline documents (not just the confidence; the same bytes
   returned yes and no on consecutive analyze calls). Fixed with the generate-reasoning-twin
   pattern (`is_handwritten_generate`, like `po_or_job_number_generate`): concrete
   receipt-book genre cues, "OCR recognition errors in values are evidence of handwriting",
-  and an explicit tie-break — *"when the evidence is mixed or you are unsure, answer yes"*.
+  and an explicit tie-break â€” *"when the evidence is mixed or you are unsure, answer yes"*.
   `gates.py resolve_is_handwritten()` surfaces **yes if either twin says yes** (advisory
   flag; a missed handwritten doc is the costly direction). Printed invoices still return
   a clean `no` (the tie-break does not fire on them).
 
 **Reusable lessons:** (1) when a CU prompt fix "doesn't work", first GET the live analyzer
-definition and compare — the JSON edit may simply not be provisioned; (2) CU classify
+definition and compare â€” the JSON edit may simply not be provisioned; (2) CU classify
 labels near the decision boundary are unstable run-to-run, so judge fixes on several
 replicate analyze calls, never one; (3) iterate prompt candidates on a scratch analyzer id
-(`create_analyzer.py --analyzer-id <scratch>` — ids cannot contain `-`) so the analyzer
+(`create_analyzer.py --analyzer-id <scratch>` â€” ids cannot contain `-`) so the analyzer
 the Function uses stays untouched until the wording is proven.
 
 ---
@@ -245,12 +245,12 @@ the Function uses stays untouched until the wording is proven.
 
 Every processed run persists its raw CU result and decision JSON as blobs in the
 `invoice-diagnostics` container, with paths stamped on the ledger row
-(`RawResultBlob`/`DecisionBlob`, plus `AnalyzerId`, `CuDurationMs`, and — on failed
-runs — `FailedStage`/`LastError`). Full design/decision record:
+(`RawResultBlob`/`DecisionBlob`, plus `AnalyzerId`, `CuDurationMs`, and â€” on failed
+runs â€” `FailedStage`/`LastError`). Full design/decision record:
 `docs/invoice-diagnostics-design.html`; detailed step-by-step runbook (env setup, RBAC,
 fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.html`.
 
-1. **Look up the run** by the SharePoint item GUID — prints the ledger row and downloads
+1. **Look up the run** by the SharePoint item GUID â€” prints the ledger row and downloads
    both blobs to `out\diag\<rk>\`:
 
    ```powershell
@@ -258,9 +258,9 @@ fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.
    ```
 
    A row stuck at `Received`: read `FailedStage`/`LastError` (CU timeout, auth, throttle).
-   Runs that predate the sidecar have no blobs — only the ledger stamps.
+   Runs that predate the sidecar have no blobs â€” only the ledger stamps.
 
-2. **Read the raw confidences** in `<ts>-raw.json` — the per-field values/confidences CU
+2. **Read the raw confidences** in `<ts>-raw.json` â€” the per-field values/confidences CU
    actually returned for that run (a re-run is not evidence; labels flap, see the entry
    above).
 
@@ -271,9 +271,9 @@ fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.
    .\.venv\Scripts\python.exe scripts\diag.py --replay out\diag\<rk>\<ts>-raw.json
    ```
 
-   Replay matches the stored `<ts>-decision.json` but the values are wrong → the CU
+   Replay matches the stored `<ts>-decision.json` but the values are wrong â†’ the CU
    analyzer misread the document: fix the prompt on a scratch analyzer with replicates
-   (previous entry). Replay differs from what you expect → the bug is in
+   (previous entry). Replay differs from what you expect â†’ the bug is in
    `gates.py`/`field_policy.py`: fix the code and re-replay the same stored JSON as the
    regression check (`--field-threshold` to test threshold sensitivity).
 
@@ -285,13 +285,13 @@ fault-domain table, symptom quick reference): `docs/invoice-diagnostics-runbook.
 character limit (< 44 chars incl. spaces/punctuation, the UI report truncates beyond
 that), and the first prompt phrased it as "6 words or fewer and under 44 characters".
 On `samples/commercial/trade1.pdf` the model returned
-`'Intrusion security monitoring and GSM service'` — exactly 6 words, but 45 chars
+`'Intrusion security monitoring and GSM service'` â€” exactly 6 words, but 45 chars
 (2/3 replicates over). The model satisfies the word budget and ignores the char count;
 long words blow through.
 
-**Fix (verified 2026-07-14, 18/18 replicates ≤ 41 chars):** make the character limit the
+**Fix (verified 2026-07-14, 18/18 replicates â‰¤ 41 chars):** make the character limit the
 primary rule and tell the model *how to shorten* instead of asking it to count: "Hard
-limit: under 44 characters — about 4 to 6 short words. Name only the primary service;
+limit: under 44 characters â€” about 4 to 6 short words. Name only the primary service;
 drop adjectives, brand or product names, and secondary services rather than exceed the
 limit", plus a write-this-never-that counter-example built from the actual failure
 (`'Security monitoring service'`, never
@@ -317,8 +317,8 @@ retries and absorbs the resets; `az rest` and the appservice module's
 `send_raw_request` path use a bare `requests` call with no retry, so one reset kills the
 command. The same applies to hand-rolled `urllib`/`requests` calls from the venv.
 
-**Fix:** wrap raw ARM REST calls in a short retry loop (≤6 attempts, linear backoff —
-1–2 resets per success are typical), calling the endpoint directly from venv Python with
+**Fix:** wrap raw ARM REST calls in a short retry loop (â‰¤6 attempts, linear backoff â€”
+1â€“2 resets per success are typical), calling the endpoint directly from venv Python with
 `truststore.inject_into_ssl()` and a token from
 `az account get-access-token --resource https://management.azure.com` (SDK path, works).
 For app settings the endpoint is
@@ -327,30 +327,30 @@ For app settings the endpoint is
 **Bonus gotcha (same session):** the Flex Consumption app's default hostname is the
 *hashed* form `func-invoiceprocess-westus-<hash>.westus-01.azurewebsites.net`
 (`properties.defaultHostName` on the site resource). The bare
-`func-invoiceprocess-westus.azurewebsites.net` does **not** resolve — a DNS failure
+`func-invoiceprocess-westus.azurewebsites.net` does **not** resolve â€” a DNS failure
 there is not evidence of an outage.
 
 ---
 
-## Changing Flex deployment storage: restart is NOT enough — stop/start is
+## Changing Flex deployment storage: restart is NOT enough â€” stop/start is
 
 **Symptoms (verified 2026-07-14):** after repointing
 `functionAppConfig.deployment.storage` (and the `AzureWebJobsStorage__*` settings) to a
-new storage account — with an ARM readback confirming the new values —
+new storage account â€” with an ARM readback confirming the new values â€”
 `func azure functionapp publish --build remote` still failed in
-`[Kudu-ValidationStep]` with `InaccessibleStorageException … Name or service not known
-(<OLD-account>.blob.core.windows.net)`. An ARM `POST …/restart` did not help; the next
+`[Kudu-ValidationStep]` with `InaccessibleStorageException â€¦ Name or service not known
+(<OLD-account>.blob.core.windows.net)`. An ARM `POST â€¦/restart` did not help; the next
 publish failed identically.
 
 **Cause:** the Flex deployment (Kudu/Legion) environment is provisioned with the site's
 storage config and does not re-read it on a plain restart.
 
-**Fix:** full **stop → start** (ARM `POST …/stop`, wait ~20 s, `POST …/start`), wait
+**Fix:** full **stop â†’ start** (ARM `POST â€¦/stop`, wait ~20 s, `POST â€¦/start`), wait
 ~60 s, then publish. First publish after that validated against the new account and
 succeeded end-to-end.
 
-**Also seen:** a one-off `Can't find app with name "…"` from `func publish` while the
-site verifiably existed — the same TLS-inspector reset hitting func's site enumeration;
+**Also seen:** a one-off `Can't find app with name "â€¦"` from `func publish` while the
+site verifiably existed â€” the same TLS-inspector reset hitting func's site enumeration;
 just re-run. And `scripts/test.py` against the deployed app needs the truststore
 bootstrap like every other venv script (`CERTIFICATE_VERIFY_FAILED: Basic Constraints
 of CA cert not marked critical`):
@@ -359,3 +359,63 @@ of CA cert not marked critical`):
 # $env:FKEY holds the function key (never inline it on the command line)
 .\.venv\Scripts\python.exe -c "import truststore; truststore.inject_into_ssl(); import os, runpy, sys; sys.argv = ['test.py', '--base-url', 'https://<hashed-host>', '--key', os.environ['FKEY'], '--file', 'samples\\commercial\\trade1.pdf']; runpy.run_path('scripts/test.py', run_name='__main__')"
 ```
+
+---
+
+## A 200 PROCESSING_IN_PROGRESS in Power Automate can be a silently dropped invoice
+
+**Symptoms (verified 2026-07-16):** flow run shows the Process_invoice action
+**succeeding** (HTTP 200) with body `alreadyProcessed:true`,
+`routingDecision:"PROCESSING_IN_PROGRESS"` -- and the invoice never reaches Dataverse.
+The `x-ms-apihub-cached-response: true` header in the run output is an APIHub artifact,
+not the cause.
+
+**Cause (from the live ledger row, not inferred):** CU analyze hit its cap -> function
+502'd but (old design) left the A1 row at `Received` -> the connector had already timed
+out (~120 s budget vs 120 s CU cap) -> Power Automate's default retry re-called ~2 s
+later -> retry hit the 600 s A1 lease -> 200 no-op -> flow terminated Succeeded. The
+SharePoint trigger fires once, so nothing ever resumed the row.
+
+**Fix (shipped 2026-07-16):** CU failure now *releases* the claim (`Status=Failed`,
+etag-conditioned on the failing invocation's own claim etag) so the automatic retry
+re-processes immediately; CU cap default lowered to 100 s; the flow needs an explicit
+retry policy (Fixed, 4 x PT4M) so the FIRST retry after a claim-holding failure lands beyond
+the lease (interval > lease - 120 s; retries stop at the first success and the 200
+PROCESSING_IN_PROGRESS no-op counts as a success). Full writeup:
+`docs/incident-2026-07-16-silent-drop.html`.
+
+**Diagnosis shortcut:** read the ledger row --
+`az storage entity show --account-name stinvoicedevwestus --table-name InvoiceExtractProcessLog --partition-key <pk> --row-key <sourceId> --auth-mode login`.
+`IngestedUtc`/`LastUpdatedUtc` deltas expose timeout chains to the second; a row at
+`Failed` means retries exhausted (flow run is visibly Failed); a row stuck at
+`Received` past the lease means a hard crash.
+
+---
+
+## `func azure functionapp publish` cannot authenticate on this machine; SChannel Kudu deploy works
+
+**Symptoms (verified 2026-07-16):** `func ... publish --build remote` failed three ways in one
+session: `Can't find app with name "..."`, `The SSL connection could not be established`, and
+`Unable to connect to Azure. Make sure you have the az CLI ... installed and logged in`.
+
+**Cause:** func shells out to *plain* `az` for tokens, and plain `az account get-access-token`
+**deterministically** fails here (`CERTIFICATE_VERIFY_FAILED` -- no truststore; it redeems the
+refresh token over the network every call, so a warm MSAL cache does not save it). Separately,
+the TLS-inspection proxy has burst windows (minutes) where it RSTs **OpenSSL** handshakes
+wholesale (kills wrapped az and `az functionapp deployment source config-zip` too) while
+**SChannel** (PowerShell `Invoke-WebRequest`) still connects fine.
+
+**Working deploy path (verified end-to-end):**
+1. Zip the functionapp payload honoring `.funcignore` (py files + `host.json` + `requirements.txt`).
+2. Token via the **wrapped** az (cached ~1 h): `az account get-access-token --resource https://management.azure.com`.
+3. Over SChannel (`Invoke-WebRequest`, TLS 1.2): `POST https://<scm-host>/api/publish?RemoteBuild=true`
+   with header `Authorization: Bearer <token>`, `Content-Type: application/zip`, body = the zip
+   (`-InFile`). SCM host = the site's hashed default hostname with `.scm` inserted
+   (first entry of `properties.enabledHostNames` on the ARM site resource). Returns 202 + a
+   `Location: .../api/deployments/<id>`.
+4. Poll that deployments URL (same Bearer) until `complete: true`; `status` 4 = success, 3 = failed.
+5. Verify: ARM `GET .../sites/<app>/functions?api-version=2024-04-01` lists `process_invoice`.
+
+**Do NOT** keep re-running `func publish` or config-zip during an RST burst -- probe first
+(`Invoke-WebRequest https://management.azure.com/` returning 400 = transport OK) and prefer the
+SChannel path above.

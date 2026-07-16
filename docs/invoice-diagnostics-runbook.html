@@ -104,15 +104,15 @@ az login                                              # DefaultAzureCredential u
             <code>REVIEW_B4_CRITICAL_FIELD</code>, <code>REJECT_B2_OTHER_CATEGORY</code>,
             <code>REVIEW_NO_CHILD_EXTRACTION</code>.</td></tr>
     <tr><td><code>FailedStage</code> / <code>LastError</code></td>
-        <td>For a row stuck at <code>Received</code>: the verbatim CU failure (timeout, auth, throttle,
-            <code>ContentSourceNotAccessible</code>…). For infrastructure failures the diagnosis usually
-            ends here.</td></tr>
+        <td>For a row at <code>Failed</code> (or stuck at <code>Received</code> on pre-2026-07 rows): the
+            verbatim CU failure (timeout, auth, throttle, <code>ContentSourceNotAccessible</code>…). For
+            infrastructure failures the diagnosis usually ends here.</td></tr>
     <tr><td><code>AnalyzerId</code> / <code>PolicyVersion</code></td>
         <td>Which child analyzer produced the fields, and which field-policy code version stamped the
             decision. Compare <code>PolicyVersion</code> to the current <code>field_policy.POLICY_VERSION</code>
             before trusting a replay comparison (§6).</td></tr>
     <tr><td><code>CuDurationMs</code></td>
-        <td>CU analyze wall-clock. Values creeping toward the 120&nbsp;s timeout signal service degradation.</td></tr>
+        <td>CU analyze wall-clock. Values creeping toward the 100&nbsp;s timeout signal service degradation.</td></tr>
     <tr><td><code>DefaultedFields</code> / <code>IsHandwritten</code></td>
         <td>Which date fields were defaulted by policy; the advisory handwriting label.</td></tr>
     <tr><td><code>RawResultBlob</code> / <code>DecisionBlob</code></td>
@@ -202,12 +202,20 @@ az login                                              # DefaultAzureCredential u
   <h2><span class="num">9</span>Quick reference — common symptoms</h2>
   <table>
     <tr><th>Symptom</th><th>Meaning / action</th></tr>
+    <tr><td>Row at <code>Failed</code>, <code>FailedStage=cu_analyze</code></td>
+        <td>CU call failed and the claim was released; <code>LastError</code> has the reason. The very next
+            request for the sourceId re-claims and re-processes. A row <em>lingering</em> at
+            <code>Failed</code> means the flow's retries exhausted &mdash; the flow run is visibly Failed;
+            resubmit it after fixing the cause.</td></tr>
     <tr><td>Row stuck at <code>Received</code>, <code>FailedStage=cu_analyze</code></td>
-        <td>CU call failed; <code>LastError</code> has the reason. The row is re-claimed automatically on the
-            next trigger once older than the A1 lease (default 600&nbsp;s).</td></tr>
+        <td>Pre-2026-07 failure semantics (or the release lost its etag race). The row is re-claimed
+            automatically on the next request once older than the A1 lease (default 600&nbsp;s).</td></tr>
     <tr><td>Row stuck at <code>Received</code>, no failure stamps</td>
-        <td>Run crashed before the stamp existed (pre-sidecar), the stamp write itself failed (see Function
-            logs), or a run is genuinely in flight right now.</td></tr>
+        <td>Run crashed before any stamp (hard crash / host kill), the release write itself failed (see
+            Function logs), or a run is genuinely in flight right now. If it stays past the A1 lease, the
+            next request re-claims it &mdash; the flow retry policy (fixed, 4 &times; PT4M) exists precisely
+            so its <em>first</em> retry after the failure lands beyond the lease (retries stop at the
+            first success, and the 200 <code>PROCESSING_IN_PROGRESS</code> no-op counts as one).</td></tr>
     <tr><td><code>RawResultBlob</code> / <code>DecisionBlob</code> empty on an <code>Extracted</code> row</td>
         <td>The best-effort blob write failed (RBAC missing, container/network issue) or the run predates the
             sidecar. Check App Insights for the "Diagnostics blob write failed" warning.</td></tr>

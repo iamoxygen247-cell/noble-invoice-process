@@ -148,9 +148,11 @@ def _lease_seconds() -> int:
 def _a1(table, source_id: str, received_fields: dict, lease_seconds: int):
     """
     Gate A1 — atomic concurrency claim (NOT re-upload dedup: that was removed so
-    the same file can be uploaded again for re-processing). Returns None to
-    proceed, or a tuple ("skip", routingDecision, status, reason) to
-    short-circuit (skip CU).
+    the same file can be uploaded again for re-processing). Returns the claimed
+    row's etag (truthy str) to proceed, or a tuple ("skip", routingDecision,
+    status, reason) to short-circuit (skip CU). The etag lets the caller later
+    release ITS OWN claim on a graceful failure without ever touching a row a
+    newer invocation has re-claimed.
 
     A row with a recorded decision no longer blocks: it is re-claimed and the
     item re-processed from scratch. The only skip left is a row another
@@ -161,15 +163,18 @@ def _a1(table, source_id: str, received_fields: dict, lease_seconds: int):
     """
     existing = ledger.get_row(table, source_id)
     if existing is None:
-        if ledger.claim(table, source_id, Status="Received", **received_fields):
-            return None  # claimed atomically; Received already written
+        etag = ledger.claim(table, source_id, Status="Received", **received_fields)
+        if etag:
+            return etag  # claimed atomically; Received already written
         existing = ledger.get_row(table, source_id)  # a concurrent run just claimed it
 
     reclaimable = ledger.has_decision(existing) or ledger.is_stale(existing, lease_seconds)
-    if reclaimable and ledger.reclaim(table, source_id, ledger.entity_etag(existing),
-                                      Status="Received", **received_fields):
-        # decided -> a re-upload, re-process; stale Received -> a crashed run, resume.
-        return None
+    if reclaimable:
+        etag = ledger.reclaim(table, source_id, ledger.entity_etag(existing),
+                              Status="Received", **received_fields)
+        if etag:
+            # decided -> a re-upload, re-process; stale Received -> a crashed run, resume.
+            return etag
 
     return ("skip", "PROCESSING_IN_PROGRESS",
             (existing.get("Status") if existing else None) or "Received",
@@ -211,7 +216,8 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         return _json(500, {"sourceId": source_id, "error": f"ledger init failed: {exc}"})
 
     pk, rk = ledger.keys_for_source_id(source_id)
-    received_fields = {"FileName": file_name, "SharePointUrl": sharepoint_url, "RoutingDecision": ""}
+    received_fields = {"FileName": file_name, "SharePointUrl": sharepoint_url,
+                       "RoutingDecision": "", "FailedStage": "", "LastError": ""}
 
     # --- Gate A1: atomic concurrency claim ------------------------------------
     try:
@@ -221,7 +227,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
                            "error": f"ledger A1 write failed: {exc}"})
 
-    if a1 is not None:
+    if isinstance(a1, tuple):
         _, decision, status, reason = a1
         logging.info("A1 short-circuit for %s (decision=%s)", source_id, decision)
         return _json(200, {
@@ -231,6 +237,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
             "status": status, "routingDecision": decision,
             "reviewReasons": [reason],
         })
+    claim_etag = a1
 
     # --- Content Understanding ----------------------------------------------
     # content/url were validated and decoded before the A1 claim, so an error
@@ -242,66 +249,91 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         else:
             full = cu_client.analyze_url(url)
     except Exception as exc:
-        # Leave the row at Received: it shows as in-flight/stuck and will be
-        # resumed on the next trigger once it is older than the A1 lease. Stamp
-        # the failure reason so the stuck row is diagnosable from the ledger;
-        # best-effort — the 502 is returned either way (merge mode leaves
-        # Status=Received untouched, so reclaim semantics are unchanged).
+        # Release the claim: this run is over, so mark the row Failed (making it
+        # immediately reclaimable by the caller's automatic retry) instead of
+        # holding the A1 lease and turning that retry into a silent
+        # PROCESSING_IN_PROGRESS no-op. Conditioned on OUR claim's etag so a
+        # delayed release can never clobber a newer invocation's claim; if the
+        # etag lost (foreign owner) or the write fails, the row stays Received
+        # and the lease fallback applies as before. Best-effort — the 502 is
+        # returned either way.
         logging.exception("Content Understanding analyze failed")
+        released = None
         try:
-            ledger.upsert(table, source_id,
-                          FailedStage="cu_analyze", LastError=str(exc)[:1024])
+            released = ledger.reclaim(table, source_id, claim_etag, Status="Failed",
+                                      FailedStage="cu_analyze", LastError=str(exc)[:1024])
+            if not released:
+                logging.warning("Failure release lost the etag race; row left as-is")
         except Exception:
-            logging.exception("Ledger failure-stamp write failed")
+            logging.exception("Ledger failure-release write failed")
         return _json(502, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
-                           "status": "Received",
+                           "status": "Failed" if released else "Received",
                            "error": f"Content Understanding analyze failed: {exc}"})
     cu_duration_ms = int((time.monotonic() - cu_started) * 1000)
 
-    # --- Gates / decision ----------------------------------------------------
-    result = gates.evaluate(full, field_threshold, general_analyzer_id, file_name=file_name)
-
-    # --- Diagnostics sidecar: raw CU result + decision JSON (best-effort) -----
-    blob_paths = diagnostics.save_run(source_id, full, result)
-    raw_blob, decision_blob = blob_paths if blob_paths else ("", "")
-
-    # --- Ledger: Extracted + decision + bill-type/policy stamps ---------------
-    ledger_write_error: Optional[str] = None
     try:
-        ledger.upsert(
-            table, source_id,
-            Status="Extracted",
-            RoutingDecision=result["routingDecision"],
-            DocumentType=result["effectiveDocumentType"],
-            BillType=result.get("billType") or "",
-            SubBillType=result.get("subBillType") or "",
-            PolicyBucket=result.get("policyBucket") or "",
-            PolicyVersion=result.get("policyVersion") or "",
-            DefaultedFields=",".join(result.get("defaultedFields") or []),
-            IsHandwritten=result.get("isHandwritten") or "",
-            FileName=file_name,
-            SharePointUrl=sharepoint_url,
-            AnalyzerId=result.get("analyzerUsed") or "",
-            CuDurationMs=cu_duration_ms,
-            RawResultBlob=raw_blob,
-            DecisionBlob=decision_blob,
-            FailedStage="",
-            LastError="",
-        )
-    except Exception as exc:
-        logging.exception("Ledger Extracted write failed")
-        ledger_write_error = str(exc)
+        # --- Gates / decision ------------------------------------------------
+        result = gates.evaluate(full, field_threshold, general_analyzer_id, file_name=file_name)
 
-    response = {
-        "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
-        "invoiceFileName": PurePath(file_name).stem,
-        "alreadyProcessed": False, "skippedCU": False,
-        # status mirrors the ledger row's true state: if the Extracted write
-        # failed the row is still at Received, and the flow must not treat the
-        # decision as recorded.
-        "status": "Extracted" if ledger_write_error is None else "Received",
-    }
-    response.update(result)  # includes writeValues for the Power Automate flow
-    if ledger_write_error is not None:
-        response["ledgerWriteError"] = ledger_write_error
-    return _json(200, response)
+        # --- Diagnostics sidecar: raw CU result + decision JSON (best-effort) -
+        blob_paths = diagnostics.save_run(source_id, full, result)
+        raw_blob, decision_blob = blob_paths if blob_paths else ("", "")
+
+        # --- Ledger: Extracted + decision + bill-type/policy stamps -----------
+        ledger_write_error: Optional[str] = None
+        try:
+            ledger.upsert(
+                table, source_id,
+                Status="Extracted",
+                RoutingDecision=result["routingDecision"],
+                DocumentType=result["effectiveDocumentType"],
+                BillType=result.get("billType") or "",
+                SubBillType=result.get("subBillType") or "",
+                PolicyBucket=result.get("policyBucket") or "",
+                PolicyVersion=result.get("policyVersion") or "",
+                DefaultedFields=",".join(result.get("defaultedFields") or []),
+                IsHandwritten=result.get("isHandwritten") or "",
+                FileName=file_name,
+                SharePointUrl=sharepoint_url,
+                AnalyzerId=result.get("analyzerUsed") or "",
+                CuDurationMs=cu_duration_ms,
+                RawResultBlob=raw_blob,
+                DecisionBlob=decision_blob,
+                FailedStage="",
+                LastError="",
+            )
+        except Exception as exc:
+            logging.exception("Ledger Extracted write failed")
+            ledger_write_error = str(exc)
+
+        response = {
+            "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
+            "invoiceFileName": PurePath(file_name).stem,
+            "alreadyProcessed": False, "skippedCU": False,
+            # status mirrors the ledger row's true state: if the Extracted write
+            # failed the row is still at Received, and the flow must not treat the
+            # decision as recorded.
+            "status": "Extracted" if ledger_write_error is None else "Received",
+        }
+        response.update(result)  # includes writeValues for the Power Automate flow
+        if ledger_write_error is not None:
+            response["ledgerWriteError"] = ledger_write_error
+        return _json(200, response)
+    except Exception as exc:
+        # Same release as the CU failure path: an unhandled decision-path bug
+        # would otherwise 500 while still holding the A1 claim, and the flow's
+        # automatic retry (which can arrive inside the lease) would get a 200
+        # PROCESSING_IN_PROGRESS no-op and end the retry chain — a silent drop.
+        # Releasing to Failed makes the retry re-claim and re-process at once.
+        logging.exception("Decision path failed after CU")
+        released = None
+        try:
+            released = ledger.reclaim(table, source_id, claim_etag, Status="Failed",
+                                      FailedStage="decision", LastError=str(exc)[:1024])
+            if not released:
+                logging.warning("Failure release lost the etag race; row left as-is")
+        except Exception:
+            logging.exception("Ledger failure-release write failed")
+        return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
+                           "status": "Failed" if released else "Received",
+                           "error": f"decision path failed: {exc}"})
