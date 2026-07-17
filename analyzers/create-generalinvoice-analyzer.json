@@ -30,6 +30,36 @@
         "method": "extract",
         "description": "Date payment is due. May be labeled Due Date, Payment Due Date, Payable By, Due On, or Balance Due Date. Return only an explicitly printed calendar date. Do not infer from invoice date, terms, or amount. If none is printed, return null."
       },
+      "billing_period_start_date_extract": {
+        "type": "date",
+        "method": "extract",
+        "description": "First day of the billing or service period covered by this bill. May be labeled Billing Period, Bill Period, Service Period, Service From, or From, or appear in a sentence such as 'Your bill for May 7, 2026 to Jun 5, 2026' — the start date is the first (earlier) date of the range. Return only a full calendar date explicitly printed as the start of the billing period. Do not return the billing date, statement date, issue date, notice date, due date, payment date, meter reading date, or previous reading date. If the billing period is printed only as months without day numbers (for example 'Mar/Apr 2026'), or no billing period is printed, return null."
+      },
+      "billing_period_start_date_generate": {
+        "type": "date",
+        "method": "generate",
+        "description": "Determine the first day of the billing or service period this bill covers. Reason step by step over the entire document:\n1. Look for an explicitly printed period: a 'Billing Period ... To ...' block, a 'Service From/To' line, or a sentence such as 'Your bill for May 7, 2026 to Jun 5, 2026'. If a full start date with day, month, and year is printed, return it.\n2. If the billing period is printed only as months without day numbers (for example 'Mar/Apr 2026' or 'January-March'), return null. Do not convert months into a date.\n3. Never return the billing date, statement date, issue date, notice date, due date, payment date, or a meter reading date as the start date. The billing date is often weeks after the period ends.\n4. Ignore consumption-history charts, rate tables, and generic billing-schedule tables (often on the back page); they do not state this bill's period.\n5. If no full billing period start date is printed anywhere on the document, return null. Do not calculate or estimate the start date from other dates or day counts."
+      },
+      "billing_period_end_date_extract": {
+        "type": "date",
+        "method": "extract",
+        "description": "Last day of the billing or service period covered by this bill. May be labeled Billing Period ... To, Service To, or To, or appear in a sentence such as 'Your bill for May 7, 2026 to Jun 5, 2026' — the end date is the second (later) date of the range. On some bills the period end coincides with the billing date; return the date only when it is printed as the end of the billing period range. Do not return the billing date, statement date, issue date, due date, payment date, or meter reading date. If the billing period is printed only as months without day numbers (for example 'Mar/Apr 2026'), or no billing period range is printed, return null."
+      },
+      "billing_period_end_date_generate": {
+        "type": "date",
+        "method": "generate",
+        "description": "Determine the last day of the billing or service period this bill covers. Reason step by step over the entire document:\n1. Look for an explicitly printed period: a 'Billing Period ... To ...' block, a 'Service From/To' line, or a sentence such as 'Your bill for May 7, 2026 to Jun 5, 2026'. If a full end date with day, month, and year is printed, return it. The end date may equal the billing date when the period range itself says so.\n2. If no billing period with full dates is printed — the period is missing or shows only months (for example 'Mar/Apr 2026') — return the current meter reading date from the meter table (labeled Reading Date, or the date column next to the meter number): the date the meter was read for this bill, not the previous reading date.\n3. Never return the due date or payment date, and never take dates from consumption-history charts or generic billing-schedule tables.\n4. Never return the billing date unless it is explicitly printed as the end of the billing period range.\nReturn null only if neither a billing period with full dates nor a meter reading date is printed."
+      },
+      "number_of_days_extract": {
+        "type": "integer",
+        "method": "extract",
+        "description": "Number of days in the billing or metering period, as printed on the bill. Usually printed in the meter reading table under a column labeled DAYS, NO. OF DAYS, or Number of Days, or stated in text such as '3,420 kWh used over 30 days' or in a basic charge line such as 'Basic Charge 30 days x $0.2999/day'. Return the day count only. Do not return the meter reading Difference, a meter reading, consumption, kWh, cubic meters, a multiplier, or a dollar amount. Return null if no day count is printed."
+      },
+      "number_of_days_generate": {
+        "type": "integer",
+        "method": "generate",
+        "description": "Determine the number of days in the billing or metering period for this bill. Reason step by step:\n1. Look in the meter reading table for a column labeled DAYS, NO. OF DAYS, or Number of Days and return that value.\n2. Otherwise look for text such as '3,420 kWh used over 30 days' or a per-day basic charge line such as 'Basic Charge 30 days x $0.2999/day' and return the day count.\n3. The value is a count of days, typically between 25 and 130. Never return a meter reading, the reading Difference, consumption, kWh, cubic meters, a multiplier, or a dollar amount.\n4. Do not calculate the number of days from the billing period dates; return only a printed value.\n5. Return null if no day count is printed anywhere."
+      },
       "invoice_number_extract": {
         "type": "string",
         "method": "extract",

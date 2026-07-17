@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "sub-bill-type-v4"
+POLICY_VERSION = "billing-period-v5"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -106,6 +106,25 @@ ACCOUNT_EXTRACT = "account_number_extract"
 ACCOUNT_GENERATE = "account_number_generate"
 ACCOUNT_FINAL = "account_number"
 
+# The billing-period fields are twinned and informational only (never critical):
+# they feed the tenant utility-sharing calculation downstream on municipal
+# utility bills. The dates are normalised but never defaulted -- a wrong period
+# date would corrupt the cost sharing, so blank is the correct failure mode (see
+# build_write_values). A bill that prints no full start date (a month-only
+# period like 'Mar/Apr 2026', or no period at all) derives it deterministically
+# from the end date and day count (see derive_billing_period_start).
+BILLING_START_EXTRACT = "billing_period_start_date_extract"
+BILLING_START_GENERATE = "billing_period_start_date_generate"
+BILLING_START_FINAL = "billing_period_start_date"
+
+BILLING_END_EXTRACT = "billing_period_end_date_extract"
+BILLING_END_GENERATE = "billing_period_end_date_generate"
+BILLING_END_FINAL = "billing_period_end_date"
+
+DAYS_EXTRACT = "number_of_days_extract"
+DAYS_GENERATE = "number_of_days_generate"
+DAYS_FINAL = "number_of_days"
+
 # Values handed to Power Automate to write to Dynamics. Values only; per-field
 # confidence stays in the separate raw-fields block for the review UI and audit.
 WRITE_FIELDS: Tuple[str, ...] = (
@@ -122,6 +141,9 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "bill_type",
     "sub_bill_type",
     "invoice_description",
+    "billing_period_start_date",
+    "billing_period_end_date",
+    "number_of_days",
 )
 DATE_FIELDS: Tuple[str, ...] = ("invoice_date", "payment_due_date")
 
@@ -359,6 +381,28 @@ def _amount_excluding_gst(total: Any, gst: Any) -> Optional[float]:
         return None
 
 
+def derive_billing_period_start(
+    end_value: Any,
+    end_conf: Optional[float],
+    days_value: Any,
+    days_conf: Optional[float],
+) -> Optional[Tuple[str, float]]:
+    """
+    Derived billing-period start for a bill that prints no full start date:
+    start = end - (number_of_days - 1), the period counted inclusive of both
+    endpoints (an Abbotsford 'Mar/Apr 2026' bill read on Apr 30 with 61 days
+    starts Mar 1). Returns (YYYY-MM-DD, confidence) with the confidence the
+    weaker of the two inputs, or None when either input is missing or
+    unparseable -- the caller then leaves the field blank (never defaulted).
+    """
+    end_norm = _normalize_date(end_value)
+    days = _days_int(days_value)
+    if end_norm is None or days is None:
+        return None
+    start = datetime.strptime(end_norm, DATE_FORMAT) - timedelta(days=days - 1)
+    return start.strftime(DATE_FORMAT), min(end_conf or 0.0, days_conf or 0.0)
+
+
 # --- twin field resolution (extract + generate) ------------------------------
 
 # Corporate suffixes dropped before comparing the two vendor spellings, so
@@ -518,6 +562,34 @@ def _identifier_values_agree(a: Any, b: Any) -> bool:
     return na != "" and na == nb
 
 
+def _dates_agree(a: Any, b: Any) -> bool:
+    """True when two dates name the same calendar day after normalisation. False
+    when either is missing or unparseable (an unparseable date corroborates nothing)."""
+    na, nb = _normalize_date(a), _normalize_date(b)
+    return na is not None and na == nb
+
+
+def _days_int(value: Any) -> Optional[int]:
+    """A positive day count parsed from a CU integer/number or text such as
+    '61 days'. None when absent, unparseable, or not positive."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        days = int(value)
+        return days if days > 0 else None
+    m = re.search(r"\d+", str(value))
+    if m is None:
+        return None
+    days = int(m.group())
+    return days if days > 0 else None
+
+
+def _days_agree(a: Any, b: Any) -> bool:
+    """True when both day counts parse to the same positive integer."""
+    da, db = _days_int(a), _days_int(b)
+    return da is not None and da == db
+
+
 def resolve_vendor(
     parsed: Dict[str, Tuple[Any, Optional[float]]],
     threshold: float = THRESHOLD,
@@ -540,10 +612,11 @@ def resolve_service_address(
     )
 
 
-# Every twin-resolved field (all critical in some bucket except pst_amount, which is
-# informational only): final name -> (extract key, generate key, agree fn,
-# prefer the clean generate value on agreement). vendor prefers the normalised generate
-# name; the rest keep the literal extract value (the twin only validates).
+# Every twin-resolved field (all critical in some bucket except pst_amount and the
+# billing-period fields, which are informational only): final name -> (extract key,
+# generate key, agree fn, prefer the clean generate value on agreement). vendor
+# prefers the normalised generate name; the rest keep the literal extract value
+# (the twin only validates).
 TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
     VENDOR_FINAL: (VENDOR_EXTRACT, VENDOR_GENERATE, _vendor_values_consistent, True),
     SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, False),
@@ -553,6 +626,9 @@ TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
     PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, False),
     INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, False),
     ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, False),
+    BILLING_START_FINAL: (BILLING_START_EXTRACT, BILLING_START_GENERATE, _dates_agree, False),
+    BILLING_END_FINAL: (BILLING_END_EXTRACT, BILLING_END_GENERATE, _dates_agree, False),
+    DAYS_FINAL: (DAYS_EXTRACT, DAYS_GENERATE, _days_agree, False),
 }
 
 
@@ -588,6 +664,9 @@ def build_write_values(
         * non-date fields pass through unchanged (values only);
         * ``pst_amount`` defaults to 0 when the twins resolve to nothing, an
           empty string, or N/A (no PST charged -- the common, service-only case);
+        * the billing-period dates are normalised but NEVER defaulted (blank
+          when absent/unparseable) and ``number_of_days`` is a positive int or
+          blank -- informational fields for the tenant utility-sharing math;
         * ``amount_excluding_gst`` is the derived total - gst (or None).
 
     This is identical for both buckets -- defaulting is not bucket-dependent.
@@ -624,6 +703,17 @@ def build_write_values(
     pst = write[PST_FINAL]
     if pst is None or (isinstance(pst, str) and pst.strip().lower() in ("", "n/a", "na")):
         write[PST_FINAL] = 0
+
+    # The billing-period fields are informational and never default: the dates
+    # are normalised to YYYY-MM-DD and blank when absent or unparseable (a wrong
+    # period date would corrupt the tenant utility-sharing calculation, so blank
+    # beats a substituted date), the day count a positive integer or blank.
+    # gates.evaluate derives a missing start date from the resolved end date and
+    # day count afterwards (derive_billing_period_start).
+    for name in (BILLING_START_FINAL, BILLING_END_FINAL):
+        write[name] = _normalize_date(write[name]) or ""
+    days = _days_int(write[DAYS_FINAL])
+    write[DAYS_FINAL] = days if days is not None else ""
 
     # sub_bill_type is derived too: commercial from the resolved PO's prefix,
     # municipal from the classified label (confidence bar / generate-twin

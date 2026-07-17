@@ -54,6 +54,15 @@ FIELD_PRINT_ORDER = [
     "vendor_name_generate",
     "invoice_date",
     "payment_due_date",
+    "billing_period_start_date",
+    "billing_period_start_date_extract",
+    "billing_period_start_date_generate",
+    "billing_period_end_date",
+    "billing_period_end_date_extract",
+    "billing_period_end_date_generate",
+    "number_of_days",
+    "number_of_days_extract",
+    "number_of_days_generate",
     "invoice_number",
     "invoice_number_extract",
     "invoice_number_generate",
@@ -502,6 +511,25 @@ def evaluate(
                 advisory.append(
                     f"invoice_number defaulted from the SharePoint filename: {inv_default}"
                 )
+
+    # Billing-period start derivation: a utility bill that prints no full start
+    # date (a month-only period like 'Mar/Apr 2026', or no period at all) takes
+    # start = end - (number_of_days - 1) from the resolved end date and day
+    # count. Deterministic date arithmetic like the PO rescue (source
+    # "derived"); a printed start value -- even one below the confidence bar --
+    # is never overwritten. Informational only: never gates routing.
+    if is_empty_value(resolutions[field_policy.BILLING_START_FINAL][0]):
+        end_value, end_conf = resolutions[field_policy.BILLING_END_FINAL][:2]
+        days_value, days_conf = resolutions[field_policy.DAYS_FINAL][:2]
+        derived = field_policy.derive_billing_period_start(end_value, end_conf, days_value, days_conf)
+        if derived is not None:
+            derived_start, derived_conf = derived
+            resolutions[field_policy.BILLING_START_FINAL] = (derived_start, derived_conf, True, None, "derived")
+            write_values[field_policy.BILLING_START_FINAL] = derived_start
+            advisory.append(
+                "billing_period_start_date derived from billing_period_end_date "
+                f"minus number_of_days: {derived_start}"
+            )
 
     b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)
     if len(po_candidates) > 1:

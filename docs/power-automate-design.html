@@ -321,6 +321,15 @@
         <td>A municipal bill carried no invoice number, so the Function defaulted it from
             <code>fileName</code> (extension stripped). Keep sending <code>fileName</code> &mdash; it feeds this
             fallback, not just the content-type hint.</td></tr>
+    <tr><td><code>writeValues</code> billing-period keys</td>
+        <td><code>billing_period_start_date</code> / <code>billing_period_end_date</code>
+            (<code>YYYY-MM-DD</code> or <code>""</code>) and <code>number_of_days</code> (integer or
+            <code>""</code>) &mdash; informational fields on municipal utility bills for the tenant
+            utility-sharing calculation; map each to its Dataverse column in the Phase&nbsp;4 write.
+            When the bill prints no full start date the Function derives it as
+            <code>end &minus; (number_of_days &minus; 1)</code> (advisory flag +
+            <code>resolutions.billing_period_start_date.source = "derived"</code>). Blank means
+            unknown &mdash; never substitute a default date.</td></tr>
   </table>
 
   <h2><span class="num">4</span>What I need from you before building</h2>

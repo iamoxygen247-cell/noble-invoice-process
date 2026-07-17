@@ -54,6 +54,10 @@ def fdate(value, conf):
     return {"valueDate": value, "confidence": conf}
 
 
+def fint(value, conf):
+    return {"valueInteger": value, "confidence": conf}
+
+
 def cu_result(fields, category="general_invoice", analyzer="generalinvoice",
               markdown=None, router_markdown=None):
     """contents[0] = router result (segment category); contents[1] = child fields.
@@ -786,6 +790,188 @@ def test_pst_twin_and_zero_default():
     check("explicit 0.0 pst stays 0", wv["pst_amount"] == 0.0, str(wv["pst_amount"]))
 
 
+def test_billing_period_twins_and_derivation():
+    print("\n[gates: billing-period twins -- informational; derived start = end - (days - 1)]")
+
+    # Informational only: written to Dynamics, never critical, never today-defaulted.
+    for name in ("billing_period_start_date", "billing_period_end_date", "number_of_days"):
+        check(f"{name} in WRITE_FIELDS", name in field_policy.WRITE_FIELDS)
+        check(f"{name} not critical (commercial)", name not in field_policy.critical_fields("commercial"))
+        check(f"{name} not critical (municipal)", name not in field_policy.critical_fields("municipal"))
+    check("billing dates NOT in DATE_FIELDS (never defaulted to today)",
+          "billing_period_start_date" not in field_policy.DATE_FIELDS
+          and "billing_period_end_date" not in field_policy.DATE_FIELDS)
+
+    # commercial invoice without the twins -> keys present but blank, never defaulted, happy.
+    r = ev(commercial_fields())
+    check("commercial -> blank billing start", r["writeValues"]["billing_period_start_date"] == "",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("commercial -> blank billing end", r["writeValues"]["billing_period_end_date"] == "",
+          str(r["writeValues"].get("billing_period_end_date")))
+    check("commercial -> blank number_of_days", r["writeValues"]["number_of_days"] == "",
+          str(r["writeValues"].get("number_of_days")))
+    check("blank billing fields never recorded as defaulted",
+          not any(n.startswith("billing_period") or n == "number_of_days" for n in r["defaultedFields"]),
+          str(r["defaultedFields"]))
+    check("commercial stays happy without billing twins",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # Burnaby/West Van shape: explicit period + DAYS column, confident extracts.
+    fields = municipal_fields(
+        sub_bill_type=fstr("water", 0.9),
+        sub_bill_type_generate=fstr("water", 0.85),
+        billing_period_start_date_extract=fdate("2026-01-01", 0.94),
+        billing_period_end_date_extract=fdate("2026-03-31", 0.93),
+        number_of_days_extract=fint(83, 0.92),
+    )
+    r = ev(fields)
+    check("explicit period -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("start source = extract", r["resolutions"]["billing_period_start_date"]["source"] == "extract",
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("end source = extract", r["resolutions"]["billing_period_end_date"]["source"] == "extract")
+    check("days source = extract", r["resolutions"]["number_of_days"]["source"] == "extract")
+    check("start written normalised", r["writeValues"]["billing_period_start_date"] == "2026-01-01",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("end written normalised", r["writeValues"]["billing_period_end_date"] == "2026-03-31")
+    check("days written as int", r["writeValues"]["number_of_days"] == 83,
+          str(r["writeValues"].get("number_of_days")))
+    check("no derivation when start is printed",
+          not any("billing_period_start_date derived" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Agreement boost (the vendor_name-style sub-threshold rescue): both twins below
+    # the bar but the same calendar day across formats -> passed, source agreement.
+    fields = municipal_fields(
+        billing_period_start_date_extract=fdate("2026-01-01", 0.50),
+        billing_period_start_date_generate=fdate("Jan 1, 2026", 0.60),
+    )
+    r = ev(fields)
+    check("both below but same day -> passed via agreement",
+          r["resolutions"]["billing_period_start_date"]["passed"] is True
+          and r["resolutions"]["billing_period_start_date"]["source"] == "agreement",
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("agreement writes the normalised extract value",
+          r["writeValues"]["billing_period_start_date"] == "2026-01-01",
+          str(r["writeValues"].get("billing_period_start_date")))
+    fields = municipal_fields(
+        number_of_days_extract=fint(83, 0.50),
+        number_of_days_generate=fstr("83 days", 0.60),
+    )
+    r = ev(fields)
+    check("days both below but equal -> agreement",
+          r["resolutions"]["number_of_days"]["source"] == "agreement",
+          str(r["resolutions"].get("number_of_days")))
+    check("days agreement writes the int", r["writeValues"]["number_of_days"] == 83,
+          str(r["writeValues"].get("number_of_days")))
+
+    # Abbotsford: month-only period -> extract twins null, generate returns the
+    # reading date as the end; code derives start = end - (days - 1) = Mar 1.
+    fields = municipal_fields(
+        sub_bill_type=fstr("water", 0.9),
+        sub_bill_type_generate=fstr("water", 0.85),
+        billing_period_end_date_generate=fdate("2026-04-30", 0.85),
+        number_of_days_extract=fint(61, 0.90),
+    )
+    r = ev(fields)
+    check("end rescued by confident generate (reading date)",
+          r["resolutions"]["billing_period_end_date"]["source"] == "generate",
+          str(r["resolutions"].get("billing_period_end_date")))
+    check("Abbotsford derived start = 2026-03-01",
+          r["writeValues"]["billing_period_start_date"] == "2026-03-01",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("derived start source = derived",
+          r["resolutions"]["billing_period_start_date"]["source"] == "derived"
+          and r["resolutions"]["billing_period_start_date"]["passed"] is True,
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("derived start confidence = min(end, days)",
+          r["fields"]["billing_period_start_date"]["confidence"] == 0.85,
+          str(r["fields"].get("billing_period_start_date")))
+    check("derivation advisory raised",
+          any("billing_period_start_date derived from billing_period_end_date" in a
+              for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("derivation never gates routing", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+
+    # Surrey: no period printed at all -> end = reading date, days = 112,
+    # derived start = 2026-01-08.
+    fields = municipal_fields(
+        billing_period_end_date_generate=fdate("2026-04-29", 0.90),
+        number_of_days_extract=fint(112, 0.88),
+    )
+    r = ev(fields)
+    check("Surrey derived start = 2026-01-08",
+          r["writeValues"]["billing_period_start_date"] == "2026-01-08",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("Surrey derived confidence = min(end, days)",
+          r["fields"]["billing_period_start_date"]["confidence"] == 0.88,
+          str(r["fields"].get("billing_period_start_date")))
+
+    # A printed start -- even below the bar -- is never overwritten by derivation
+    # (meter interval can legitimately differ from the period length: Burnaby 83 vs 90).
+    fields = municipal_fields(
+        billing_period_start_date_extract=fdate("2026-01-01", 0.40),
+        billing_period_end_date_extract=fdate("2026-03-31", 0.90),
+        number_of_days_extract=fint(83, 0.90),
+    )
+    r = ev(fields)
+    check("low-conf printed start kept (no derivation)",
+          r["writeValues"]["billing_period_start_date"] == "2026-01-01"
+          and r["resolutions"]["billing_period_start_date"]["source"] == "extract",
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("no derivation advisory for a printed start",
+          not any("billing_period_start_date derived" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Disagreeing low twins: informational -> never reviews; extract kept; advisory raised;
+    # start stays blank when days are missing (no derivation possible).
+    fields = municipal_fields(
+        billing_period_end_date_extract=fdate("2026-03-31", 0.40),
+        billing_period_end_date_generate=fdate("2026-04-24", 0.60),
+    )
+    r = ev(fields)
+    check("disagreeing billing twins never gate routing",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("disagree advisory raised",
+          any("billing_period_end_date_extract" in a and "disagree" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("extract kept on disagreement", r["writeValues"]["billing_period_end_date"] == "2026-03-31",
+          str(r["writeValues"].get("billing_period_end_date")))
+    check("start blank when days missing (no derivation, no default)",
+          r["writeValues"]["billing_period_start_date"] == "", str(r["writeValues"].get("billing_period_start_date")))
+
+    # Junk day counts write blank, never a guess.
+    r = ev(municipal_fields(number_of_days_extract=fstr("abc", 0.9)))
+    check("junk days -> blank", r["writeValues"]["number_of_days"] == "",
+          str(r["writeValues"].get("number_of_days")))
+
+    # A day count stated in prose reaches the value via the generate twin (BC Hydro
+    # 'used over 30 days' shape).
+    r = ev(municipal_fields(number_of_days_generate=fstr("30 days", 0.90)))
+    check("prose day count rescued by generate", r["writeValues"]["number_of_days"] == 30,
+          str(r["writeValues"].get("number_of_days")))
+    check("days rescue source = generate", r["resolutions"]["number_of_days"]["source"] == "generate")
+
+    # Helpers.
+    check("_dates_agree across formats", field_policy._dates_agree("2026-05-07", "May 7, 2026"))
+    check("_dates_agree rejects different days", not field_policy._dates_agree("2026-05-07", "2026-05-08"))
+    check("_dates_agree rejects unparseable (ambiguous numeric)",
+          not field_policy._dates_agree("03/04/2026", "03/04/2026"))
+    check("_dates_agree rejects missing", not field_policy._dates_agree(None, "2026-05-07"))
+    check("_days_agree int vs prose", field_policy._days_agree(61, "61 days"))
+    check("_days_agree rejects different", not field_policy._days_agree(61, 62))
+    check("_days_agree rejects missing", not field_policy._days_agree(None, 61))
+    derive = field_policy.derive_billing_period_start
+    check("derive Abbotsford (Apr 30, 61d) -> Mar 1",
+          derive("2026-04-30", 0.85, 61, 0.90) == ("2026-03-01", 0.85))
+    check("derive Surrey (Apr 29, 112d) -> Jan 8",
+          derive("2026-04-29", 0.90, 112, 0.88) == ("2026-01-08", 0.88))
+    check("derive parses month-name end + prose days",
+          derive("Apr 30, 2026", 0.80, "61 days", 0.90) == ("2026-03-01", 0.80))
+    check("derive without end -> None", derive(None, None, 61, 0.9) is None)
+    check("derive without days -> None", derive("2026-04-30", 0.9, None, None) is None)
+    check("derive junk days -> None", derive("2026-04-30", 0.9, "n/a", 0.9) is None)
+
+
 def test_po_ocr_rescue():
     print("\n[gates: PO rescue from OCR markdown]")
 
@@ -1262,6 +1448,7 @@ def main():
     test_sub_bill_type()
     test_b4_review_summary()
     test_po_ocr_rescue()
+    test_billing_period_twins_and_derivation()
 
     print("\n" + "=" * 60)
     print("ALL CHECKS PASSED")

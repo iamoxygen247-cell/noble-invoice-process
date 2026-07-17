@@ -73,13 +73,15 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "sub-bill-type-v4",
+  "policyBucket": "commercial", "policyVersion": "billing-period-v5",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
   "writeValues": { "vendor_name": "...", "invoice_date": "2026-05-01",
                    "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0,
                    "account_number": "123456789012", "sub_bill_type": "repair",
+                   "billing_period_start_date": "2026-01-01",
+                   "billing_period_end_date": "2026-03-31", "number_of_days": 83,
                    "...": null },
   "defaultedFields": [], "anomalyFlag": ""
 }
@@ -117,6 +119,22 @@ The response marks it three ways — `defaultedFields` gains `invoice_number`,
 records the substituted value. With no usable `fileName` the field fails to
 review exactly as before; a present-but-low-confidence value is never
 overwritten.
+
+Billing-period fields (municipal utility bills): `billing_period_start_date`,
+`billing_period_end_date`, and `number_of_days` feed the tenant utility-sharing
+calculation. Each is an extract + generate twin resolved like `vendor_name`
+(including the agreement boost: two sub-threshold twins naming the same
+date/day count pass with source `"agreement"`). They are **informational only**
+— never critical, never gate routing — and the dates are normalised to
+`YYYY-MM-DD` but **never defaulted**: a bill that doesn't state a value writes
+`""` (a substituted date would corrupt the cost sharing). When a bill prints no
+full start date (a month-only period like `Mar/Apr 2026`, or none at all), the
+generate twin returns the meter Reading Date as the period end and the start is
+derived in code as `end − (number_of_days − 1)` — period inclusive of both
+endpoints — with `resolutions.billing_period_start_date.source` = `"derived"`,
+confidence the weaker of the two inputs, and an advisory flag recording the
+derivation. A printed start value, even below the confidence bar, is never
+overwritten by the derivation.
 
 When gate A1 short-circuits (another invocation is processing the same item), the
 response has `alreadyProcessed: true`, `skippedCU: true`, and `routingDecision`
@@ -233,9 +251,11 @@ connection (encrypted at rest, never in run history) rather than in the flow.
    - `HAPPY_PATH_CANDIDATE` → **Add a new row** to the Dataverse invoice table →
      on 201, update the ledger row (`Status=Written`, `DynamicsRecordId`).
      `writeValues` now includes `account_number` (required on municipal bills,
-     optional on commercial) and `sub_bill_type` (gas / electric / water /
-     business_license / service / repair / other) — map each to the matching
-     Dataverse column.
+     optional on commercial), `sub_bill_type` (gas / electric / water /
+     business_license / service / repair / other), and the billing-period trio
+     `billing_period_start_date` / `billing_period_end_date` (`YYYY-MM-DD` or
+     `""`) and `number_of_days` (integer or `""`) for the tenant
+     utility-sharing calculation — map each to the matching Dataverse column.
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.
