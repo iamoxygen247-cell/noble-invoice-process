@@ -256,6 +256,32 @@
     lease or the interval changes.
   </div>
 
+  <div class="note">
+    <strong>Capacity &amp; burst behavior (assessed 2026-07-16, live config).</strong> The Function app runs
+    Flex Consumption with <code>instanceMemoryMB 4096</code>, <code>maximumInstanceCount 100</code>,
+    <code>alwaysReady 0</code>, and Python's default <strong>per-instance HTTP concurrency of 1</strong> —
+    one instance processes exactly one invoice (private 4&nbsp;GB), and a burst fans out to one instance per
+    concurrent invoice. A 30&ndash;50-invoice morning drop &rarr; 30&ndash;50 parallel instances (half the
+    100 cap), each paying one 2&ndash;6&nbsp;s cold start (worst ~10&nbsp;s) — comfortably inside the
+    120&nbsp;s connector budget next to CU's 100&nbsp;s cap. CU S0 quota (1,000 pages/min, 3,000 ops/min)
+    sees only ~150 pages / ~600 ops at peak. Cost at ~1,500 invoices/month: <strong>$2&ndash;3/month</strong>.
+    <br><br>
+    <strong>Known constraint — CU latency under burst, not quota:</strong> on 2026-07-16 a ~19-file batch
+    drove ~8 concurrent CU analyzes past the 120&nbsp;s cap simultaneously (see the incident report).
+    Expect elevated 502s during large simultaneous drops; with the Failed-release + retry design these
+    self-heal on the next retry wave (~4&nbsp;min later, when the concurrent load has drained), but a
+    morning batch may take a few retry cycles to fully clear rather than one pass.
+    <br><br>
+    <strong>Deliberate decisions — don't re-litigate without new data:</strong>
+    raising per-instance concurrency to N saves only ~$1&ndash;2/month here, requires the
+    <code>PYTHON_THREADPOOL_THREAD_COUNT=N</code> pairing (unpaired, admitted requests queue inside the
+    instance and burn the 120&nbsp;s budget <em>before</em> the A1 claim), and widens the crash blast radius
+    to N in-flight invoices per process death. Always-ready instances cost a fixed ~$42/month per warm
+    4&nbsp;GB instance (no free grant), add <em>no</em> burst capacity (ceiling stays 100), and only skip the
+    cold start for the first <code>alwaysReady &times; concurrency</code> requests — declined
+    (~$129/month for 3). Revisit concurrency only if bursts approach the 100-instance cap.
+  </div>
+
   <h3>The Function's response contract (what the flow reads)</h3>
   <p>Updated for the July&nbsp;2026 validation hardening of <code>function_app.py</code>:</p>
   <table>

@@ -229,6 +229,38 @@ az login                                              # DefaultAzureCredential u
             <code>AZURE_STORAGE_ACCOUNT</code> — set exactly one (§1).</td></tr>
   </table>
 
+  <h2><span class="num">10</span>Daily reconciliation — drop detection</h2>
+  <p>The 2026-07-16 fixes make failures <em>loud</em> (failed flow runs instead of silent green no-ops),
+     but noticing them is still human. This query is the systemic backstop: run it daily (or after each
+     morning batch) to catch anything that fell through. A row that is still not <code>Extracted</code>
+     (or, once the Phase&nbsp;4 flow writes it, <code>Written</code>) an hour or two after upload represents
+     an invoice that needs attention.</p>
+<pre>$cut = (Get-Date).ToUniversalTime().AddHours(-2).ToString("yyyy-MM-ddTHH:mm:ssZ")
+az storage entity query --table-name InvoiceExtractProcessLog `
+  --account-name stinvoicedevwestus --auth-mode login `
+  --filter "IngestedUtc lt datetime'$cut' and (Status eq 'Received' or Status eq 'Failed')" `
+  --select RowKey Status FailedStage LastError IngestedUtc LastUpdatedUtc</pre>
+  <p>Interpretation:</p>
+  <table>
+    <tr><th>Result</th><th>Meaning / action</th></tr>
+    <tr><td>Row at <code>Failed</code>, hours old</td>
+        <td>The flow's retries exhausted (the run is visibly <strong>Failed</strong> in run history) or the
+            run was lost. Fix the cause (<code>LastError</code>), then <strong>Resubmit</strong> the flow run
+            or re-upload the file.</td></tr>
+    <tr><td>Row stuck at <code>Received</code>, hours old</td>
+        <td>A hard crash whose retries also failed, or a lost trigger. Same action: resubmit / re-upload —
+            the row is long past the A1 lease, so it re-claims cleanly.</td></tr>
+    <tr><td>Row at <code>Extracted</code>, hours old, no <code>DynamicsRecordId</code> <em>(Phase 4+)</em></td>
+        <td>The Function succeeded but the flow died before the Dataverse write (run shows Failed).
+            Check the run first: if Dataverse <em>was</em> written but the <code>Written</code> stamp
+            wasn't, a resubmit creates a <strong>duplicate</strong> Dynamics row (no dedup, by requirement)
+            — resubmit only after confirming no Dataverse row exists. Add
+            <code>Status eq 'Extracted'</code> to the filter once Phase&nbsp;4 is live.</td></tr>
+  </table>
+  <p class="sub">On this machine run az via the truststore wrapper (see
+     <code>docs/ai/troubleshooting.md</code>). This check is a candidate for automation later — a scheduled
+     flow querying the table and posting a Teams/email alert (design doc "Phase 5").</p>
+
   <footer>
     Related: <code>docs/invoice-diagnostics-design.html</code> (design &amp; decision record) ·
     <code>scripts/diag.py</code> · <code>functionapp/diagnostics.py</code> ·

@@ -208,15 +208,26 @@ LastUpdatedUtc  = 2026-07-16T16:27:17Z   (exactly 120 s later)</code></pre>
           <code>routingDecision</code> Switch stay as-is — the response contract is unchanged.</li>
     </ul>
 
-    <h3>C. After the code deploy — recover the dropped invoice</h3>
+    <h3>C. After the code deploy — recover the dropped invoices (8, not 1)</h3>
+    <div class="crit">
+      <strong>Reconciliation finding (2026-07-16, live ledger query):</strong> the incident affected the
+      whole 16:25 batch, not just the file in the screenshot. <strong>Eight</strong> rows are stuck at
+      <code>Received</code> with <code>FailedStage=cu_analyze</code>:
+      <code>260601_0002.PDF</code>, <code>0007</code>, <code>0010</code>, <code>0014</code>,
+      <code>0015</code>, <code>0017</code>, <code>0018</code>, <code>0019</code>. All eight CU calls blew
+      the 120&nbsp;s cap <em>together</em> — CU latency degrades under concurrent burst load — and every
+      one was silently dropped by the same retry-inside-lease mechanism.
+    </div>
     <ol>
       <li><strong>My flows</strong> → the invoice flow → <strong>28-day run history</strong>.</li>
-      <li>Find the 2026-07-16 ~16:27&nbsp;UTC run for <code>260601_0002.PDF</code> (it shows
-          <em>Succeeded</em> despite writing nothing).</li>
-      <li>Open it → <strong>Resubmit</strong>. The ledger row is long past the lease, so the resubmit
-          re-claims and fully re-processes. (Alternative: re-upload the file to the SharePoint drop folder.)</li>
-      <li>Verify the resubmitted run took the <code>routingDecision</code> Switch branch (not Terminate),
-          and/or that the ledger row reached <code>Status=Extracted</code>.</li>
+      <li>Find the 2026-07-16 ~16:25&ndash;16:28&nbsp;UTC runs for the <strong>eight files listed above</strong>
+          (they show <em>Succeeded</em> despite writing nothing).</li>
+      <li><strong>Resubmit</strong> each. The ledger rows are long past the lease, so each resubmit
+          re-claims and fully re-processes. (Alternative: re-upload the files to the SharePoint drop
+          folder.) Resubmit a few at a time rather than all at once — the batch failed under concurrent
+          CU load in the first place.</li>
+      <li>Verify with the reconciliation query (runbook §10): it should return zero rows once all eight
+          reach <code>Status=Extracted</code>.</li>
     </ol>
 
     <h3>D. Optional (recommended)</h3>
