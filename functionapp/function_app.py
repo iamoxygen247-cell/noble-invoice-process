@@ -74,6 +74,20 @@ def _json(status: int, payload: dict) -> func.HttpResponse:
     )
 
 
+def _log_run_summary(source_id: str, http_status: int, status: str, decision: str,
+                     cu_ms: Optional[int] = None) -> None:
+    """One stable, parseable INFO line per invocation. App Insights queries and
+    alerts key on this line (see docs/monitoring-design.html): structured data is
+    embedded in the message text because the Python worker does not map logging
+    extras to customDimensions. status/decision mirror the response payload
+    ("-" when the response carries none); cuMs is -1 when CU was never reached."""
+    logging.info(
+        "RUN_SUMMARY sourceId=%s httpStatus=%s status=%s decision=%s cuMs=%s",
+        source_id or "-", http_status, status or "-", decision or "-",
+        cu_ms if cu_ms is not None else -1,
+    )
+
+
 def _field_threshold(body: dict) -> float:
     """Resolve the critical-field threshold. Single source of truth is
     field_policy.THRESHOLD; an env var or request body may override it.
@@ -186,10 +200,12 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
     except ValueError:
+        _log_run_summary("-", 400, "-", "-")
         return _json(400, {"error": "request body must be JSON"})
 
     source_id = (body.get("sourceId") or "").strip()
     if not source_id:
+        _log_run_summary("-", 400, "-", "-")
         return _json(400, {"error": "sourceId is required (use the SharePoint item UniqueId)"})
 
     file_name = body.get("fileName") or ""
@@ -201,10 +217,12 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
     try:
         field_threshold = _field_threshold(body)
     except ValueError as exc:
+        _log_run_summary(source_id, 400, "-", "-")
         return _json(400, {"sourceId": source_id, "error": str(exc)})
 
     content, url, transport_error = _decode_content(body)
     if transport_error:
+        _log_run_summary(source_id, 400, "-", "-")
         return _json(400, {"sourceId": source_id, "error": transport_error})
 
     general_analyzer_id = cu_client.general_invoice_analyzer_id()
@@ -213,6 +231,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         table = ledger.get_table_client()
     except Exception as exc:
         logging.exception("Ledger client init failed")
+        _log_run_summary(source_id, 500, "-", "-")
         return _json(500, {"sourceId": source_id, "error": f"ledger init failed: {exc}"})
 
     pk, rk = ledger.keys_for_source_id(source_id)
@@ -224,12 +243,14 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         a1 = _a1(table, source_id, received_fields, _lease_seconds())
     except Exception as exc:
         logging.exception("Ledger A1 / Received write failed")
+        _log_run_summary(source_id, 500, "-", "-")
         return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
                            "error": f"ledger A1 write failed: {exc}"})
 
     if isinstance(a1, tuple):
         _, decision, status, reason = a1
         logging.info("A1 short-circuit for %s (decision=%s)", source_id, decision)
+        _log_run_summary(source_id, 200, status, decision)
         return _json(200, {
             "sourceId": source_id, "partitionKey": pk, "rowKey": rk,
             "invoiceFileName": PurePath(file_name).stem,
@@ -258,6 +279,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         # and the lease fallback applies as before. Best-effort — the 502 is
         # returned either way.
         logging.exception("Content Understanding analyze failed")
+        cu_failed_ms = int((time.monotonic() - cu_started) * 1000)
         released = None
         try:
             released = ledger.reclaim(table, source_id, claim_etag, Status="Failed",
@@ -266,6 +288,7 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
                 logging.warning("Failure release lost the etag race; row left as-is")
         except Exception:
             logging.exception("Ledger failure-release write failed")
+        _log_run_summary(source_id, 502, "Failed" if released else "Received", "-", cu_failed_ms)
         return _json(502, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
                            "status": "Failed" if released else "Received",
                            "error": f"Content Understanding analyze failed: {exc}"})
@@ -318,6 +341,8 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         response.update(result)  # includes writeValues for the Power Automate flow
         if ledger_write_error is not None:
             response["ledgerWriteError"] = ledger_write_error
+        _log_run_summary(source_id, 200, response["status"], result["routingDecision"],
+                         cu_duration_ms)
         return _json(200, response)
     except Exception as exc:
         # Same release as the CU failure path: an unhandled decision-path bug
@@ -334,6 +359,8 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
                 logging.warning("Failure release lost the etag race; row left as-is")
         except Exception:
             logging.exception("Ledger failure-release write failed")
+        _log_run_summary(source_id, 500, "Failed" if released else "Received", "-",
+                         cu_duration_ms)
         return _json(500, {"sourceId": source_id, "partitionKey": pk, "rowKey": rk,
                            "status": "Failed" if released else "Received",
                            "error": f"decision path failed: {exc}"})

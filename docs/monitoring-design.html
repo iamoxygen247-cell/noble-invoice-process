@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Logging &amp; Monitoring (Design + Setup Runbook)</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  ul { margin:10px 0 10px 22px; } li { margin:5px 0; }
+  ol { margin:10px 0 10px 22px; }
+  ol.steps > li { margin:9px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Logging &amp; Monitoring — Design + Setup Runbook</h1>
+  <p class="sub">Noble Invoice Processor · metrics, alerts, and step-by-step Azure portal setup ·
+     sized for 500&ndash;1,500 invoices/month</p>
+
+  <p>
+    <span class="tag">function app: func-invoiceprocess-westus</span>
+    <span class="tag">CU resource: invoice-processing-dev-resource</span>
+    <span class="tag">ledger: stinvoicedevwestus / InvoiceExtractProcessLog</span>
+    <span class="tag">notify: georgetsang@noblehomes.ca</span>
+  </p>
+
+  <div class="note">
+    <strong>Design premise.</strong> At 500&ndash;1,500 invoices/month (&asymp;17&ndash;50/day, occasionally a burst
+    of ~10 dropped at once), traffic is far too low for percentage-based rules — one bad invoice is 100% of
+    that minute. Every alert below therefore uses <strong>absolute counts</strong>, and the most dangerous
+    failure mode is <em>silence</em> (see the 2026-07-16 incident: 8 invoices dropped with green flow runs).
+    The whole setup costs roughly <strong>$1&ndash;2/month</strong>; telemetry volume at this scale stays inside
+    the free ingestion grant.
+  </div>
+
+  <h2><span class="num">1</span>The telemetry map — what lives where</h2>
+  <p>The pipeline leaves evidence in five places. Knowing which one answers which question is 80% of
+     troubleshooting:</p>
+  <table>
+    <tr><th>Store</th><th>What it holds</th><th>Questions it answers</th></tr>
+    <tr><td><strong>Application Insights</strong><br><code>func-invoiceprocess-westus</code></td>
+        <td>Every function invocation (<code>requests</code>), log lines incl. <code>RUN_SUMMARY</code>
+            (<code>traces</code>), stack traces (<code>exceptions</code>). Sampling is now disabled — nothing
+            is dropped.</td>
+        <td>"Did the function run? How long? What failed inside it?"</td></tr>
+    <tr><td><strong>Ledger table</strong><br><code>InvoiceExtractProcessLog</code> on
+            <code>stinvoicedevwestus</code></td>
+        <td>One row per invoice: <code>Status</code> (Received → Extracted → Written / Failed),
+            <code>RoutingDecision</code>, <code>CuDurationMs</code>, <code>FailedStage</code>,
+            <code>LastError</code>.</td>
+        <td><strong>Source of truth</strong>: "what is the business state of invoice X?"</td></tr>
+    <tr><td><strong>Diagnostics blobs</strong><br><code>invoice-diagnostics</code> container +
+            <code>scripts\diag.py</code></td>
+        <td>Raw CU JSON + decision JSON per run (90-day lifecycle).</td>
+        <td>"Why did CU read the amount wrong / why this routing decision?" (forensics — see the
+            diagnostics runbook)</td></tr>
+    <tr><td><strong>CU platform metrics</strong><br><code>invoice-processing-dev-resource</code></td>
+        <td>Call counts, errors, throttling, pages/tokens billed.</td>
+        <td>"Is the Content Understanding service itself healthy? What am I being billed for?"</td></tr>
+    <tr><td><strong>Power Automate run history</strong></td>
+        <td>Each flow run, its retries, and the function's full response body.</td>
+        <td>"Did the orchestration fire, retry, and complete for this file?"</td></tr>
+  </table>
+
+  <h3>Symptom → where to look first</h3>
+  <table>
+    <tr><th>Symptom</th><th>First stop</th></tr>
+    <tr><td>An invoice never appeared in Dataverse</td><td>Ledger row by sourceId (§9 walkthrough)</td></tr>
+    <tr><td>Alert email about 5xx / CU errors</td><td>App Insights → Failures, then <code>RUN_SUMMARY</code> query (§5)</td></tr>
+    <tr><td>Processing feels slow</td><td><code>RUN_SUMMARY</code> cuMs trend (§5, query 3)</td></tr>
+    <tr><td>A specific invoice extracted wrong values</td><td><code>scripts\diag.py --source-id</code> (diagnostics runbook)</td></tr>
+    <tr><td>Wondering about cost / usage</td><td>CU <code>ProcessedDocumentPages</code> metric (§4) + Cost analysis (§7.7)</td></tr>
+  </table>
+
+  <h2><span class="num">2</span>Foundation check — is telemetry flowing?</h2>
+  <p>Do this once before creating any alert. Everything below happens at
+     <a href="https://portal.azure.com">portal.azure.com</a>.</p>
+  <ol class="steps">
+    <li>In the top search bar type <code>func-invoiceprocess-westus</code> and open the Function App.</li>
+    <li>In the left menu find <strong>Application Insights</strong> (under <em>Settings</em>).
+        It should say Application Insights is <strong>enabled</strong> and link to the component
+        (also named <code>func-invoiceprocess-westus</code>). Click the link — this App Insights resource
+        is where all queries and most alerts in this doc live. Consider pinning it to your portal
+        dashboard (pin icon, top right of its Overview page).</li>
+    <li>On the App Insights resource, open <strong>Live metrics</strong> (left menu, under
+        <em>Investigate</em>). Upload a test invoice to SharePoint (or wait for a real one) — within
+        seconds you should see the request tick through. This is the fastest "is it alive right now" view.</li>
+    <li>Open <strong>Logs</strong> (under <em>Monitoring</em>), close the query-picker dialog, paste
+        query&nbsp;1 from §5 and press <strong>Run</strong>. After the next deployment (which includes the
+        <code>RUN_SUMMARY</code> change) every invoice shows one summary row here.</li>
+  </ol>
+  <div class="note">
+    <strong>Two changes shipped with this design</strong> (take effect at the next
+    <code>func azure functionapp publish func-invoiceprocess-westus --build remote</code>):
+    <ul>
+      <li><strong>Sampling disabled</strong> (<code>host.json</code>): adaptive sampling could silently drop
+          the exact <code>traces</code>/<code>exceptions</code> rows you need. At &le;50 requests/day it saved
+          nothing. (This was also why the diagnostics design distrusted App Insights as an evidence store.)</li>
+      <li><strong><code>RUN_SUMMARY</code> log line</strong> (<code>function_app.py</code>): one stable INFO line
+          per invocation, at every exit path:<br>
+          <code>RUN_SUMMARY sourceId=&lt;guid&gt; httpStatus=200 status=Extracted decision=HAPPY_PATH_CANDIDATE cuMs=23411</code><br>
+          <code>status</code>/<code>decision</code> mirror the response (<code>-</code> when absent);
+          <code>cuMs=-1</code> means CU was never reached. On a CU timeout, <code>cuMs</code> records the
+          elapsed time at failure (&asymp;100,000 = the timeout cap). Queries and the log alert key on this line.</li>
+    </ul>
+  </div>
+  <div class="warn">
+    <strong>Naming caveat.</strong> Dev's App Insights component and its Log Analytics workspace
+    (<code>DefaultWorkspace-…-WUS</code>) were auto-created by the portal; the convention names
+    (<code>appi-invoice-dev-westus</code>, <code>log-invoice-dev-westus</code>) are a future Phase-2 recreate
+    (see <code>docs/naming-convention.html</code>). Alerts you create now are attached to the resource and
+    would need to be re-pointed if the component is ever recreated — that's fine, don't wait for the rename.
+  </div>
+
+  <h2><span class="num">3</span>Function App metrics to watch</h2>
+  <p><strong>How to view:</strong> Function App → <strong>Monitoring</strong> → <strong>Metrics</strong>.
+     Pick a metric from the <em>Metric</em> dropdown, set the time range (top right), and note the
+     <em>Aggregation</em> each metric needs. Verified against the Flex Consumption metric set (the app runs
+     on a Flex Consumption plan — some classic App Service metrics don't exist here).</p>
+  <table>
+    <tr><th>Metric (aggregation)</th><th>What it means for this app at 17&ndash;50 invocations/day</th></tr>
+    <tr><td><code>Requests</code> (Sum)</td>
+        <td>Total HTTP calls. Should track invoice volume (plus flow retries). A day at 0 while invoices
+            arrived in SharePoint = dead pipeline (scenario S10).</td></tr>
+    <tr><td><code>Http5xx</code> — "Http Server Errors" (Sum)</td>
+        <td>Every failed invoice attempt: <strong>502</strong> = CU analyze failed/timed out,
+            <strong>500</strong> = ledger/storage/decision failure. The single most important function
+            metric → alert ALT-1.</td></tr>
+    <tr><td><code>Http4xx</code> (Sum)</td>
+        <td>Bad requests from the flow (malformed base64, missing sourceId) and
+            <strong>401/403 = a broken function key</strong> after key rotation. Normally 0.</td></tr>
+    <tr><td><code>HttpResponseTime</code> — "Response Time" (Avg)</td>
+        <td>End-to-end duration in seconds. Normal runs ~15&ndash;40&nbsp;s (dominated by CU). Creep toward
+            100&nbsp;s = CU degradation, and past ~120&nbsp;s the Power Automate connector gives up →
+            alert ALT-4 watches this from the App Insights side with more precision.</td></tr>
+    <tr><td><code>InstanceCount</code> — "Automatic Scaling Instance Count" (Max)</td>
+        <td>How many instances Flex spun up. Per-instance concurrency is 1 here, so a burst of 8
+            simultaneous drops = 8 instances. Useful when analyzing burst incidents (S1).</td></tr>
+    <tr><td><code>CpuPercentage</code> / <code>MemoryWorkingSet</code> (Avg)</td>
+        <td>Resource pressure per instance. This workload is I/O-bound (waiting on CU), so sustained high
+            CPU/memory would be anomalous.</td></tr>
+    <tr><td><code>OnDemandFunctionExecutionCount</code> (Sum)</td>
+        <td>Billing meter: executions on on-demand instances. Sanity-check against invoice volume.
+            <code>AlwaysReadyFunctionExecutionCount</code> stays 0 (no always-ready instances configured —
+            that's why first invocations after idle take a few seconds longer: cold start, 2&ndash;6&nbsp;s,
+            worst ~10&nbsp;s).</td></tr>
+  </table>
+  <div class="note">
+    <strong>Platform metrics vs App Insights.</strong> The metrics above come from the hosting platform
+    (they'd exist even with App Insights off). Function-level detail — which stage failed, stack traces,
+    per-invoice timing — lives only in App Insights (§5). Also note: on Flex Consumption, don't rely on
+    <em>Diagnostic settings</em>/<code>FunctionAppLogs</code>; App Insights is the supported logging path.
+    The Function App's <strong>Diagnose and solve problems</strong> blade has two Flex-specific tools worth
+    knowing: search for <em>Flex Consumption Deployment</em> (deployment history/status) and
+    <em>Flex Consumption Quota</em> (regional instance quota).
+  </div>
+
+  <h2><span class="num">4</span>Content Understanding metrics to watch</h2>
+  <p><strong>How to view:</strong> portal search → <code>invoice-processing-dev-resource</code> → left menu
+     <strong>Monitoring</strong> → <strong>Metrics</strong>. Useful trick: after picking a metric, click
+     <strong>Apply splitting</strong> → <code>OperationName</code> to see which API operation the numbers
+     belong to (one invoice produces several calls: the analyze POST plus result-polling GETs, so
+     <code>TotalCalls</code> is a multiple of invoice count).</p>
+  <table>
+    <tr><th>Metric (aggregation)</th><th>What it means here</th></tr>
+    <tr><td><code>TotalCalls</code> / <code>SuccessfulCalls</code> (Sum)</td>
+        <td>All HTTP calls to the resource. Baseline first, then watch for shape changes.</td></tr>
+    <tr><td><code>ServerErrors</code> (Sum)</td>
+        <td>5xx from the CU service itself → alert ALT-2. A burst here alongside function 502s says
+            "the service, not your code".</td></tr>
+    <tr><td><code>ClientErrors</code> (Sum)</td>
+        <td>4xx — after a deployment, a spike here means a broken request (bad analyzer id, auth,
+            malformed payload), not a CU outage.</td></tr>
+    <tr><td><code>BlockedCalls</code> (Sum)</td>
+        <td>Calls rejected for rate/quota (429). S0 limits are 1,000 pages/min and 3,000 operations/min —
+            unreachable at this volume, so <strong>any</strong> blocked call means a runaway loop or another
+            consumer on the resource → alert ALT-3.</td></tr>
+    <tr><td><code>Latency</code> (Avg)</td>
+        <td><strong>Caveat:</strong> this measures each HTTP call, and analyze is a long-running operation —
+            the POST returns fast (202) and the polls are fast, so this metric does <em>not</em> reflect
+            end-to-end analyze time. The true end-to-end signal is <code>cuMs</code> in
+            <code>RUN_SUMMARY</code> (§5 query 3) and <code>CuDurationMs</code> on the ledger row.
+            Use <code>Latency</code> only for gross anomalies.</td></tr>
+    <tr><td><code>SuccessRate</code> — "AvailabilityRate" (Avg)</td>
+        <td>(TotalCalls − ServerErrors)/TotalCalls as %. Fine for a dashboard tile; too coarse to alert on
+            at this volume.</td></tr>
+    <tr><td><code>ProcessedDocumentPages</code> — "Processed Pages" (Sum)</td>
+        <td><strong>This is what CU bills on.</strong> Month-to-date pages should track invoice volume
+            (invoices here are 1&ndash;3 pages). A jump without a volume jump = someone feeding big documents
+            or a reprocessing loop.</td></tr>
+    <tr><td><code>Tokens</code> (Sum)</td>
+        <td>Generative-model token usage by the analyzer's generate fields. Watch the trend after prompt
+            changes to the analyzer.</td></tr>
+  </table>
+
+  <h2><span class="num">5</span>KQL query pack (App Insights → Logs)</h2>
+  <p><strong>How to run:</strong> App Insights resource → <strong>Monitoring</strong> → <strong>Logs</strong> →
+     close the picker dialog → paste a query → <strong>Run</strong>. Set the time range with the
+     <em>Time range</em> button or keep the <code>ago(…)</code> in the query. Save favorites with
+     <strong>Save → Save as query</strong> so they're one click next time.</p>
+
+  <h3>Query 1 — per-invoice run table (the workhorse)</h3>
+<pre><code>traces
+| where timestamp &gt; ago(7d)
+| where message startswith "RUN_SUMMARY"
+| parse message with "RUN_SUMMARY sourceId=" sourceId " httpStatus=" httpStatus:int
+                     " status=" status " decision=" decision " cuMs=" cuMs:long
+| project timestamp, sourceId, httpStatus, status, decision, cuMs
+| order by timestamp desc</code></pre>
+  <p>One row per invocation: outcome, routing decision, CU duration. Filter it, e.g. append
+     <code>| where httpStatus &gt;= 500</code> for failures only, or
+     <code>| where decision == "PROCESSING_IN_PROGRESS"</code> to see A1 short-circuits (retries that
+     arrived while another run held the claim).</p>
+
+  <h3>Query 2 — daily volume and outcome mix</h3>
+<pre><code>traces
+| where timestamp &gt; ago(30d)
+| where message startswith "RUN_SUMMARY"
+| parse message with "RUN_SUMMARY sourceId=" sourceId " httpStatus=" httpStatus:int
+                     " status=" status " decision=" decision " cuMs=" cuMs:long
+| summarize runs = count(),
+            failed = countif(httpStatus &gt;= 500),
+            happy = countif(decision == "HAPPY_PATH_CANDIDATE"),
+            review = countif(decision startswith "REVIEW"),
+            reject = countif(decision startswith "REJECT")
+          by bin(timestamp, 1d)
+| order by timestamp desc</code></pre>
+  <p>Watch the <em>mix</em>: a drift where <code>review</code>/<code>reject</code> climbs while volume is
+     flat = CU extraction quality regressing (scenario S9) — investigate with
+     <code>scripts\diag.py</code> before touching thresholds (classify labels are noisy run-to-run;
+     never conclude from one document).</p>
+
+  <h3>Query 3 — CU duration trend vs the 100 s cap</h3>
+<pre><code>traces
+| where timestamp &gt; ago(30d)
+| where message startswith "RUN_SUMMARY"
+| parse message with "RUN_SUMMARY sourceId=" sourceId " httpStatus=" httpStatus:int
+                     " status=" status " decision=" decision " cuMs=" cuMs:long
+| where cuMs &gt;= 0
+| summarize p50 = percentile(cuMs, 50), p95 = percentile(cuMs, 95), max(cuMs)
+          by bin(timestamp, 1d)
+| render timechart</code></pre>
+  <p>The early-warning chart. CU is capped at 100&nbsp;s (<code>AZURE_CU_TIMEOUT_SECONDS</code>); p95
+     drifting from ~30&nbsp;s toward 60&ndash;80&nbsp;s means timeouts are coming, especially under burst
+     (the 2026-07-16 incident was exactly this under 8 concurrent analyzes).</p>
+
+  <h3>Query 4 — failed requests with response codes</h3>
+<pre><code>requests
+| where timestamp &gt; ago(7d)
+| where success == false
+| project timestamp, name, resultCode, duration, operation_Id
+| order by timestamp desc</code></pre>
+  <p>Click any row → open the <strong>end-to-end transaction</strong> view to see every log line and
+     exception of that invocation, correlated by <code>operation_Id</code>.</p>
+
+  <h3>Query 5 — exceptions with stack traces</h3>
+<pre><code>exceptions
+| where timestamp &gt; ago(7d)
+| project timestamp, type, outerMessage, method, operation_Id
+| order by timestamp desc</code></pre>
+
+  <h3>Query 6 — known warning signatures</h3>
+<pre><code>traces
+| where timestamp &gt; ago(30d)
+| where message startswith "Diagnostics blob write failed"
+     or message startswith "Failure release lost the etag race"
+| project timestamp, message, severityLevel, operation_Id</code></pre>
+  <p>The first = the best-effort sidecar failed (an <code>Extracted</code> row with empty blob paths — check
+     storage RBAC). The second = a failure release lost to a newer claim (benign one-off; frequent =
+     investigate).</p>
+
+  <h3>Query 7 — cold starts (new instances)</h3>
+<pre><code>requests
+| where timestamp &gt; ago(7d)
+| summarize firstRequest = min(timestamp), requests = count() by cloud_RoleInstance
+| order by firstRequest desc</code></pre>
+  <p>Each row is an instance Flex created; its first request paid the cold start (2&ndash;6&nbsp;s). Many
+     instances in one minute = a burst fan-out.</p>
+
+  <div class="note">
+    <strong>Why no <code>dependencies</code> queries?</strong> Python Functions don't auto-collect outbound
+    dependency telemetry (that needs OpenTelemetry — deliberately deferred, see §10). The
+    <code>dependencies</code> table will be empty; <code>cuMs</code> in <code>RUN_SUMMARY</code> is the CU
+    timing signal instead.
+  </div>
+
+  <h2><span class="num">6</span>Scenarios to monitor</h2>
+  <p>Each scenario names its signal and the alert or routine that covers it. S1&ndash;S3 are the ones that
+     have actually happened.</p>
+  <table>
+    <tr><th>#</th><th>Scenario</th><th>Signal &amp; where</th><th>Covered by</th><th>Response</th></tr>
+    <tr><td>S1</td><td><strong>CU timeout / failure burst</strong> — CU latency degrades under concurrent
+            drops; analyzes blow the 100&nbsp;s cap and 502</td>
+        <td><code>Http5xx</code> on the app; <code>ServerErrors</code> on CU; <code>RUN_SUMMARY</code>
+            rows with <code>httpStatus=502</code>, <code>cuMs&asymp;100000</code></td>
+        <td>ALT-1, ALT-2</td>
+        <td>Flow retries (4×PT4M) usually recover it. Check §5 query 3; if p95 is degraded for hours,
+            stagger uploads; if persistent, consider the async-202 escape hatch (incident doc §4).</td></tr>
+    <tr><td>S2</td><td><strong>Silent drop / stale claim</strong> — a row stuck at <code>Received</code>
+            past the lease (hard crash, lost trigger, or retry landed inside the lease)</td>
+        <td>Ledger rows: <code>Status eq 'Received'</code>, hours old</td>
+        <td><strong>Reconciliation flow (§8)</strong> — the backstop for every failure class that leaves
+            no other trace</td>
+        <td>Resubmit the flow run or re-upload the file (past the lease it re-claims cleanly) —
+            runbook §10.</td></tr>
+    <tr><td>S3</td><td><strong>Retries exhausted</strong> — row at <code>Failed</code>, flow run shows
+            Failed</td>
+        <td>Ledger <code>Status eq 'Failed'</code>; PA run history</td>
+        <td>Reconciliation flow (§8) + flow-failure email (§8.2)</td>
+        <td>Read <code>LastError</code>/<code>FailedStage</code>, fix the cause, resubmit.</td></tr>
+    <tr><td>S4</td><td><strong>Ledger divergence</strong> — CU succeeded but the <code>Extracted</code>
+            stamp failed (<code>ledgerWriteError</code> in the response; row stays <code>Received</code>)</td>
+        <td><code>RUN_SUMMARY</code> with <code>httpStatus=200 status=Received</code>; trace
+            "Ledger Extracted write failed"</td>
+        <td>ALT-5 (exception fired) + reconciliation flow catches the stale row</td>
+        <td>The flow must not treat the decision as recorded. Investigate storage health/RBAC, then
+            re-process.</td></tr>
+    <tr><td>S5</td><td><strong>Diagnostics sidecar failing</strong> — <code>Extracted</code> rows with empty
+            blob paths</td>
+        <td>§5 query 6</td><td>Weekly manual check (query 6)</td>
+        <td>Best-effort by design (never fails processing) — but fix the blob RBAC so forensics stay
+            available.</td></tr>
+    <tr><td>S6</td><td><strong>Auth/RBAC breakage</strong> — expired/rotated function key (401/403 at the
+            app), missing data-plane roles (500 ledger, <code>403 AuthorizationPermissionMismatch</code>),
+            CU auth (502)</td>
+        <td><code>Http4xx</code>/<code>Http5xx</code>; exception text in App Insights</td>
+        <td>ALT-1 (5xx); 401/403 surfaces as flow failures → §8.2</td>
+        <td>Runbook §1 lists the required roles; re-check after any identity/key change.</td></tr>
+    <tr><td>S7</td><td><strong>CU throttling</strong> — 429s that "can't happen" at this volume</td>
+        <td><code>BlockedCalls</code> on CU</td><td>ALT-3</td>
+        <td>Something is looping or another workload shares the resource — find the caller before raising
+            quota.</td></tr>
+    <tr><td>S8</td><td><strong>Latency creep</strong> — runs slowing toward the 100&nbsp;s CU cap /
+            120&nbsp;s connector cap</td>
+        <td>Requests &gt; 60&nbsp;s in App Insights; §5 query 3</td><td>ALT-4</td>
+        <td>Early warning before S1. Check whether it's burst-correlated or all-day.</td></tr>
+    <tr><td>S9</td><td><strong>Routing-decision drift</strong> — review/reject share climbing = CU quality
+            regression (prompt change, CU model update, new invoice format)</td>
+        <td>§5 query 2 mix</td><td>Weekly manual review (trend, not an alert)</td>
+        <td>Diagnose with <code>diag.py</code> on specific docs; remember classify labels flap — verify
+            on 3+ replicates before changing analyzers.</td></tr>
+    <tr><td>S10</td><td><strong>Dead pipeline</strong> — invoices arrive in SharePoint but nothing calls the
+            function (flow turned off, connection expired, trigger broken)</td>
+        <td>Azure-side silence — nothing in Azure can see SharePoint arrivals</td>
+        <td>Reconciliation flow (§8) runs <em>in Power Automate</em>, so it also proves the PA connection
+            works daily; flow-failure email (§8.2)</td>
+        <td>Check the flow's state and connections in Power Automate; check SharePoint trigger runs.</td></tr>
+    <tr><td>S11</td><td><strong>Cost anomaly</strong> — unexpected spend (CU reprocessing loop, runaway
+            executions)</td>
+        <td>Cost analysis on the resource group</td><td>Budget alert (§7.7)</td>
+        <td>Cost analysis → group by resource; correlate with <code>ProcessedDocumentPages</code> and
+            execution counts.</td></tr>
+  </table>
+
+  <h2><span class="num">7</span>Alerts — step-by-step setup</h2>
+  <p>Concepts in one paragraph: an <strong>alert rule</strong> = a <em>scope</em> (which resource) + a
+     <em>condition</em> (signal and threshold) + an <em>action group</em> (who gets notified). Severity is
+     just a label (0&nbsp;Critical … 4&nbsp;Verbose); this doc uses 2 for "act today" and 3 for
+     "informational". Metric alert rules cost ~$0.10/month each (first 10 signals free), the one log-search
+     alert ~$0.50/month.</p>
+
+  <h3>7.1 Create the action group (once)</h3>
+  <ol class="steps">
+    <li>Portal top search → <strong>Monitor</strong> → left menu <strong>Alerts</strong> →
+        <strong>Action groups</strong> → <strong>+ Create</strong>.</li>
+    <li><em>Basics:</em> Subscription <code>dev-Document Intelligence</code>; Resource group
+        <code>rg-content-understanding-dev</code>; Region: Global; Action group name
+        <code>ag-invoice-dev-email</code>; Display name <code>InvoiceDev</code> (this prefix appears in the
+        email subject, max 12 chars).</li>
+    <li><em>Notifications tab:</em> Notification type <strong>Email/SMS message/Push/Voice</strong> →
+        tick <strong>Email</strong> → enter <code>georgetsang@noblehomes.ca</code> → OK. Name the
+        notification <code>email-george</code>.</li>
+    <li>Skip <em>Actions</em> (that's for webhooks/automation) → <strong>Review + create</strong> →
+        <strong>Create</strong>.</li>
+    <li><strong>Verify:</strong> open the new action group → <strong>Test action group</strong> (top bar) →
+        sample type <em>Metric alert</em> → <strong>Test</strong>. An email should arrive within a couple of
+        minutes (check spam once; Azure alert mail comes from
+        <code>azure-noreply@microsoft.com</code>).</li>
+  </ol>
+
+  <h3>7.2 ALT-1 — Function failures (Http 5xx)</h3>
+  <ol class="steps">
+    <li>Open <code>func-invoiceprocess-westus</code> → left menu <strong>Alerts</strong> (under
+        <em>Monitoring</em>) → <strong>+ Create</strong> → <strong>Alert rule</strong>. The scope is
+        pre-selected to the function app.</li>
+    <li><em>Condition tab:</em> Signal name → search and pick <strong>Http Server Errors</strong>.
+        Threshold: <strong>Static</strong>; Aggregation type: <strong>Total</strong>; Operator:
+        <strong>Greater than or equal to</strong>; Threshold value: <strong>3</strong>.
+        Under <em>When to evaluate</em>: Check every <strong>15 minutes</strong>, Lookback period
+        <strong>1 hour</strong>.</li>
+    <li><em>Actions tab:</em> <strong>Select action groups</strong> → tick
+        <code>ag-invoice-dev-email</code>.</li>
+    <li><em>Details tab:</em> Severity <strong>2 — Warning</strong>; Alert rule name
+        <code>alert-invoice-func-5xx</code>; Description: "3+ failed invoice attempts in an hour —
+        see monitoring-design.html S1/S6". Leave <em>Automatically resolve alerts</em> checked.</li>
+    <li><strong>Review + create</strong> → <strong>Create</strong>.</li>
+  </ol>
+  <div class="note"><strong>Why ≥3 per hour?</strong> One failing invoice triggers the flow's automatic
+     retries (up to 4 over ~16 min), so a single transient CU blip can produce 1&ndash;2 5xxs that recover
+     on their own. Three or more inside an hour is either one invoice whose retries are exhausting (you'll
+     also get the §8.2 flow email) or several invoices failing — both worth reading immediately.</div>
+
+  <h3>7.3 ALT-2 — Content Understanding server errors</h3>
+  <ol class="steps">
+    <li>Open <code>invoice-processing-dev-resource</code> → <strong>Alerts</strong> →
+        <strong>+ Create</strong> → <strong>Alert rule</strong>.</li>
+    <li><em>Condition:</em> Signal <strong>Server Errors</strong>; Static; Aggregation
+        <strong>Total</strong>; Operator <strong>Greater than or equal to</strong>; Threshold
+        <strong>3</strong>; Check every <strong>15 minutes</strong>; Lookback <strong>1 hour</strong>.</li>
+    <li><em>Actions:</em> <code>ag-invoice-dev-email</code>. <em>Details:</em> Severity
+        <strong>2</strong>; name <code>alert-invoice-cu-5xx</code>.</li>
+    <li><strong>Review + create</strong>.</li>
+  </ol>
+
+  <h3>7.4 ALT-3 — Content Understanding throttling (should never fire)</h3>
+  <ol class="steps">
+    <li>Same resource, <strong>+ Create</strong> → <strong>Alert rule</strong>.</li>
+    <li><em>Condition:</em> Signal <strong>Blocked Calls</strong>; Static; Aggregation
+        <strong>Total</strong>; Operator <strong>Greater than or equal to</strong>; Threshold
+        <strong>1</strong>; Check every <strong>5 minutes</strong>; Lookback
+        <strong>15 minutes</strong>.</li>
+    <li><em>Actions:</em> <code>ag-invoice-dev-email</code>. <em>Details:</em> Severity
+        <strong>3</strong>; name <code>alert-invoice-cu-throttle</code>.</li>
+  </ol>
+
+  <h3>7.5 ALT-4 — latency creep (log-search alert)</h3>
+  <ol class="steps">
+    <li>Open the App Insights resource → <strong>Logs</strong>; paste:
+<pre><code>requests
+| where duration &gt; 60000</code></pre></li>
+    <li>Click <strong>+ New alert rule</strong> (toolbar above the query).</li>
+    <li><em>Condition</em> is pre-filled with the query. Set: Measurement — Measure
+        <strong>Table rows</strong>, Aggregation granularity <strong>1 hour</strong>.
+        Alert logic: Operator <strong>Greater than or equal to</strong>, Threshold value
+        <strong>2</strong>, Frequency of evaluation <strong>15 minutes</strong>.</li>
+    <li><em>Actions:</em> <code>ag-invoice-dev-email</code>. <em>Details:</em> Severity
+        <strong>3</strong>; name <code>alert-invoice-slow-runs</code>; description "2+ runs over 60 s in an
+        hour — CU latency creeping toward the 100 s cap (S8); check monitoring-design.html §5 query 3".</li>
+    <li><strong>Review + create</strong>. (This is the one ~$0.50/month rule.)</li>
+  </ol>
+
+  <h3>7.6 ALT-5 (optional) — exception burst</h3>
+  <p>Largely overlaps ALT-1 (most exceptions end as 5xx responses), but it also catches failures that
+     didn't surface as HTTP errors (e.g. the ledger-divergence path S4 returns 200). If you want it:
+     App Insights resource → <strong>Alerts</strong> → <strong>+ Create</strong> → signal
+     <strong>Exceptions</strong> → Static, Total, <strong>≥ 5</strong>, check every 15 min, lookback
+     1 hour → action group → Severity 3 → name <code>alert-invoice-exceptions</code>.</p>
+
+  <h3>7.7 Budget alert (cost guardrail)</h3>
+  <ol class="steps">
+    <li>Open the resource group <code>rg-content-understanding-dev</code> → left menu
+        <strong>Cost Management</strong> → <strong>Budgets</strong> → <strong>+ Add</strong>.</li>
+    <li>Name <code>budget-invoice-dev</code>; Reset period <strong>Billing month</strong>; Amount:
+        <strong>50</strong> (adjust to ~2× a normal month once you've seen one — CU pages are the main
+        variable cost).</li>
+    <li><em>Alert conditions:</em> row 1 — Type <strong>Actual</strong>, % of budget <strong>80</strong>;
+        row 2 — Type <strong>Forecasted</strong>, % of budget <strong>100</strong>.
+        Alert recipients: <code>georgetsang@noblehomes.ca</code> → <strong>Create</strong>.</li>
+  </ol>
+
+  <h3>7.8 Optional — CU diagnostic settings (per-call logs)</h3>
+  <p>Platform metrics don't show <em>which</em> call failed. If you ever need per-request CU logs:
+     <code>invoice-processing-dev-resource</code> → <strong>Diagnostic settings</strong> →
+     <strong>+ Add diagnostic setting</strong> → name <code>diag-to-law</code> → under <em>Logs</em> tick
+     <strong>Audit</strong> and <strong>Request and Response</strong> (or <code>allLogs</code>) →
+     Destination: <strong>Send to Log Analytics workspace</strong> → pick the
+     <code>DefaultWorkspace-…-WUS</code> workspace → <strong>Save</strong>. Query later via the workspace's
+     <strong>Logs</strong> (table <code>AzureDiagnostics</code>). Skip until needed — it adds ingestion
+     volume (still tiny at this scale).</p>
+
+  <h3>Alert summary</h3>
+  <table>
+    <tr><th>Name</th><th>Scope</th><th>Condition</th><th>Sev</th><th>Covers</th></tr>
+    <tr><td><code>alert-invoice-func-5xx</code></td><td>Function App</td>
+        <td>Http Server Errors ≥ 3 / 1 h (check 15 m)</td><td>2</td><td>S1 S4 S6</td></tr>
+    <tr><td><code>alert-invoice-cu-5xx</code></td><td>CU resource</td>
+        <td>Server Errors ≥ 3 / 1 h (check 15 m)</td><td>2</td><td>S1</td></tr>
+    <tr><td><code>alert-invoice-cu-throttle</code></td><td>CU resource</td>
+        <td>Blocked Calls ≥ 1 / 15 m (check 5 m)</td><td>3</td><td>S7</td></tr>
+    <tr><td><code>alert-invoice-slow-runs</code></td><td>App Insights</td>
+        <td>requests &gt; 60 s: ≥ 2 rows / 1 h (eval 15 m)</td><td>3</td><td>S8</td></tr>
+    <tr><td><code>alert-invoice-exceptions</code> <em>(opt.)</em></td><td>App Insights</td>
+        <td>Exceptions ≥ 5 / 1 h</td><td>3</td><td>S4</td></tr>
+    <tr><td><code>budget-invoice-dev</code></td><td>Resource group</td>
+        <td>80% actual / 100% forecast of $50</td><td>—</td><td>S11</td></tr>
+    <tr><td>Reconciliation flow (§8)</td><td>Ledger table</td>
+        <td>Daily 08:00 — stale Received/Failed rows</td><td>—</td><td>S2 S3 S10</td></tr>
+    <tr><td>Flow-failure email (§8.2)</td><td>Power Automate</td>
+        <td>Main flow run fails (retries exhausted)</td><td>—</td><td>S3 S6 S10</td></tr>
+  </table>
+
+  <h2><span class="num">8</span>The ledger reconciliation flow (the silent-drop backstop)</h2>
+  <p>Azure alerts can't see the ledger table, and nothing Azure-side can prove "every invoice that arrived
+     was processed". This scheduled Power Automate flow automates runbook §10 — it is the single most
+     important item in this document, because it catches <em>every</em> failure class, including the ones
+     that leave no telemetry at all.</p>
+  <ol class="steps">
+    <li><a href="https://make.powerautomate.com">make.powerautomate.com</a> → <strong>+ Create</strong> →
+        <strong>Scheduled cloud flow</strong>. Name <code>Invoice ledger reconciliation</code>; run daily at
+        <strong>08:00</strong> (after the typical morning batch) → <strong>Create</strong>.</li>
+    <li><strong>+ New step</strong> → search connector <strong>Azure Table Storage</strong> → action
+        <strong>Get entities (V2)</strong> (the exact label can vary slightly by connector version — any
+        "get/list entities" action works). Creating the connection asks for: display name
+        <code>stinvoicedevwestus</code>, Storage account name <code>stinvoicedevwestus</code>, and a
+        Shared Storage Key — portal → <code>stinvoicedevwestus</code> → <strong>Security + networking</strong>
+        → <strong>Access keys</strong> → Show → copy key1.
+        <span class="tag">note</span> If access keys are disabled on the account ("Allow storage account
+        key access" = Disabled), either enable shared key or use an HTTP action with Entra auth — check
+        before building.</li>
+    <li>In the action: Table <code>InvoiceExtractProcessLog</code>. Open <strong>Advanced parameters</strong>
+        → <strong>Filter Query</strong> and paste (one line):
+<pre><code>(Status eq 'Received' or Status eq 'Failed') and IngestedUtc lt datetime'@{formatDateTime(addHours(utcNow(), -2), 'yyyy-MM-ddTHH:mm:ss')}Z'</code></pre>
+        The <code>@{…}</code> part is a Power Automate expression (paste into the field as-is; it renders as
+        a purple token): "two hours ago", well past the 300&nbsp;s A1 lease, mirroring runbook §10.
+        <span class="tag">Phase 4</span> Once the Dataverse write is live, also catch
+        <code>Extracted</code>-but-never-<code>Written</code> rows by extending the filter with
+        <code>or (Status eq 'Extracted' and DynamicsRecordId eq '')</code> — mind the duplicate-row caution
+        in runbook §10 before resubmitting those.</li>
+    <li><strong>+ New step</strong> → <strong>Condition</strong>: left value = expression
+        <code>length(outputs('Get_entities_(V2)')?['body/value'])</code> (adjust the action name token to
+        what the designer shows) · <strong>is greater than</strong> · <code>0</code>.</li>
+    <li>In the <strong>If yes</strong> branch: <strong>Create HTML table</strong> (Data Operations) with
+        <em>From</em> = the entities list output; then <strong>Send an email (V2)</strong> (Office 365
+        Outlook) → To <code>georgetsang@noblehomes.ca</code>; Subject
+        <code>⚠ Invoice reconciliation: stuck rows found</code>; Body: the HTML table output plus a link to
+        this doc. Leave <strong>If no</strong> empty (silence = all clear). Optionally add a Teams
+        "Post message" action later.</li>
+    <li><strong>Save</strong>, then <strong>Test → Manually</strong> once. To verify the alarm path
+        end-to-end, temporarily change <code>-2</code> hours to <code>-2000</code> (matches old
+        <code>Failed</code> test rows), run, confirm the email, then change it back.</li>
+  </ol>
+
+  <h3>8.2 Flow-failure notification on the main flow (Phase 5 item)</h3>
+  <p>Since the 2026-07-16 fixes, real failures surface as <strong>Failed</strong> runs of the main flow
+     (after the 4×PT4M retries exhaust). By default you'd only notice by opening run history. Add an
+     explicit email:</p>
+  <ol class="steps">
+    <li>Edit the main invoice flow. After the <strong>Process invoice</strong> action (or around the whole
+        post-trigger logic), add a <strong>Scope</strong> if you prefer grouping; simplest version: add a
+        <strong>Send an email (V2)</strong> action at the end of the flow, in parallel or below.</li>
+    <li>On that email action open <strong>…</strong> → <strong>Configure run after</strong> → tick
+        <strong>has failed</strong> and <strong>has timed out</strong> (untick <em>is successful</em>) →
+        Done. It now runs <em>only</em> when the preceding step failed.</li>
+    <li>Email: To <code>georgetsang@noblehomes.ca</code>; Subject
+        <code>⚠ Invoice flow failed: @{triggerOutputs()?['body/{FilenameWithExtension}']}</code>; Body:
+        include the file name, link to the run
+        (<code>@{workflow()?['run']?['name']}</code>), and "see monitoring-design.html §9".</li>
+    <li>Save. Also double-check the retry policy is still set on the Process invoice action
+        (<em>Settings → Retry policy: Fixed, 4 × PT4M</em>) — it is load-bearing (see the incident doc);
+        PT2M silently breaks the recovery path at the current 300&nbsp;s lease.</li>
+  </ol>
+
+  <h2><span class="num">9</span>Troubleshooting walkthrough — "an invoice didn't arrive"</h2>
+  <ol class="steps">
+    <li><strong>Power Automate run history</strong> (the flow → 28-day run history): find the run for the
+        file. No run at all → trigger/connection problem (S10): check the flow is On and connections valid.
+        Run Failed → open it, read the Process invoice action's response body.</li>
+    <li><strong>Ledger row</strong> — portal → <code>stinvoicedevwestus</code> →
+        <strong>Storage browser</strong> → <strong>Tables</strong> → <code>InvoiceExtractProcessLog</code> →
+        filter <code>FileName</code> eq the file name. Read <code>Status</code> /
+        <code>RoutingDecision</code> / <code>FailedStage</code> / <code>LastError</code> — this usually ends
+        the diagnosis (interpretation table: diagnostics runbook §3, §10).</li>
+    <li><strong>App Insights detail</strong> — Logs → §5 query 1 filtered:
+        <code>| where sourceId == "&lt;RowKey&gt;"</code> for the run-by-run history, then query 4/5 by
+        timestamp → end-to-end transaction view for stack traces.</li>
+    <li><strong>Field-level forensics</strong> —
+        <code>.\.venv\Scripts\python.exe scripts\diag.py --source-id &lt;guid&gt;</code> for the raw CU
+        result + decision JSON (diagnostics runbook §3&ndash;§6).</li>
+    <li><strong>Fix and resubmit</strong> — per runbook §10: past the lease, resubmitting the flow run (or
+        re-uploading the file) re-claims and re-processes cleanly.</li>
+  </ol>
+
+  <h2><span class="num">10</span>Deliberately deferred</h2>
+  <ul>
+    <li><strong>Availability (ping) test</strong> — needs a side-effect-free <code>/api/health</code>
+        endpoint first (the only route today, POST <code>process-invoice</code>, writes the ledger). Note:
+        classic URL ping tests retire 2026-09-30; use a <em>Standard test</em> when this is added.</li>
+    <li><strong>OpenTelemetry / customDimensions / dependency tracking</strong> (HG-05 family) — adds a
+        dependency and config; <code>RUN_SUMMARY</code> text-parsing covers today's needs.</li>
+    <li><strong><code>functionTimeout</code> and concurrency caps in host.json</strong> (HG-11) — separate
+        hardening decision, not a monitoring change.</li>
+    <li><strong>App Insights / workspace rename</strong> to <code>appi-invoice-dev-westus</code> /
+        <code>log-invoice-dev-westus</code> — Phase-2 recreate; re-point the App-Insights-scoped alerts
+        (ALT-4/5) afterwards.</li>
+    <li><strong>Timer-based ledger metrics</strong> — superseded by the §8 reconciliation flow (user
+        decision, 2026-07-17).</li>
+  </ul>
+
+  <footer>
+    Related: <code>docs/invoice-diagnostics-runbook.html</code> (per-invoice forensics; §10 is the manual
+    ancestor of §8 here) · <code>docs/incident-2026-07-16-silent-drop.html</code> (the failure mode S1/S2
+    guard against) · <code>docs/power-automate-design.html</code> (retry policy, response contract) ·
+    <code>docs/provision-azure-environment.html</code> §6 (App Insights provisioning) ·
+    <code>functionapp/host.json</code> (sampling off) · <code>functionapp/function_app.py</code>
+    (<code>RUN_SUMMARY</code>) — Generated 2026-07-17. Metric names, limits, and portal flows verified
+    against Microsoft Learn July 2026 (Flex Consumption metrics ref; Microsoft.CognitiveServices/accounts
+    supported metrics; CU service limits, GA API 2025-11-01).
+  </footer>
+
+</div>
+</body>
+</html>
