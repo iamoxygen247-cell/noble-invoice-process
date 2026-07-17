@@ -162,7 +162,7 @@ What A1 still guarantees is that two **concurrent** invocations for the same ite
   in Table Storage, so of two perfectly concurrent triggers exactly one claims
   and proceeds; the other sees the row and short-circuits.
 - **Row decided (incl. `Failed`), or stale at `Received`** (older than
-  `A1_LEASE_SECONDS`, default 600 — a crashed prior run) → atomically
+  `A1_LEASE_SECONDS`, default 300 — a crashed prior run) → atomically
   **re-claim** it (etag-conditioned reset to `Received`) and re-process; a
   concurrent invocation that loses the re-claim short-circuits.
 - **Row at `Received` within the lease** → skip with `PROCESSING_IN_PROGRESS`;

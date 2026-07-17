@@ -153,10 +153,12 @@ def _decode_content(body: dict) -> Tuple[Optional[bytes], Optional[str], Optiona
 
 
 def _lease_seconds() -> int:
+    # 300 must stay below (connector ~120 s + flow retry interval); see the
+    # retry-policy warn box in docs/power-automate-design.html.
     try:
-        return int(os.getenv("A1_LEASE_SECONDS", "600"))
+        return int(os.getenv("A1_LEASE_SECONDS", "300"))
     except ValueError:
-        return 600
+        return 300
 
 
 def _a1(table, source_id: str, received_fields: dict, lease_seconds: int):

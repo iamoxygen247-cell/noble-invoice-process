@@ -209,7 +209,7 @@ az login                                              # DefaultAzureCredential u
             resubmit it after fixing the cause.</td></tr>
     <tr><td>Row stuck at <code>Received</code>, <code>FailedStage=cu_analyze</code></td>
         <td>Pre-2026-07 failure semantics (or the release lost its etag race). The row is re-claimed
-            automatically on the next request once older than the A1 lease (default 600&nbsp;s).</td></tr>
+            automatically on the next request once older than the A1 lease (default 300&nbsp;s).</td></tr>
     <tr><td>Row stuck at <code>Received</code>, no failure stamps</td>
         <td>Run crashed before any stamp (hard crash / host kill), the release write itself failed (see
             Function logs), or a run is genuinely in flight right now. If it stays past the A1 lease, the

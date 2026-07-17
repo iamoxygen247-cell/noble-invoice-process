@@ -419,3 +419,24 @@ wholesale (kills wrapped az and `az functionapp deployment source config-zip` to
 **Do NOT** keep re-running `func publish` or config-zip during an RST burst -- probe first
 (`Invoke-WebRequest https://management.azure.com/` returning 400 = transport OK) and prefer the
 SChannel path above.
+
+---
+
+## A code default is not the live value — check the function app's settings
+
+**Symptoms (confirmed 2026-07-17):** asked what the A1 staleness lease "is", a code
+read of `function_app.py` gave 600 s — but the live dev value was 300 s, set via the
+`A1_LEASE_SECONDS` app setting after the 2026-07-16 incident. The wrong number
+invalidates the retry-policy math (`interval > lease − 120 s`), which is exactly the
+inequality that prevents the silent-drop failure mode.
+
+**Cause:** every tunable in this project (`A1_LEASE_SECONDS`, `AZURE_CU_TIMEOUT_SECONDS`,
+`FIELD_CONFIDENCE_THRESHOLD`, …) is an env-var override; the constant in the code is
+only the fallback. Docs that say "default N" describe the code, not the environment.
+
+**Fix:** before quoting any tunable as fact, read the live settings:
+`az functionapp config appsettings list -g <rg> -n <app>` (on this machine, via the
+truststore bootstrap + 10054 retry — see the entries above). Follow-up shipped
+2026-07-17: the code default was aligned to the validated 300 s so an environment
+missing the app setting (e.g. freshly provisioned prod) inherits a lease that is safe
+under the required Fixed 4×PT4M flow retry policy.

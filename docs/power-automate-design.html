@@ -248,8 +248,8 @@
     (the flow terminates as a no-op). So the binding rule is: <em>the <strong>first</strong> retry after a
     claim-holding failure must land beyond the A1 lease</em>. A hard crash fails at the ~120&nbsp;s connector
     timeout, so the first retry arrives at &asymp;120&nbsp;s&nbsp;+&nbsp;interval &mdash; the interval must exceed
-    <code>A1_LEASE_SECONDS &minus; 120&nbsp;s</code>. With the dev lease of 300&nbsp;s (app setting; code default
-    600&nbsp;s), PT4M puts the first retry at &asymp;360&nbsp;s &gt; 300&nbsp;s with ~60&nbsp;s margin.
+    <code>A1_LEASE_SECONDS &minus; 120&nbsp;s</code>. With the 300&nbsp;s lease (code default since 2026-07-17,
+    also set explicitly on dev), PT4M puts the first retry at &asymp;360&nbsp;s &gt; 300&nbsp;s with ~60&nbsp;s margin.
     <strong>PT2M does NOT work at a 300&nbsp;s lease</strong>: its first retry lands at &asymp;240&nbsp;s, inside
     the lease &rarr; 200 no-op &rarr; the chain ends and the invoice is a <strong>permanent silent drop</strong>
     (the SharePoint trigger fires only once and the run history shows green). Retune this rule whenever the
@@ -307,7 +307,7 @@
             action's automatic retry re-claims and re-processes immediately &mdash; no lease wait. If all
             retries fail, the action fails and the flow run shows <strong>Failed</strong> (loud), which is
             correct. Only a hard crash (no release written) still waits out the A1 lease
-            (<code>A1_LEASE_SECONDS</code>, default 600&nbsp;s) &mdash; covered by the PT4M retry policy above.</td></tr>
+            (<code>A1_LEASE_SECONDS</code>, default 300&nbsp;s) &mdash; covered by the PT4M retry policy above.</td></tr>
     <tr><td><code>routingDecision</code> values</td>
         <td><code>HAPPY_PATH_CANDIDATE</code> &middot; <code>REVIEW_B4_CRITICAL_FIELD</code> &middot;
             <code>REJECT_B2_OTHER_CATEGORY</code> &middot; <code>REVIEW_NO_CHILD_EXTRACTION</code>
