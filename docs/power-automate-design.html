@@ -635,6 +635,38 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
     see the Retry policy warn box in Section&nbsp;3.)
   </div>
 
+  <h3>Phase 4 prep &mdash; Dataverse columns for the billing-period fields</h3>
+  <p>The Function emits <code>writeValues.billing_period_start_date</code>, <code>.billing_period_end_date</code>,
+    and <code>.number_of_days</code> (since <code>billing-period-v5</code>, 2026-07-16) for the tenant
+    utility-sharing calculation. They are informational only &mdash; nothing errors while unmapped &mdash; but the
+    values are discarded at the flow boundary until the invoice table has columns for them, and invoices processed
+    before the mapping exists end up with blank columns (no automatic backfill). Create the columns any time before
+    the Phase&nbsp;4 build:</p>
+  <ol class="steps">
+    <li>make.powerapps.com &rarr; the flow's environment &rarr; <strong>Tables</strong> &rarr; the invoice table
+        (inside the solution, so the columns get the right publisher prefix).</li>
+    <li>Add three columns, all <strong>not required</strong> (blank = the bill didn't state it; the Function never
+        defaults these):
+        <strong>Billing Period Start Date</strong> &mdash; type <code>Date only</code>, behavior
+        <code>Date only</code> (timezone-independent &mdash; <em>User local</em> can shift a date &plusmn;1 day and
+        corrupt day-based proration); <strong>Billing Period End Date</strong> &mdash; same; and
+        <strong>Number of Days</strong> &mdash; <code>Whole number</code>. Note the generated schema names.</li>
+    <li>Save / publish customizations.</li>
+  </ol>
+  <div class="note">
+    <strong>Mapping in the Phase&nbsp;4 "Add a new row" action.</strong> The connector's response sample types
+    <code>writeValues</code> as <code>{}</code>, so these keys have no dynamic-content pills &mdash; use expressions,
+    with empty-string guards (the Function sends <code>""</code> for unknown; Dataverse date/number columns reject
+    <code>""</code>):
+    <pre><code>if(empty(body('Process_invoice')?['writeValues']?['billing_period_start_date']), null,
+   body('Process_invoice')?['writeValues']?['billing_period_start_date'])</code></pre>
+    Same pattern for <code>billing_period_end_date</code> and <code>number_of_days</code> (an integer when present).
+    One mapping covers both paths &mdash; the approval flow re-enters the same write action. Verify with a bill that
+    prints no period (Surrey shape): the row should carry the <em>derived</em> start (source
+    <code>"derived"</code> in <code>resolutions</code>), e.g. start 2026-01-08 / end 2026-04-29 / days 112; a
+    commercial invoice writes with all three columns blank.
+  </div>
+
   <div class="ok">
     <strong>Recommended order:</strong> Phase 0 (Function answers 200) &rarr; Phase 1 (connector test returns 400 = reached + authorized)
     &rarr; Phase 2 (PDF drop &rarr; ledger <code>Extracted</code>) &rarr; Phase 3 (decision routes correctly, A1 no-op proven on resubmit).
