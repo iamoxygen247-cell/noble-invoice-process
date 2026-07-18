@@ -922,6 +922,44 @@ def test_billing_period_twins_and_derivation():
           not any("billing_period_start_date derived" in a for a in r["advisoryFlags"]),
           str(r["advisoryFlags"]))
 
+    # FortisBC final-bill shape (260605_0006): shared-year range 'May 19 - May 31,
+    # 2026' -> start extract null, start generate range-collapses to the period
+    # END at low confidence. An unverified generate-only start never blocks the
+    # derivation: start = 2026-05-31 - (13 - 1) = 2026-05-19.
+    fields = municipal_fields(
+        sub_bill_type=fstr("gas", 0.98),
+        billing_period_start_date_generate=fdate("2026-05-31", 0.458),
+        billing_period_end_date_generate=fdate("2026-05-31", 0.463),
+        number_of_days_generate=fint(13, 0.665),
+    )
+    r = ev(fields)
+    check("FortisBC derived start = 2026-05-19 (over failed generate)",
+          r["writeValues"]["billing_period_start_date"] == "2026-05-19",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("FortisBC derived source/passed",
+          r["resolutions"]["billing_period_start_date"]["source"] == "derived"
+          and r["resolutions"]["billing_period_start_date"]["passed"] is True,
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("FortisBC advisory names the replaced generate value",
+          any("replacing unverified generate value '2026-05-31'" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # A generate start that PASSED (confident rescue of an absent extract) is
+    # trusted -- derivation does not fire over it (it would compute 2026-05-22).
+    fields = municipal_fields(
+        billing_period_start_date_generate=fdate("2026-05-19", 0.90),
+        billing_period_end_date_generate=fdate("2026-05-31", 0.90),
+        number_of_days_generate=fint(10, 0.90),
+    )
+    r = ev(fields)
+    check("passed generate start kept (no derivation)",
+          r["writeValues"]["billing_period_start_date"] == "2026-05-19"
+          and r["resolutions"]["billing_period_start_date"]["source"] == "generate",
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("no derivation advisory for a passed generate start",
+          not any("billing_period_start_date derived" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
     # Disagreeing low twins: informational -> never reviews; extract kept; advisory raised;
     # start stays blank when days are missing (no derivation possible).
     fields = municipal_fields(

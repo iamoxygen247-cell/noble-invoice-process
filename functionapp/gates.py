@@ -516,9 +516,15 @@ def evaluate(
     # date (a month-only period like 'Mar/Apr 2026', or no period at all) takes
     # start = end - (number_of_days - 1) from the resolved end date and day
     # count. Deterministic date arithmetic like the PO rescue (source
-    # "derived"); a printed start value -- even one below the confidence bar --
-    # is never overwritten. Informational only: never gates routing.
-    if is_empty_value(resolutions[field_policy.BILLING_START_FINAL][0]):
+    # "derived"). A printed (extract) start value -- even one below the
+    # confidence bar -- is never overwritten, but a below-bar generate-only
+    # value is: it has no grounding on the page, and in the observed failure
+    # mode it is the period *end* date (range collapse on a shared-year range
+    # like 'May 19 - May 31, 2026'). Informational only: never gates routing.
+    start_val, _start_conf, start_passed, _start_note, start_source = (
+        resolutions[field_policy.BILLING_START_FINAL]
+    )
+    if is_empty_value(start_val) or (not start_passed and start_source != "extract"):
         end_value, end_conf = resolutions[field_policy.BILLING_END_FINAL][:2]
         days_value, days_conf = resolutions[field_policy.DAYS_FINAL][:2]
         derived = field_policy.derive_billing_period_start(end_value, end_conf, days_value, days_conf)
@@ -526,10 +532,13 @@ def evaluate(
             derived_start, derived_conf = derived
             resolutions[field_policy.BILLING_START_FINAL] = (derived_start, derived_conf, True, None, "derived")
             write_values[field_policy.BILLING_START_FINAL] = derived_start
-            advisory.append(
+            note = (
                 "billing_period_start_date derived from billing_period_end_date "
                 f"minus number_of_days: {derived_start}"
             )
+            if not is_empty_value(start_val):
+                note += f" (replacing unverified {start_source} value {start_val!r})"
+            advisory.append(note)
 
     b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)
     if len(po_candidates) > 1:

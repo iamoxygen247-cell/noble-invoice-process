@@ -440,3 +440,65 @@ truststore bootstrap + 10054 retry — see the entries above). Follow-up shipped
 2026-07-17: the code default was aligned to the validated 300 s so an environment
 missing the app setting (e.g. freshly provisioned prod) inherits a lease that is safe
 under the required Fixed 4×PT4M flow retry policy.
+
+---
+
+## CU generate date twin can collapse a shared-year range to the period END date
+
+**Symptoms (verified 2026-07-17):** FortisBC final bill (260605_0006) prints
+"Billing period: May 19 - May 31, 2026" but the connector wrote
+`billing_period_start_date` = 2026-05-31 -- the period *end*. From the captured CU
+output: `start_extract` = null @ 0.904 (per design: "May 19" carries no year of its
+own, so no full-date span to ground) and `start_generate` = 2026-05-31 @ 0.458 --
+a range collapse onto the end date, with both generate date twins returning the same
+value (the known within-run twin correlation; "closed on Sunday May 31, 2026" and
+the May 31 meter reading are strong distractors on a final bill).
+
+**Cause (code layer -- the actual bug):** the start-derivation guard in `gates.py`
+keyed on value *emptiness*, not resolution *success*. The failed, below-bar generate
+value was non-empty, so the deterministic start = end - (days - 1) derivation --
+which computes the correct 2026-05-19 from the resolved end 2026-05-31 and days 13 --
+never ran. Billing-period fields are informational-only (never gate routing), so
+`passed: false` produced no review and the wrong date shipped on the happy path.
+
+**Fix (shipped 2026-07-17):** the guard now also derives when the start resolution
+failed and its source is not "extract" (a printed extract value below the bar is
+still never overwritten); the advisory names the replaced value. Repro locked into
+`tests/test_field_policy_gates.py` (FortisBC shape, exact captured confidences).
+
+**Lesson:** "present" is not "trusted" -- a below-threshold generate-only value must
+never block a deterministic derivation or rescue. When adding any future derived
+field, gate the derivation on resolution success/source, not just emptiness.
+
+---
+
+## CU field-description ranges act as confidence suppressors; shared-year date ranges need an explicit rule
+
+**Symptoms (verified 2026-07-17, scratch analyzer, 3 replicates x 6 docs):** two
+prompt-level causes of low billing-period twin confidence.
+
+1. The `number_of_days_generate` description said the value is "typically between
+   25 and 130". The incident bill's correct value was 13 (a final bill) -- outside
+   the prompt's own stated range -- and came back at 0.665. Fortisbc's 27 days sat
+   at 0.609-0.653. After rewording to "usually 25 to 130, but a final or opening
+   bill can legitimately cover fewer days (the printed count is correct even when
+   small)", fortisbc days medians rose to 0.96-0.98 with the same correct values.
+2. No date twin knew that in a shared-year range -- "Billing period: May 19 -
+   May 31, 2026" -- the trailing year applies to both dates. The extract twins
+   returned null ("no full calendar date") and the start generate twin
+   range-collapsed onto the end date (the 260605_0006 incident). After adding the
+   shared-year rule + an anti-collapse verify step ("the start must be strictly
+   earlier than the end; if your candidate equals the end date you have collapsed
+   the range"), fortisbc's start_extract went null -> correct 2026-05-01 on 3/3
+   replicates.
+
+**Lessons:**
+- Never state a numeric "typical range" in a CU field description unless
+  out-of-range values are truly invalid -- the model reads it as a validity bound
+  and marks correct out-of-range values low-confidence.
+- Date-range fields need the shared-year rule spelled out with a worked example.
+- Confidence floors: even with correct stable values, twin confidences hop bands
+  (~0.66 / 0.74 / 0.78 / 0.90+) run-to-run; median-of-3 on a scratch analyzer is
+  the minimum honest measure, and ~0.74-band medians can persist on some docs
+  (burnaby days) with values still correct -- resolution passes via twin agreement,
+  so judge value correctness first, confidence second.
