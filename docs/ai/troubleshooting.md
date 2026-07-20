@@ -502,3 +502,46 @@ prompt-level causes of low billing-period twin confidence.
   the minimum honest measure, and ~0.74-band medians can persist on some docs
   (burnaby days) with values still correct -- resolution passes via twin agreement,
   so judge value correctness first, confidence second.
+
+---
+
+## `total_invoice_amount` captured the carried-forward account balance on statement-style bills
+
+**Symptoms (verified 2026-07-20, `samples/bug_260605_0017.pdf`):** a Waste Management
+(commercial) statement-style invoice with an account summary -- Previous Balance
+1,352.93 + Current Invoice Charges 1,626.20 = Total Account Balance Due 2,979.13. The
+pipeline wrote `total_invoice_amount = 2979.13` and the derived
+`amount_excluding_gst = 2901.68`; the correct value is this bill's current charges,
+1,626.20 (amount_excluding_gst 1,548.75). `total_invoice_amount` is base-critical and
+routing was `HAPPY_PATH_CANDIDATE`, so the wrong value shipped with no review.
+
+**Cause (prompt, both twins -- not a code bug):** the `total_invoice_amount_extract` /
+`_generate` descriptions said "prefer values labeled ... Balance Due, Total Due ...".
+On a bill that rolls a previous balance into the total, "Total Due" / "Total Account
+Balance Due" is the account balance, not this bill's charges. Both twins obeyed and
+agreed at high confidence (extract 0.82, generate 0.74), so `resolve_twin` correctly
+accepted the value -- `field_policy.py`/`gates.py` behaved correctly given the inputs.
+The confirming tell: GST 77.45 is 5% of the current-charges pre-tax
+(1626.20 - 77.45 = 1548.75) but only 2.6% of 2979.13.
+
+**Fix (verified 2026-07-20 on scratch analyzer `generalinvoicescratch`, prompt-only):**
+both descriptions carry a scoped exception (all bill types): when a Previous Balance /
+Balance Forward line and a separate Current Charges / Current Invoice Charges / Total
+Current Charges / New Charges line are both present, and a larger Total / Balance Due
+rolls them together, return this bill's current charges (tax-inclusive), never the
+carried-forward total; the generate twin adds a
+`previous + current (+/- payments/adjustments) == Total Due` arithmetic check. When no
+previous balance is carried forward, Total / Balance Due already equals the current
+charges (default path unchanged). Scratch results (3/3 replicates each, both twins):
+`bug_260605_0017` (WM, Previous Balance + Current Invoice Charges) -> 1626.20;
+`bug_260601_0018` (Waste Connections, **aging-bucket** CURRENT/30/60/90 + AMOUNT DUE
+11809.25) -> 6207.81. The arithmetic check generalizes the fix past the literal
+"Previous Balance"/"Current Charges" labels to aging tables (CURRENT vs AMOUNT DUE with
+aged arrears) without naming that layout in the prompt. Regression sweep unchanged
+across all 10 municipal baselines (`out/municipal-verify-baseline/*.json`) and 5
+commercial/handwritten prod-vs-scratch A/B docs. Prod general-invoice analyzer push is
+the follow-up (do with `scripts/create_analyzer.py`, then re-run `scripts/test.py`).
+
+**Reusable lesson:** "prefer Balance Due / Total Due" is wrong for statement-style bills
+that carry a prior balance -- the invoice's own amount is the *current charges*, and the
+GST-should-be-~5%-of-pre-tax check exposes a total that swept in a previous balance.
