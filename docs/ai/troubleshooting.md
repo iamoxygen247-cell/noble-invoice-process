@@ -545,3 +545,40 @@ the follow-up (do with `scripts/create_analyzer.py`, then re-run `scripts/test.p
 **Reusable lesson:** "prefer Balance Due / Total Due" is wrong for statement-style bills
 that carry a prior balance -- the invoice's own amount is the *current charges*, and the
 GST-should-be-~5%-of-pre-tax check exposes a total that swept in a previous balance.
+
+---
+
+## `service_address` empty on Waste Connections route ("site block") invoices
+
+**Symptoms (verified 2026-07-21, `samples/bug_260601_0015.pdf`):** both service_address
+twins returned empty on a Waste Connections commercial invoice, so it routed to
+`REVIEW_B4_CRITICAL_FIELD` (service_address is base-critical). The served site
+(1942 KINGSWAY, VANCOUVER BC) is printed inside the DETAILS / line-item section as a
+two-line site header with **no** SHIP TO / Service Address / Service Location label:
+`(0001) NOBLE<<1942 KINGSWAY>> SITEPO 33001163` / `1942 KINGSWAY, VANCOUVER BC CSA 1740`.
+The only labelled address on the page is the customer mailing block (correctly excluded).
+
+**Cause (prompt, both twins -- not a code bug):** the description's priority list only
+knew labelled sources (SHIP TO, Service Address, Prepared For, ...). The site-block
+header carries no such label, so both twins returned empty and `resolve_service_address`
+correctly reported passed=false / source=none.
+
+**Fix (verified 2026-07-21 on scratch `generalinvoicescratch`, prompt-only, both twins):**
+added the private waste-hauler / route "site block" as a recognised source -- a
+`(nnnn) <site> SITEPO/SC# <po>` header immediately followed by a street line ending in a
+`CSA <code>` marker; return the street/city/province, dropping the parenthesised index,
+the site name / `<<...>>` fragment, the SITEPO/SC# number, and the trailing `CSA <code>`.
+Existing SHIP TO / Prepared For / Radius Group priorities and the SOLD TO / mailing
+exclusions are untouched (additive). Scratch: `bug_260601_0015` ->
+`1942 KINGSWAY, VANCOUVER BC` on 3/3 (both twins); `bug_260601_0018`
+(`(0001) CONNAUGHT PLAZA SC#33000152`) -> `8500 ALEXANDRA ROAD, RICHMOND BC` (already
+correct on prod, unchanged).
+
+**Regression gotcha worth remembering:** a single-run diff vs the committed
+`out/municipal-verify-baseline/*.json` flagged three docs -- richmond_water (baseline
+`7171 NO. 5 RD\nRICHMOND BC...` vs `7171 NO. 5 RD`), business_license (baseline `null` vs
+`3237 Matapan Crescent`), landscaping (address vs null). All three were **stale baselines
+/ CU run-to-run noise, not the edit**: prod and scratch returned identical values across
+3 replicates each. Reconfirms the standing lesson -- service_address extract values flap
+run-to-run; judge regression by prod-vs-scratch replicates, never a single run against an
+old baseline.
