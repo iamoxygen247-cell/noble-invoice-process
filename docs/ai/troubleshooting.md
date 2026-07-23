@@ -736,11 +736,44 @@ in the act. The tell is the generate twin pinned at ~0.46 on prod -- the signatu
 picking between equally-labelled candidates -- rising to 0.66-0.90, and the extract twin
 now clearing the bar on its own instead of the pair scraping through on agreement.
 
+**Follow-up the same day -- the mirror-image failure: `gst_amount` null when no row says
+"GST".** Two more production bills were reported (`samples/bug_260629_0025.pdf`,
+`samples/bug_260629_0032.pdf`), both writing null.
+
+* `bug_260629_0032` (FortisBC, prints `GST (5% of ' amounts) $1.17`) was a run-to-run
+  flap, not a layout gap: 1.17 on 3/3 prod and 3/3 scratch when re-measured.
+* `bug_260629_0025` (College Class Services, landscaping) was real and **not** covered by
+  the sectioned-bill fix. Nothing on the page is labeled GST except the registration
+  number `GST# 122990112RT`; the totals block reads `sub Total $796.00 / Tax $39.80 /
+  Total $835.80`. Both prompts only knew how to find rows *labeled* GST, so they returned
+  null -- scratch 0/3, prod 1/3 (the one prod hit came back at 0.963, so it was a coin
+  flip, not a hard miss). `gst_amount` is critical for the commercial bucket, so this one
+  routed to review rather than shipping bad data.
+
+Amendment to both twins: when no row anywhere is labeled GST and the totals block shows a
+single generically labeled tax row (Tax, Taxes, Sales Tax, Tax amount), that row IS the
+GST when its amount is about 5% of the subtotal -- the printed GST registration number
+corroborates that the vendor charges GST -- and is explicitly NOT returned when the single
+amount is about 12% of the subtotal (GST and PST combined). The registration number itself
+stays excluded.
+
+After the amendment, 3 replicates per document on scratch, both twins: `bug_260629_0025`
+-> **39.80 3/3** (was 0/3), `bug_260629_0032` -> 1.17 3/3, and the whole earlier
+regression set unchanged (`bug_260624_0015` 3.17, `bchydro` 22.02, `fortisbc` 10.82,
+`pest_control` 19.75, `trade8` 24.90 / PST 11.90, `trade1` 3.75 / PST 0, `260105_0007`
+4.50). Confidence still hops bands run-to-run on correct values (the `bug_260624_0015`
+generate twin ranged 0.26-0.90 across this round with the value never moving) -- judge
+values first, confidence second.
+
 **Reusable lessons:**
 - When a document can print the same label more than once (per-section tax lines,
   per-site subtotals), "prefer the amount labeled X" is underdetermined and the model
   picks a different occurrence run to run. Name which occurrence covers the whole
   document and name the recap block that carries it.
+- The opposite gap costs just as much: a prompt built entirely on a label finds nothing
+  when the vendor labels the row generically ("Tax"). Give such a field a
+  label-independent fallback anchored on arithmetic (~5% of the subtotal) plus a
+  disqualifier for the lookalike (~12% = GST + PST combined).
 - Before adding wording, check whether an existing *exclusion* is what blocks the right
   answer -- here "use Total Tax only when there is no separate GST line" was actively
   pushing the model off the correct recap line.
