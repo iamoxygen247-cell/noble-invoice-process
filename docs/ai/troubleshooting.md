@@ -683,3 +683,66 @@ intended consequence of the rule.
 covers both, and pairing it with a "who was more confident" value choice avoids the
 follow-on question of which spelling to trust. Judge such a change by replaying the whole
 stored corpus, not one document -- that is what showed the casing pairs were unaffected.
+
+---
+
+## `gst_amount` returned one section's GST on a bill that taxes each section separately
+
+**Symptoms (verified 2026-07-23, `samples/bug_260624_0015.pdf`):** a BC Hydro bill that
+charges GST twice -- `TAXES ON ACCOUNT CHARGES * GST 5% $0.68` and `TAXES ON ELECTRICITY
+CHARGES * GST 5% on $49.72 $2.49` -- and prints the bill's total GST in a recap,
+`TAX SUMMARY GST 5% on $63.22 $3.17`. On the same bytes, runs wrote 0.68, 2.49, or the
+correct 3.17. Even the correct runs barely held: `gst_amount_extract` 3.17 @ **0.664** and
+`gst_amount_generate` 3.17 @ **0.519** (`out/verify_result.json`), both under the 0.73
+bar, so the pair passed on twin agreement alone. `gst_amount` is critical for the
+commercial bucket only, so on this municipal bill a wrong value ships
+`HAPPY_PATH_CANDIDATE` -- with a wrong derived `amount_excluding_gst` -- and nothing
+routes to review.
+
+**Cause (prompt, both twins -- not a code bug):** both descriptions said only "prefer the
+amount directly labeled GST, G.S.T., GST@5.0%, GST 5%". Three lines on this bill match
+that equally well and none is marked as the document-level one, so the choice was left to
+run-to-run chance. The trailing exclusion made it worse: *"Use Total Tax only when there
+is no separate GST line"* steers the model **away** from the TAX SUMMARY recap precisely
+*because* per-section GST lines exist. `field_policy.resolve_twin` behaved correctly given
+those inputs.
+
+**Fix (verified 2026-07-23 on scratch `generalinvoicescratch`, prompt-only, both twins):**
+when a GST amount is printed under more than one charge section, the answer is the
+bill-level GST from the tax recap (TAX SUMMARY / Sales Tax Summary / Total GST / Total
+Taxes), never a single section's line; on such a bill with no recap printed, the extract
+twin returns null (it has no span for a sum) and the `generate` twin -- rewritten as a
+numbered procedure -- adds the section amounts (0.68 + 2.49 = 3.17). Its verify step names
+the failure mode outright: an answer much smaller than ~5% of the bill's pre-tax amount
+means one section's GST was returned. The Total-Tax exclusion is amended so a recap that
+itemises GST on its own line counts as a GST line; a *combined* Total Tax is still refused.
+
+Measured, 3 replicates per document per analyzer, both twins (prod `generalinvoice` vs
+scratch):
+
+| document | prod | scratch |
+|---|---|---|
+| `bug_260624_0015` | 3.17 x3; extract 0.586-0.820 / generate **0.457-0.464** | 3.17 x3; extract 0.817-0.955 / generate **0.663-0.902** |
+| `bchydro` (one GST line, no recap) | 22.02 | 22.02 |
+| `fortisbc` (prints combined `Total energy taxes & fees 11.69`) | 10.82 | 10.82 |
+| `pest_control` (`Sales Tax Summary / GST@5.0%`) | 19.75 | 19.75 |
+| `260105_0007` (handwritten split dollars/cents) | 4.50 | 4.50 |
+| `trade8` (GST + PST) | 24.90, PST 11.90 | 24.90, PST 11.90 |
+| `trade1` (PST line printed N/A) | 3.75, PST 0 | 3.75, PST 0 |
+
+**Honest limit of the evidence:** the bad values did not reproduce on prod during
+verification (3/3 correct), so the fix is judged on confidence, not on a value flip caught
+in the act. The tell is the generate twin pinned at ~0.46 on prod -- the signature of
+picking between equally-labelled candidates -- rising to 0.66-0.90, and the extract twin
+now clearing the bar on its own instead of the pair scraping through on agreement.
+
+**Reusable lessons:**
+- When a document can print the same label more than once (per-section tax lines,
+  per-site subtotals), "prefer the amount labeled X" is underdetermined and the model
+  picks a different occurrence run to run. Name which occurrence covers the whole
+  document and name the recap block that carries it.
+- Before adding wording, check whether an existing *exclusion* is what blocks the right
+  answer -- here "use Total Tax only when there is no separate GST line" was actively
+  pushing the model off the correct recap line.
+- A twin pair stuck in a low confidence band on a field that is otherwise easy is a
+  symptom of an ambiguous prompt, not of a hard document.
