@@ -582,3 +582,104 @@ correct on prod, unchanged).
 3 replicates each. Reconfirms the standing lesson -- service_address extract values flap
 run-to-run; judge regression by prod-vs-scratch replicates, never a single run against an
 old baseline.
+
+---
+
+## `invoice_date` silently became "today" on runs where its confidence dipped
+
+**Symptoms (verified 2026-07-23, `samples/bug_260615_0006.pdf`):** the bill prints
+`Date: June 11, 2026`, but on some runs the pipeline wrote the *processing* date
+instead. `invoice_date` was the last single-method (`extract`) field trusted on
+confidence alone: `build_write_values` substituted today (PST) whenever the estimated
+confidence fell under 0.73. The value was never wrong -- the confidence was noisy.
+Measured on the same bytes across replicates: 0.752 / 0.804 / 0.902 / 0.964 / 0.971 on
+this document, and prod runs of `bchydro` (0.752 / 0.872 / 0.955) and `surrey_water`
+(0.741) sat a single noise band above the bar. Nothing routed to review, because
+`invoice_date` is not a critical field.
+
+**Fix (verified 2026-07-23 on scratch `generalinvoicescratch`, 24 replicates x 6 docs):**
+make it an extract + generate twin like `vendor_name` -- `invoice_date_extract` (the old
+description, unchanged) plus a step-by-step `invoice_date_generate` -- so the agreement
+boost carries a sub-threshold-but-correct date. Every document that prints an issue date
+returned it on 3/3 replicates with both twins agreeing: `bug_260615_0006` 2026-06-11,
+`bchydro` 2026-06-09, `fortisbc` 2026-05-29 (generate as low as 0.731 -- the pair still
+resolves), `bug_260601_0015` 2026-05-31, `260629_0001` 2026-05-25.
+
+**The trap this exposed -- a generate twin will invent a date when the page has none.**
+`samples/business_license.pdf` (a Vancouver licence renewal notice) prints only a
+payment due date and a page footer `1/13/26 10:12AM`. The extract twin correctly
+returned null on 3/3, but the generate twin answered `2026-01-13` **at 0.820** -- above
+the bar, so it would have auto-written the print timestamp as the invoice date, with no
+review. Tightening the prompt (an explicit "a date printed with a clock time in a
+header, footer or margin is a print timestamp, never the invoice date" rule plus a
+"renewal notice with only a due date has no issue date" case) only degraded it: the twin
+still read the same footer span, now returning a garbled `2010-03-26` at 0.588.
+The durable fix is code-side -- `field_policy.NO_GENERATE_RESCUE` -- : for
+`invoice_date` a confident generate may no longer stand in for an *absent* extract, so
+an ungrounded value is refused and the field defaults to today (recorded in
+`defaultedFields`). Replaying the stored 0.820 run through the guard now yields the
+default. Twin *agreement* is untouched, and every other twin keeps its generate rescue.
+
+**Also shipped:** a written `invoice_date` after today (America/Vancouver) routes to
+`REVIEW_B4_CRITICAL_FIELD` (`invoice_date needs attention`), with the extracted date
+written unchanged so the reviewer sees what the document said. The check runs on the
+written value, so a defaulted (today) date can never trip it.
+
+**Reusable lessons:**
+- A `generate` twin is only as trustworthy as the thing that grounds it. On documents
+  where the field genuinely does not exist, the twin answers anyway -- confidently, from
+  whatever date-shaped text is on the page. Prompt exclusions do not reliably stop it
+  (here it kept reading the same span at lower confidence). When a field has a safe
+  deterministic fallback, refuse the ungrounded value in code instead.
+- Judge such a fix by *replaying the stored raw JSON* of the bad run through the new
+  code -- it proves the guard on the exact response that failed, with no CU cost.
+- A second, pre-existing bug surfaced while verifying this one: the `vendor_name` twins
+  never agreed on the same document. See the next entry.
+
+---
+
+## `vendor_name` twins never agreed on a sole proprietor's shortened name
+
+**Symptoms (verified 2026-07-23, `samples/bug_260615_0006.pdf`):** the bill routed to
+`REVIEW_B4_CRITICAL_FIELD` (`vendor_name needs attention`) on 1 of 6 replicates, while
+both twins returned the same vendor every single run: extract `SIMON SIK FAI KAN`
+(0.721-0.963, one run under the 0.73 bar) and generate `SIMON KAN` (0.348-0.520). Only
+the confidence moved; the values never did.
+
+**Cause (code, not prompt):** `_vendor_values_consistent` accepted equality or *substring
+containment* after normalisation. `simon kan` is not a contiguous substring of
+`simon sik fai kan` -- the dropped words sit in the middle -- so the pair never agreed and
+nothing corroborated the extract when its noisy confidence dipped. The generate twin was
+behaving correctly: its prompt asks for the short common name, which for a sole
+proprietor means dropping the middle names.
+
+**Fix (two parts, code-only -- no analyzer change):**
+
+1. Agreement gained a third form: one name's *words* being a subset of the other's.
+   Checked against every vendor twin pair stored in `out/**` (16 distinct pairs, 62 runs):
+   only the two `SIMON` pairs change verdict; `City of Richmond` vs `City of Vancouver`,
+   `Great West Pool And Spa` vs `Great West Plumbing`, `SIMON SIK FAI KAN` vs `DANNY KAN`
+   and `Noble & Associates` vs `Noble Homes` all stay non-agreeing.
+2. The written spelling is no longer unconditionally the generate twin's. `resolve_twin`'s
+   `prefer_generate_when_agree` boolean became a chooser callable
+   (`prefer_generate_on_agree`); the vendor chooser `_prefer_vendor_generate` keeps the
+   generate spelling when both twins carry the same name after normalisation -- casing or
+   a legal suffix only -- and otherwise writes **whichever twin was more confident**, ties
+   going to the normalised generate name. Every other twin passes `None` and keeps the
+   literal extract value exactly as before.
+
+**Measured effect** (replaying all 41 stored replicates through the new code): the six
+`SIMON` runs all reach `HAPPY_PATH_CANDIDATE` writing `SIMON SIK FAI KAN` (source
+`agreement` on the 0.721 run, `extract` on the rest); the 13 casing/suffix-only pairs
+(the cities, BC Hydro, `PROTECH PEST CONTROL LTD.`, `WASTE CONNECTIONS OF CANADA INC.`)
+are byte-identical to before, keeping the clean generate spelling even where the extract
+is far more confident (surrey 0.982 vs 0.741 still writes `City of Surrey`). The one
+genuine change beyond the bug: `FortisBC Energy Inc.` is written instead of `FortisBC`
+on the ~1-2 runs in 8 where the extract twin was the more confident of the two -- the
+intended consequence of the rule.
+
+**Reusable lesson:** a name comparator built on substring containment silently fails on
+*interior* omissions (middle names, dropped connective words). Token-subset comparison
+covers both, and pairing it with a "who was more confident" value choice avoids the
+follow-on question of which spelling to trust. Judge such a change by replaying the whole
+stored corpus, not one document -- that is what showed the casing pairs were unaffected.

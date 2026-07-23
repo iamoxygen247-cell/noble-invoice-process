@@ -78,7 +78,7 @@ def commercial_fields(**overrides):
         "total_invoice_amount_extract": fnum(105.0, 0.96),
         "po_or_job_number_extract": fstr("11024580", 0.91),
         "gst_amount_extract": fnum(5.0, 0.93),
-        "invoice_date": fdate("2026-05-01", 0.95),
+        "invoice_date_extract": fdate("2026-05-01", 0.95),
         "payment_due_date": fdate("2026-05-31", 0.94),
         "invoice_number_extract": fstr("INV-2201", 0.92),
         "bill_type": fstr("commercial", 0.9),
@@ -101,7 +101,7 @@ def municipal_fields(**overrides):
         # biller's account number and an invoice/licence number (municipal delta)
         "account_number_extract": fstr("123456789012", 0.95),
         "invoice_number_extract": fstr("BL-123456", 0.93),
-        "invoice_date": fdate("2026-05-10", 0.95),
+        "invoice_date_extract": fdate("2026-05-10", 0.95),
         "payment_due_date": fdate("2026-06-10", 0.94),
         "bill_type": fstr("municipal", 0.9),
         "sub_bill_type": fstr("business_license", 0.9),
@@ -163,7 +163,7 @@ def test_date_defaulting_and_derivation():
 
     # missing invoice_date -> today; low-conf payment_due_date -> today+30
     parsed = gates.parse_fields(commercial_fields(
-        invoice_date=fdate(None, None),
+        invoice_date_extract=fdate(None, None),
         payment_due_date=fdate("2026-05-31", 0.40),
     ))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
@@ -173,18 +173,18 @@ def test_date_defaulting_and_derivation():
           set(defaulted) == {"invoice_date", "payment_due_date"}, str(defaulted))
 
     # date confidence exactly at threshold is reliable (>=)
-    parsed = gates.parse_fields(commercial_fields(invoice_date=fdate("2026-05-01", THRESHOLD)))
+    parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate("2026-05-01", THRESHOLD)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
     check("date conf == threshold is kept (>=)",
           wv["invoice_date"] == "2026-05-01" and "invoice_date" not in defaulted)
 
     # non-ISO but unambiguous month-name normalises to YYYY-MM-DD
-    parsed = gates.parse_fields(commercial_fields(invoice_date=fdate("May 1, 2026", 0.95)))
+    parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate("May 1, 2026", 0.95)))
     wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
     check("month-name date normalised to YYYY-MM-DD", wv["invoice_date"] == "2026-05-01", wv["invoice_date"])
 
     # ambiguous numeric date treated as unparseable -> defaulted (safer than wrong guess)
-    parsed = gates.parse_fields(commercial_fields(invoice_date=fdate("03/04/2026", 0.95)))
+    parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate("03/04/2026", 0.95)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
     check("ambiguous numeric date -> defaulted to today",
           wv["invoice_date"] == TODAY and "invoice_date" in defaulted, wv["invoice_date"])
@@ -566,6 +566,64 @@ def test_vendor_extract_generate_twin():
     check("legal suffix ignored in comparison", consistent("FortisBC Energy Inc.", "FortisBC"))
     check("case and spacing ignored", consistent("bc  hydro", "BC Hydro"))
     check("different vendors are not consistent", not consistent("ACME Plumbing", "Bob Roofing"))
+
+    # A shortened PERSONAL name: the dropped words sit in the middle, so substring
+    # containment never sees it -- the token-subset form does.
+    check("shortened personal name is the same vendor",
+          consistent("SIMON SIK FAI KAN", "SIMON KAN"))
+    check("shortened personal name, mixed case", consistent("SIMON SIK FAI KAN", "Simon Kan"))
+    check("a shared surname alone is not the same vendor",
+          not consistent("SIMON SIK FAI KAN", "DANNY KAN"))
+    check("shared leading words are not the same vendor",
+          not consistent("Great West Pool And Spa", "Great West Plumbing"))
+    check("sibling municipalities are not the same vendor",
+          not consistent("City of Richmond", "City of Vancouver"))
+    check("customer vs vendor sharing one word is not the same vendor",
+          not consistent("Noble & Associates", "Noble Homes"))
+
+    # When the two spellings genuinely differ, the more confident twin is written. The
+    # extract read the printed name at 0.72; the generate shortened it at 0.45.
+    fields = commercial_fields(
+        vendor_name_extract=fstr("SIMON SIK FAI KAN", 0.72),
+        vendor_name_generate=fstr("SIMON KAN", 0.45),
+    )
+    r = ev(fields)
+    check("sub-threshold extract rescued by the shortened personal name -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("writes the more confident (printed) spelling",
+          r["writeValues"]["vendor_name"] == "SIMON SIK FAI KAN", str(r["writeValues"].get("vendor_name")))
+    check("source = agreement (extract below the bar, corroborated)",
+          r["resolutions"]["vendor_name"]["source"] == "agreement", str(r["resolutions"].get("vendor_name")))
+    check("agreeing twins raise no disagree advisory",
+          not any("disagree" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # Same pair with both twins clearing the bar -> still the more confident spelling.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("SIMON SIK FAI KAN", 0.95),
+        vendor_name_generate=fstr("SIMON KAN", 0.80),
+    ))
+    check("both clear: more confident spelling written",
+          r["writeValues"]["vendor_name"] == "SIMON SIK FAI KAN", str(r["writeValues"].get("vendor_name")))
+    check("both clear: source names the twin that supplied the value",
+          r["resolutions"]["vendor_name"]["source"] == "extract", str(r["resolutions"].get("vendor_name")))
+
+    # Same NAME in different casing -> the generate's clean spelling is kept even when
+    # the extract is more confident (confidence only decides genuinely different names).
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("CITY OF SURREY", 0.98),
+        vendor_name_generate=fstr("City of Surrey", 0.76),
+    ))
+    check("casing-only difference keeps the clean generate spelling",
+          r["writeValues"]["vendor_name"] == "City of Surrey", str(r["writeValues"].get("vendor_name")))
+
+    # Legal suffix only -> same name after normalisation, so the suffix stays dropped
+    # even though the extract is far more confident.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("PROTECH PEST CONTROL LTD.", 0.90),
+        vendor_name_generate=fstr("PROTECH PEST CONTROL", 0.43),
+    ))
+    check("legal suffix stays dropped regardless of confidence",
+          r["writeValues"]["vendor_name"] == "PROTECH PEST CONTROL", str(r["writeValues"].get("vendor_name")))
 
 
 def test_service_address_extract_generate_twin():
@@ -1304,6 +1362,108 @@ def test_invoice_number_filename_fallback():
     check("whitespace stripped", default("  invoice1.pdf  ") == "invoice1")
     check("blank filename -> None", default("   ") is None)
     check("None filename -> None", default(None) is None)
+
+
+def test_invoice_date_twin_and_future_gate():
+    print("\n[gates: invoice_date twin -- defaults to today, future date routes to review]")
+
+    # THE BUG: a correct date whose extract confidence lands under the bar used to be
+    # replaced by today's date. Two agreeing sub-threshold twins now keep it.
+    r = ev(commercial_fields(
+        invoice_date_extract=fdate("2026-06-11", 0.60),
+        invoice_date_generate=fdate("2026-06-11", 0.60),
+    ))
+    check("low twins agreeing -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE,
+          r["routingDecision"])
+    check("agreeing twins keep the printed date", r["writeValues"]["invoice_date"] == "2026-06-11",
+          str(r["writeValues"].get("invoice_date")))
+    check("invoice_date source = agreement", r["resolutions"]["invoice_date"]["source"] == "agreement",
+          str(r["resolutions"].get("invoice_date")))
+    check("agreement -> not defaulted", "invoice_date" not in r["defaultedFields"],
+          str(r["defaultedFields"]))
+
+    # Agreement is on the calendar day, not the printed format.
+    r = ev(commercial_fields(
+        invoice_date_extract=fdate("May 1, 2026", 0.50),
+        invoice_date_generate=fdate("2026-05-01", 0.55),
+    ))
+    check("twins agree across date formats", r["writeValues"]["invoice_date"] == "2026-05-01",
+          str(r["writeValues"].get("invoice_date")))
+
+    # Extract absent -> the generate twin may NOT carry the field on its own, however
+    # confident it is (observed: the reasoning twin answering with a page-footer print
+    # timestamp at 0.82 on a bill that prints no issue date). Today is written instead.
+    parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate(None, None),
+                                                  invoice_date_generate=fdate("2026-05-01", 0.90)))
+    wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("ungrounded generate-only date is refused", wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("refused generate -> defaulted", "invoice_date" in defaulted, str(defaulted))
+    check("invoice_date is in NO_GENERATE_RESCUE",
+          field_policy.NO_GENERATE_RESCUE == frozenset({"invoice_date"}),
+          str(field_policy.NO_GENERATE_RESCUE))
+    check("the refusal is invoice_date-only (invoice_number still rescues)",
+          field_policy.resolve_field(
+              "invoice_number",
+              gates.parse_fields(municipal_fields(invoice_number_extract=fstr("", None),
+                                                  invoice_number_generate=fstr("BL-9", 0.90))),
+              THRESHOLD)[2] is True)
+
+    # A generate that disagrees never overrides a passing extract.
+    r = ev(commercial_fields(invoice_date_extract=fdate("2026-05-01", 0.95),
+                             invoice_date_generate=fdate("2026-05-31", 0.90)))
+    check("passing extract wins over a disagreeing generate",
+          r["writeValues"]["invoice_date"] == "2026-05-01", str(r["writeValues"].get("invoice_date")))
+    check("disagreement surfaced as an advisory",
+          any("invoice_date_extract/invoice_date_generate disagree" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Both twins below the bar and disagreeing -> today, recorded as defaulted. Still
+    # happy path: invoice_date is not a critical field.
+    r = ev(commercial_fields(invoice_date_extract=fdate("2026-05-01", 0.40),
+                             invoice_date_generate=fdate("2026-05-31", 0.40)))
+    check("unresolved twins -> still happy (invoice_date is not critical)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("unresolved twins -> defaulted", "invoice_date" in r["defaultedFields"],
+          str(r["defaultedFields"]))
+
+    # Both twins absent -> today (the agreed fallback).
+    fields = commercial_fields()
+    del fields["invoice_date_extract"]
+    parsed = gates.parse_fields(fields)
+    wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("no invoice date at all -> today (PST)", wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("today substitution recorded", "invoice_date" in defaulted, str(defaulted))
+
+    # An invoice dated after today goes to a human, with the read value left intact.
+    r = ev(commercial_fields(invoice_date_extract=fdate("2099-12-31", 0.95)))
+    check("future invoice_date -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD,
+          r["routingDecision"])
+    check("review summary names invoice_date",
+          r["reviewReasons"] == ["invoice_date needs attention"], str(r["reviewReasons"]))
+    check("future date advisory carries the value",
+          any("B4 invoice_date 2099-12-31 is after today" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("future date is written unchanged for the reviewer",
+          r["writeValues"]["invoice_date"] == "2099-12-31", str(r["writeValues"].get("invoice_date")))
+    check("future date not marked defaulted", "invoice_date" not in r["defaultedFields"],
+          str(r["defaultedFields"]))
+
+    # A future date the twins could not verify defaults to today, so the gate cannot
+    # fire on a substituted value.
+    r = ev(commercial_fields(invoice_date_extract=fdate("2099-12-31", 0.40)))
+    check("unverified future date -> defaulted, not review",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("substituted date is today, never the future value",
+          r["writeValues"]["invoice_date"] != "2099-12-31" and "invoice_date" in r["defaultedFields"],
+          str(r["writeValues"].get("invoice_date")))
+
+    # helper: the comparison is calendar-day based in the business timezone.
+    future = field_policy.invoice_date_in_future
+    check("tomorrow is in the future", future("2026-06-30", now=FIXED_NOW))
+    check("today is not in the future", not future(TODAY, now=FIXED_NOW))
+    check("yesterday is not in the future", not future("2026-06-28", now=FIXED_NOW))
+    check("missing value is not in the future", not future(None, now=FIXED_NOW))
+    check("unparseable value is not in the future", not future("03/04/2026", now=FIXED_NOW))
 
 
 def test_sub_bill_type():

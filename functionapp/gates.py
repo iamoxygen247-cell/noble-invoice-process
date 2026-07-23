@@ -11,6 +11,7 @@ Gates implemented here (post-extraction, Stage B):
     B2   router/effective category == other          -> REJECT_B2_OTHER_CATEGORY
     B4   critical field (per bill_type bucket) missing/empty/low-confidence
                                                      -> REVIEW_B4_CRITICAL_FIELD
+         written invoice_date after today            -> REVIEW_B4_CRITICAL_FIELD
     (no child fields)                                -> REVIEW_NO_CHILD_EXTRACTION
     B6   line-item row confidence < threshold        -> advisory only
 
@@ -53,6 +54,8 @@ FIELD_PRINT_ORDER = [
     "vendor_name_extract",
     "vendor_name_generate",
     "invoice_date",
+    "invoice_date_extract",
+    "invoice_date_generate",
     "payment_due_date",
     "billing_period_start_date",
     "billing_period_start_date_extract",
@@ -546,6 +549,16 @@ def evaluate(
             "po_or_job_number has multiple 8-digit candidates in OCR text: "
             + ", ".join(po_candidates)
         )
+
+    # An invoice dated after today is either a misread or a document that should not
+    # be paid yet, so it goes to a human. The check runs on the *written* value, so a
+    # defaulted (today) date can never trip it, and the future date is written
+    # unchanged -- the reviewer needs to see what the document actually said.
+    invoice_date_value = write_values.get(field_policy.INVOICE_DATE_FINAL)
+    if field_policy.invoice_date_in_future(invoice_date_value):
+        b4_review = True
+        b4_reasons.append(f"invoice_date {invoice_date_value} is after today")
+        b4_failed.append(field_policy.INVOICE_DATE_FINAL)
 
     if b4_review:
         # reviewReasons carries ONE reviewer-facing summary naming every failing

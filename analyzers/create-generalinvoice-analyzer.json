@@ -20,10 +20,15 @@
         "method": "generate",
         "description": "Common name of the company, supplier, contractor, tradesperson, service provider, utility, or vendor issuing the invoice and requesting payment. Read the vendor name from clearly printed text — for example the remittance or payment return slip, the 'remit to' or 'make cheque payable to' line, the footer legal name or a 'does business as' clause, the vendor contact block, or a website domain — rather than a stylized logo or graphic wordmark. When the name appears both as a stylized logo and as printed body text, use the printed text. Return the short common name the vendor is known by (for example 'FortisBC', 'BC Hydro'), not the full legal-entity suffix such as 'Energy Inc.', 'Inc.', or 'Ltd'. Do not return the customer, Invoice To party, Bill To party, property manager, property owner, tenant, attention line, technician, or contact person."
       },
-      "invoice_date": {
+      "invoice_date_extract": {
         "type": "date",
         "method": "extract",
         "description": "Date the invoice was issued. May be labeled Invoice Date, Date, Billing Date, Issue Date, Tax Invoice Date, Statement Date, or Notice Date. Return the issue date, not the due date, service date, or delivery date."
+      },
+      "invoice_date_generate": {
+        "type": "date",
+        "method": "generate",
+        "description": "Determine the date this invoice or bill was issued. Reason step by step over the entire document:\n1. Look for a date labeled Invoice Date, Date, Billing Date, Bill Date, Issue Date, Date Issued, Tax Invoice Date, Statement Date, or Notice Date. It is usually in the invoice header or the top-right invoice table, often printed next to the invoice number.\n2. Never answer with the due date (Due Date, Payment Due, Payable By, Balance Due Date), a billing or service period date (Billing Period, Service From/To), a meter reading date, a service, delivery, work-performed or completion date, a payment or posting date, an account opening or closing date, a date inside a consumption-history chart or rate table, or a print timestamp or control code in the page margin.\n3. A date printed together with a clock time in a page header, footer, or margin — for example '1/13/26 10:12AM' — records when the copy was printed, not when the document was issued. Never return it, not even when it is the only date on the page besides the due date.\n4. If several dates are printed and only one is labeled as the invoice, bill, statement, or notice date, return that one. If a single unlabeled date is printed in the header block above the line items and no invoice date label appears anywhere, that date is the issue date; return it.\n5. Return the date as printed on this document. Do not calculate it from the due date and payment terms, and never substitute the current date.\n6. Return null if no issue date is printed anywhere on the document. A renewal notice or bill that shows only a payment due date and a page-footer print timestamp has no issue date: return null rather than the due date or the print timestamp.\nBefore answering, verify your date is not the due date, not a billing-period date, and not a page print timestamp."
       },
       "payment_due_date": {
         "type": "date",

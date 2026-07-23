@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "billing-period-v5"
+POLICY_VERSION = "twin-resolution-v6"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -105,6 +105,15 @@ INVOICE_FINAL = "invoice_number"
 ACCOUNT_EXTRACT = "account_number_extract"
 ACCOUNT_GENERATE = "account_number_generate"
 ACCOUNT_FINAL = "account_number"
+
+# invoice_date is twinned like the identifiers, but unlike the billing-period dates
+# below it IS defaulted: when the twins resolve to nothing usable the write value
+# becomes today (build_write_values). A resolved date *after* today is treated as a
+# review trigger, not a value to fix (see invoice_date_in_future + gates.evaluate),
+# and the generate twin may not carry the field alone (see NO_GENERATE_RESCUE).
+INVOICE_DATE_EXTRACT = "invoice_date_extract"
+INVOICE_DATE_GENERATE = "invoice_date_generate"
+INVOICE_DATE_FINAL = "invoice_date"
 
 # The billing-period fields are twinned and informational only (never critical):
 # they feed the tenant utility-sharing calculation downstream on municipal
@@ -363,6 +372,21 @@ def _now_pacific(now: Optional[datetime]) -> datetime:
     return now.astimezone(BUSINESS_TZ)
 
 
+def invoice_date_in_future(value: Any, now: Optional[datetime] = None) -> bool:
+    """
+    True when an invoice date falls after today's business-timezone calendar day.
+
+    A future issue date is either a misread or a document that should not be paid
+    yet, so the caller routes the run to review (gates.evaluate). Today itself is
+    not in the future, and an absent or unparseable value never is -- that case is
+    already handled by defaulting.
+    """
+    normalized = _normalize_date(value)
+    if normalized is None:
+        return False
+    return datetime.strptime(normalized, DATE_FORMAT).date() > _now_pacific(now).date()
+
+
 # --- derived value -----------------------------------------------------------
 
 
@@ -424,12 +448,32 @@ def _normalize_vendor(value: Any) -> str:
 
 
 def _vendor_values_consistent(a: Any, b: Any) -> bool:
-    """True when both name the same vendor: equal after normalisation, or one is
-    contained in the other (a short common name vs a longer legal name)."""
+    """True when both name the same vendor: equal after normalisation, one contained in
+    the other (a short common name vs a longer legal name), or one's words a subset of
+    the other's. The subset form catches a shortened personal name -- 'Simon Kan' vs
+    'Simon Sik Fai Kan' -- where the dropped words sit in the middle, so containment
+    never sees it."""
     na, nb = _normalize_vendor(a), _normalize_vendor(b)
     if not na or not nb:
         return False
-    return na == nb or na in nb or nb in na
+    if na == nb or na in nb or nb in na:
+        return True
+    ta, tb = set(na.split()), set(nb.split())
+    return ta <= tb or tb <= ta
+
+
+def _prefer_vendor_generate(
+    e_val: Any, e_conf: Optional[float], g_val: Any, g_conf: Optional[float]
+) -> bool:
+    """Which spelling to write when the two vendor twins agree. The generate twin exists
+    to normalise the name, so its spelling wins whenever both twins name the vendor
+    identically after normalisation (they differ only in casing or a legal suffix). When
+    the spellings genuinely differ -- a shortened personal name, a dropped descriptor --
+    write whichever twin the model was more confident in; a tie keeps the normalised
+    generate name."""
+    if _normalize_vendor(e_val) == _normalize_vendor(g_val):
+        return True
+    return (g_conf or 0.0) >= (e_conf or 0.0)
 
 
 def _field_passes(value: Any, confidence: Optional[float], threshold: float) -> bool:
@@ -446,7 +490,8 @@ def resolve_twin(
     generate_key: str,
     threshold: float,
     agree_fn: "Callable[[Any, Any], bool]",
-    prefer_generate_when_agree: bool = False,
+    prefer_generate_on_agree: "Optional[Callable[[Any, Optional[float], Any, Optional[float]], bool]]" = None,
+    allow_generate_rescue: bool = True,
 ) -> Tuple[Any, float, bool, Optional[str], str]:
     """
     Generic extract + generate twin resolution shared by every twin-resolved critical
@@ -458,9 +503,14 @@ def resolve_twin(
     (>= threshold) fills it in. A generate that merely *disagrees* with a present extract
     never passes -- the extract stays authoritative whenever it found a value.
 
-    ``prefer_generate_when_agree`` selects the value preference: True writes the clean
-    generate value when the two agree (vendor-name normalisation); False keeps the literal
-    extract value (addresses, amounts, PO -- the twin is a validator, not a value source).
+    ``prefer_generate_on_agree`` selects the value preference when the two agree: a
+    predicate ``(e_val, e_conf, g_val, g_conf) -> bool`` returning True writes the generate
+    value (vendor-name normalisation, see _prefer_vendor_generate). None -- every field but
+    vendor -- keeps the literal extract value (addresses, amounts, PO, identifiers: the twin
+    is a validator, not a value source).
+
+    ``allow_generate_rescue`` False drops the third pass condition, so an absent extract can
+    never be filled in by the generate twin alone (see NO_GENERATE_RESCUE).
 
     Returns ``(value, effective_confidence, passed, note, source)``. ``source`` is
     ``"generate"`` (generate carried it: both cleared and agree, or a generate rescue of an
@@ -479,10 +529,11 @@ def resolve_twin(
 
     # A confident generate rescues an *absent* extract (nothing to disagree with); a
     # generate that disagrees with a *present* extract never overrides it.
-    generate_rescue = g_pass and not e_present
+    generate_rescue = allow_generate_rescue and g_pass and not e_present
     passed = e_pass or agree or generate_rescue
 
-    if prefer_generate_when_agree and agree and g_present:
+    if (prefer_generate_on_agree is not None and agree and g_present
+            and prefer_generate_on_agree(e_val, e_conf, g_val, g_conf)):
         value, source = g_val, ("generate" if (e_pass and g_pass) else "agreement")
     elif e_pass:
         value, source = e_val, "extract"
@@ -594,10 +645,11 @@ def resolve_vendor(
     parsed: Dict[str, Tuple[Any, Optional[float]]],
     threshold: float = THRESHOLD,
 ) -> Tuple[Any, float, bool, Optional[str], str]:
-    """vendor_name twin: prefers the clean, normalised generate name when the two agree."""
+    """vendor_name twin: on agreement writes the clean generate name when the two are the
+    same name, else the more confident spelling (see _prefer_vendor_generate)."""
     return resolve_twin(
         parsed, VENDOR_EXTRACT, VENDOR_GENERATE, threshold,
-        _vendor_values_consistent, prefer_generate_when_agree=True,
+        _vendor_values_consistent, prefer_generate_on_agree=_prefer_vendor_generate,
     )
 
 
@@ -608,28 +660,43 @@ def resolve_service_address(
     """service_address twin: the extract is authoritative; the generate twin only validates."""
     return resolve_twin(
         parsed, SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, threshold,
-        _address_tokens_agree, prefer_generate_when_agree=False,
+        _address_tokens_agree, prefer_generate_on_agree=None,
     )
 
 
 # Every twin-resolved field (all critical in some bucket except pst_amount and the
 # billing-period fields, which are informational only): final name -> (extract key,
-# generate key, agree fn, prefer the clean generate value on agreement). vendor
-# prefers the normalised generate name; the rest keep the literal extract value
-# (the twin only validates).
-TWIN_FIELDS: Dict[str, Tuple[str, str, Callable[[Any, Any], bool], bool]] = {
-    VENDOR_FINAL: (VENDOR_EXTRACT, VENDOR_GENERATE, _vendor_values_consistent, True),
-    SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, False),
-    TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, False),
-    GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, False),
-    PST_FINAL: (PST_EXTRACT, PST_GENERATE, _amounts_agree, False),
-    PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, False),
-    INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, False),
-    ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, False),
-    BILLING_START_FINAL: (BILLING_START_EXTRACT, BILLING_START_GENERATE, _dates_agree, False),
-    BILLING_END_FINAL: (BILLING_END_EXTRACT, BILLING_END_GENERATE, _dates_agree, False),
-    DAYS_FINAL: (DAYS_EXTRACT, DAYS_GENERATE, _days_agree, False),
+# generate key, agree fn, value preference on agreement). Only vendor supplies a
+# preference (the normalised name, or the more confident spelling when the two differ);
+# None keeps the literal extract value (the twin only validates).
+TWIN_FIELDS: Dict[
+    str,
+    Tuple[str, str, Callable[[Any, Any], bool],
+          Optional[Callable[[Any, Optional[float], Any, Optional[float]], bool]]],
+] = {
+    VENDOR_FINAL: (VENDOR_EXTRACT, VENDOR_GENERATE, _vendor_values_consistent, _prefer_vendor_generate),
+    SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, None),
+    TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, None),
+    GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, None),
+    PST_FINAL: (PST_EXTRACT, PST_GENERATE, _amounts_agree, None),
+    PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, None),
+    INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, None),
+    ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, None),
+    INVOICE_DATE_FINAL: (INVOICE_DATE_EXTRACT, INVOICE_DATE_GENERATE, _dates_agree, None),
+    BILLING_START_FINAL: (BILLING_START_EXTRACT, BILLING_START_GENERATE, _dates_agree, None),
+    BILLING_END_FINAL: (BILLING_END_EXTRACT, BILLING_END_GENERATE, _dates_agree, None),
+    DAYS_FINAL: (DAYS_EXTRACT, DAYS_GENERATE, _days_agree, None),
 }
+
+
+# Fields a confident generate twin may NOT carry on its own. invoice_date is the one:
+# on a bill that prints no issue date at all (a licence renewal notice showing only a
+# due date), the reasoning twin has been observed answering with the page-footer print
+# timestamp -- once at 0.82, above the bar -- which would auto-write a plausible-looking
+# wrong date with no review. With no extract span backing it there is nothing to
+# corroborate the value, and this field has a safe deterministic fallback (today), so an
+# ungrounded generate value is refused and the date defaults instead.
+NO_GENERATE_RESCUE: frozenset = frozenset({INVOICE_DATE_FINAL})
 
 
 def resolve_field(
@@ -639,7 +706,10 @@ def resolve_field(
 ) -> Tuple[Any, float, bool, Optional[str], str]:
     """Resolve one twin-resolved critical field by its final name."""
     extract_key, generate_key, agree_fn, prefer = TWIN_FIELDS[final_name]
-    return resolve_twin(parsed, extract_key, generate_key, threshold, agree_fn, prefer)
+    return resolve_twin(
+        parsed, extract_key, generate_key, threshold, agree_fn, prefer,
+        allow_generate_rescue=final_name not in NO_GENERATE_RESCUE,
+    )
 
 
 # --- write-values builder ----------------------------------------------------
@@ -657,10 +727,12 @@ def build_write_values(
     ``parsed`` maps ``field -> (value, confidence)``.
 
     Returns ``(write_values, defaulted_fields)`` where:
-        * date fields are normalised to YYYY-MM-DD; if empty/unparseable or
-          confidence < threshold they are replaced (invoice_date -> today PST,
+        * date fields are normalised to YYYY-MM-DD; if empty/unparseable or not
+          reliable they are replaced (invoice_date -> today PST,
           payment_due_date -> today + 30 PST) and the field name is recorded in
-          ``defaulted_fields`` for the ledger;
+          ``defaulted_fields`` for the ledger. "Reliable" is the twin resolution
+          for invoice_date (so two agreeing sub-threshold twins keep the printed
+          date) and confidence >= threshold for payment_due_date;
         * non-date fields pass through unchanged (values only);
         * ``pst_amount`` defaults to 0 when the twins resolve to nothing, an
           empty string, or N/A (no PST charged -- the common, service-only case);
@@ -680,23 +752,25 @@ def build_write_values(
     write: Dict[str, Any] = {}
     defaulted: List[str] = []
 
+    # The twin-resolved finals are computed (not straight passthroughs), so Dynamics
+    # receives the resolved value for each; CU no longer returns these names directly.
+    # invoice_date is both twin-resolved AND defaultable, so the resolution has to feed
+    # the date branch below -- hence one pass, not a second loop overwriting the first.
     for name in WRITE_FIELDS:
-        value, confidence = parsed.get(name, (None, None))
+        if name in TWIN_FIELDS:
+            value, confidence, reliable = resolve_field(name, parsed, threshold)[:3]
+        else:
+            value, confidence = parsed.get(name, (None, None))
+            reliable = confidence is not None and confidence >= threshold
         if name in DATE_FIELDS:
             normalized = _normalize_date(value)
-            reliable = normalized is not None and confidence is not None and confidence >= threshold
-            if reliable:
+            if normalized is not None and reliable:
                 write[name] = normalized
             else:
                 write[name] = default_for[name]
                 defaulted.append(name)
         else:
             write[name] = value
-
-    # The twin-resolved finals are computed (not straight passthroughs), so Dynamics
-    # receives the resolved value for each. CU no longer returns these names directly.
-    for final_name in TWIN_FIELDS:
-        write[final_name] = resolve_field(final_name, parsed, threshold)[0]
 
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.

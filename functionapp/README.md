@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "billing-period-v5",
+  "policyBucket": "commercial", "policyVersion": "twin-resolution-v6",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -112,6 +112,16 @@ utility bills), or `business_license` (city-issued business licence/permit
 renewals). Everything else — unconfirmed below-bar labels, unknown or
 cross-bucket labels, property tax — resolves to `other`.
 
+`vendor_name` twin resolution: the two spellings name the same vendor when they are
+equal after normalisation (casing, punctuation and a trailing legal suffix are
+ignored), when one contains the other (`FortisBC Energy Inc.` / `FortisBC`), or when
+one's words are a subset of the other's — that last form catches a shortened personal
+name (`Simon Kan` / `Simon Sik Fai Kan`) whose dropped words sit in the middle. On
+agreement the written spelling is the generate twin's whenever both twins carry the
+same name (so casing stays clean and `Ltd.`/`Inc.` stays dropped); when the spellings
+genuinely differ, whichever twin the model was **more confident** in is written, with
+a tie keeping the normalised generate name.
+
 Municipal invoice-number fallback: when a municipal bill's invoice-number twins
 both come back empty, the field defaults to `fileName` without its extension.
 The response marks it three ways — `defaultedFields` gains `invoice_number`,
@@ -119,6 +129,21 @@ The response marks it three ways — `defaultedFields` gains `invoice_number`,
 records the substituted value. With no usable `fileName` the field fails to
 review exactly as before; a present-but-low-confidence value is never
 overwritten.
+
+`invoice_date` is an extract + generate twin resolved like `vendor_name` (agreement
+boost included: two sub-threshold twins naming the same calendar day pass, with
+`resolutions.invoice_date.source` = `"agreement"`). Only when the twins resolve to
+nothing usable — absent, unparseable, or below the bar and disagreeing — does the
+write value fall back to **today (PST)**, recorded in `defaultedFields`. Unlike the
+other twins, a confident generate value never rescues an *absent* extract here
+(`field_policy.NO_GENERATE_RESCUE`): with no extract span behind it the reasoning
+twin has been seen answering with a page-footer print timestamp, and today's date is
+the safer substitution. A resolved
+date **after today** (America/Vancouver) routes the run to
+`REVIEW_B4_CRITICAL_FIELD` — a future issue date is either a misread or a document
+that shouldn't be paid yet — with the extracted date written unchanged so the
+reviewer sees what the document said. `invoice_date` is otherwise never critical: an
+unresolved one defaults quietly and does not trigger review.
 
 Billing-period fields (municipal utility bills): `billing_period_start_date`,
 `billing_period_end_date`, and `number_of_days` feed the tenant utility-sharing
