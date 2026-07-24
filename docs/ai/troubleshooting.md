@@ -546,6 +546,77 @@ the follow-up (do with `scripts/create_analyzer.py`, then re-run `scripts/test.p
 that carry a prior balance -- the invoice's own amount is the *current charges*, and the
 GST-should-be-~5%-of-pre-tax check exposes a total that swept in a previous balance.
 
+**Follow-up 2026-07-23 -- the label-matching version of this fix was too fragile.** See
+the next entry: the "Previous Balance line + Current Charges line + larger Total" shape
+match fired on a bill with `BALANCE FORWARD $0.00` (returning a smaller Current-charges
+box that excluded a security deposit) and missed a bill whose own charges are labelled
+`ELECTRICITY CHARGES SUBTOTAL` rather than "Current Charges". Both twins were also
+unstable on `bug_260605_0017` itself -- a control analyzer built from this version of the
+prompt returned 1626.20, 2979.13, 1626.20 over three replicates, so the "3/3 verified"
+above was a lucky run. Replaced by the subtraction rule below.
+
+---
+
+## `total_invoice_amount` mis-split on bills with a security deposit / a balance forward
+
+**Symptoms (verified 2026-07-23):** two BC Hydro bills, opposite failures, same prompt.
+
+- `samples/bug_260629_0026.pdf` (new security deposit): highlights box prints
+  `Security deposit $177.00` / `Current charges $21.14` / `Total due $198.14`, with
+  `BALANCE FORWARD $0.00`. The pipeline wrote `total_invoice_amount = 21.14`
+  (`amount_excluding_gst` 20.13); correct is **198.14** -- the deposit is billed on this
+  bill and payable on its due date, and the vendor's "Current charges" box excludes it.
+- `samples/bug_260609_0031.pdf` (final bill): `BALANCE FORWARD $24.32` +
+  `ELECTRICITY CHARGES SUBTOTAL $11.37` = `TOTAL DUE $35.69`. The correct value is
+  **11.37**; the bill's own charges are not labelled "Current Charges" anywhere.
+
+Both routed `HAPPY_PATH_CANDIDATE` with both twins agreeing, so the wrong values shipped
+with no review. The deposit bill *flips run to run* (one local run correct, the next
+wrong; twin confidences 0.61/0.69), so a single passing run proves nothing here.
+
+**Cause:** the label-matching exception from the previous entry. On the deposit bill the
+surface shape matched (a Balance Forward line exists, a Current charges box exists, Total
+due is larger) even though the balance forward was **0.00**; on the final bill nothing
+matched the Current-Charges label list. Note the GST cross-check does **not** catch the
+deposit case and actively argues for the wrong answer: GST 1.01 is exactly 5% of 20.13,
+and 20.13 + 1.01 = 21.14, because the $177.00 deposit is not taxed.
+
+**Fix (verified 2026-07-23 on `generalinvoicescratch`, prompt-only, both twins):** state
+the business rule as subtraction instead of label matching --
+`this bill's amount = Total Due - amount carried forward`, treating any prior amount as
+already paid. Both descriptions now (a) read the carried-forward amount *first*, (b) use
+the amount actually carried forward rather than a settled `Previous bill` line
+(`samples/bchydro.pdf` prints `Previous bill $627.90` with `BALANCE FORWARD $0.00` --
+nothing is carried), (c) when non-zero, return the Current-Charges figure *if printed,
+otherwise the bill's own tax-inclusive charges subtotal*, and (d) when zero/absent,
+return the Total Due even if a smaller Current-charges box is printed. The extract twin
+additionally had its "prefer values labeled ... Balance Due, Total Due" opener demoted
+below the carried-forward rule -- while that opener came first, the extract twin returned
+2979.13 on `bug_260605_0017` 3/3 even with the correct rule present later in the text.
+
+Scratch results, both twins, all stable: `bug_260629_0026` -> 198.14 (5/5);
+`bug_260609_0031` -> 11.37 (3/3); `bug_260605_0017` -> 1626.20 (3/3);
+`bug_260601_0018` -> 6207.81 (3/3). All 10 municipal baselines unchanged
+(`out/municipal-verify-baseline/*.json`), and 5 commercial/handwritten docs identical in
+a control-vs-fix A/B. Replaying the raw results through `scripts/diag.py --replay`
+confirms the write path: 198.14/197.13, 11.37/10.83, 1626.20/1548.75. `POLICY_VERSION`
+unchanged (prompt change, not a resolution-rule change). Prod analyzer push is the
+follow-up (`scripts/create_analyzer.py`).
+
+**Reusable lessons:**
+
+1. Encode the *business rule* (subtract what was carried forward), not the *layout* every
+   vendor happens to print. Label lists fail in both directions -- false positives on a
+   0.00 balance forward, false negatives on a vendor-specific subtotal name.
+2. The GST-is-~5% tell only works when every charge is taxable. Deposits and other
+   refundable amounts carry no GST, so that check will confirm a total that is missing
+   them.
+3. In an extract-method description, order is priority: a "prefer X" opener beats a
+   correction stated later in the same text. Fix the opener, not just the exception.
+4. Verify prompt fixes on a control analyzer built from `git show HEAD:<file>` as well as
+   the edited one. Without the control, a doc that was *already* flipping looks like a
+   regression your change caused (or a pass your change earned).
+
 ---
 
 ## `service_address` empty on Waste Connections route ("site block") invoices
