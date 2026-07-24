@@ -796,6 +796,89 @@ old baseline.
 
 ---
 
+## `service_address` intermittently null on an `Attention:` block -> spurious review
+
+**Symptoms (quantified 2026-07-24 by pooling 180 cached corpus runs -- 12 per doc across 4
+analyzer versions; the service_address prompt was identical in all of them):**
+
+| doc | runs | extract null | routed to review | distinct written values |
+|---|---|---|---|---|
+| `bug_260615_0006` | 12 | **4** | **4** | 2 |
+| `bug_260605_0017` | 12 | 3 | 2 | 2 |
+| `business_license` | 12 | 1 | 1 | 2 |
+| `bug_260601_0018` | 12 | 1 | 0 | 1 (generate twin rescued it) |
+| other 11 docs | 132 | 0 | 0 | 1 each |
+
+Seven of 180 runs (~4%) sent a clean, correctly-read invoice to `REVIEW_B4_CRITICAL_FIELD`,
+concentrated almost entirely in one document: `bug_260615_0006` failed **1 run in 3**, and
+one three-replicate cluster failed all three, so it is not an isolated blip.
+
+**Cause (prompt, both twins).** The address on that invoice sits under `Attention:`:
+
+```
+# SIMON SIK FAI KAN  ## INVOICE  778 237 8293 ... 4270 Salish Drive Vancouver BC   <- vendor's own block
+Attention: 6240 Cooney Road, Richmond, BC Canada                                    <- the serviced property
+```
+
+`Attention` was in none of the prompt's priority tiers (SHIP TO, Service Address, Site
+Address, Prepared For, ...), *and* the same prompt excludes "customer mailing address ... or
+an unlabeled mailing block" -- which is exactly what an `Attention:` block resembles. The
+model was pulled both ways on identical bytes and, on the runs where it decided "mailing
+block", returned nothing at all. Nothing was misread; the twins simply declined to answer,
+and review routing absorbed it -- the same failure family as the `invoice_date`-to-today and
+`invoice_number`-to-filename bugs.
+
+Two lesser variants on other docs: `bug_260605_0017` kept or dropped a leading
+`2993 Granville Limited Partnership, ` (the partnership name repeats the street number, so
+the "drop the customer name line" rule read as ambiguous), and `business_license` relies on
+the loose "for municipal bills, the assessed or billed property address" tier.
+
+**Fix (prompt-only, both twins), verified on scratch `generalinvoicescratch` at 6
+replicates x 6 documents:**
+
+1. A **tier-4 `Attention` / `Attn` fallback**, deliberately scoped to fire *only when none
+   of the tier 1-3 labels appears anywhere on the document*, so it can never outrank a real
+   SHIP TO block, plus an explicit carve-out for the vendor's own contact block and for an
+   Attention line carrying only a person or department name.
+2. The drop-the-name-line rule extended to a name that **begins with digits repeating the
+   street number**, with the Granville example worked through.
+3. A single **address-parts normalisation** rule in both twins: return exactly street
+   (with unit), city, province/state, and postal code if printed -- never a country line,
+   customer/company name, `c/o` line, attention person, or property manager.
+
+Round 1 (rules 1-2) eliminated the failure completely -- **0 nulls in 36 runs**, versus 8
+nulls in the equivalent 36 cached runs -- and `bug_260605_0017` became 6/6 identical. It
+also surfaced why rule 3 was needed: two docs returned two spellings each, differing only by
+a trailing `Canada` line (`bug_260615_0006`, 5/6 vs 1/6) or a prepended
+`NOBLE & ASSOCIATES REALTY LTD` (`bchydro`, 1/6 -- a control that had been 12/12 stable, so
+the elaboration in rule 2 had made the general "drop the name line" instruction read as
+conditional). Controls held throughout: the waste-hauler site block (`bug_260601_0018`) and
+`FOR SERVICE AT` (`burnaby_water`) stayed 6/6 correct.
+
+Round 2 (rule 3 added) settled both: `bug_260615_0006` -> `6240 Cooney Road, Richmond, BC`
+on **6/6 identical**, and `bchydro` back to the clean form on 6/6. `bug_260605_0017` still
+shows two spellings, but they now differ only by a newline vs a space before the postal code
+(`...Vancouver Bc
+V6h 3j6` when the extract twin carries it, `...Vancouver Bc V6h 3j6` on
+the runs where the extract returns nothing and the generate twin rescues it). Both are
+correct, neither routes to review, and collapsing whitespace is not an option here the way
+it was for `vendor_name` -- service addresses are legitimately multi-line. That doc's
+`service_address` therefore stays out of the corpus assertions, with the reason in its
+`note`.
+
+**Reusable lessons:**
+- An unrecognised *label* is as damaging as a misread value, and it fails silently: the twin
+  returns nothing rather than something wrong, so only a review-rate or a replicated corpus
+  reveals it.
+- Elaborating a special case can weaken the general rule it hangs off -- spelling out "drop
+  the name line even when it repeats the street number" made a control start *including* a
+  name line. State the general normalisation explicitly rather than relying on it being
+  implied by examples.
+- A 1-in-3 failure needs 6+ replicates to see reliably; the standard 3 would have shown all
+  green by luck about 30% of the time.
+
+---
+
 ## `invoice_date` silently became "today" on runs where its confidence dipped
 
 **Symptoms (verified 2026-07-23, `samples/bug_260615_0006.pdf`):** the bill prints
@@ -831,6 +914,28 @@ an ungrounded value is refused and the field defaults to today (recorded in
 `defaultedFields`). Replaying the stored 0.820 run through the guard now yields the
 default. Twin *agreement* is untouched, and every other twin keeps its generate rescue.
 
+**Follow-up 2026-07-24 -- the blanket refusal was too blunt and silently re-caused the
+original bug.** Once the corpus asserted `invoice_date` on every doc, three of fifteen --
+`abbotsford_water`, `bug_260609_0031`, `bug_260629_0026` -- turned out to flip to today on
+1 of 3 replicates, with exactly this shape:
+
+```
+abbotsford r2: ext=None@0.904  gen='2026-05-26'@0.977 -> 2026-07-24   (REFUSED)
+```
+
+The extract twin intermittently returns nothing on bills that plainly print their date, and
+the refusal then threw away a correct, high-confidence value. The OCR text separates the
+good case from the business_license case cleanly: those three print `BILLING DATE:
+May 26, 2026` (month-name form), while business_license's only candidate is
+`<!-- PageFooter: 1/13/26 10:12AM -->` (slashed, in a footer). So the refusal now has an
+escape hatch -- `field_policy.date_corroborated_in_text` + a rescue in `gates.evaluate`
+(source `"corroborated"`): **an ungrounded generate value is refused unless the same
+calendar day is printed in the document text in an unambiguous month-name or ISO form.**
+Slashed forms never corroborate -- they are ambiguous, and the observed false positive is
+always printed that way. Simulated over all 45 cached replicates before implementing: it
+repairs exactly those three docs, leaves business_license defaulting, and changes nothing
+on the other eleven.
+
 **Also shipped:** a written `invoice_date` after today (America/Vancouver) routes to
 `REVIEW_B4_CRITICAL_FIELD` (`invoice_date needs attention`), with the extracted date
 written unchanged so the reviewer sees what the document said. The check runs on the
@@ -846,6 +951,16 @@ written value, so a defaulted (today) date can never trip it.
   code -- it proves the guard on the exact response that failed, with no CU cost.
 - A second, pre-existing bug surfaced while verifying this one: the `vendor_name` twins
   never agreed on the same document. See the next entry.
+
+**Corpus anchor (added 2026-07-24, after the fix commit):** `bug_260615_0006.pdf` is in
+`tests/pre-commit-test/`, asserting `invoice_date` `2026-06-11`. Every sidecar now asserts
+the resolved `invoice_date`; none assert its twins, because the extract twin returns null
+on roughly 1 run in 3-6 corpus-wide (see the corpus-coverage note in the `invoice_number`
+entry below).
+Deliberately **not** asserted anywhere: `payment_due_date`. Most of these bills do not print
+one (`Terms: 30 Days`), so it defaults to today+30 and would go red the next day -- the
+`--add` scaffold proposes it because it is stable *within* one session, which is the trap to
+watch for on any bill lacking a printed due date.
 
 ---
 
@@ -894,6 +1009,16 @@ intended consequence of the rule.
 covers both, and pairing it with a "who was more confident" value choice avoids the
 follow-on question of which spelling to trust. Judge such a change by replaying the whole
 stored corpus, not one document -- that is what showed the casing pairs were unaffected.
+
+**Corpus anchor (added 2026-07-24, after the fix commit):** `bug_260615_0006.pdf` asserts
+the resolved `vendor_name` = `SIMON SIK FAI KAN` and `vendor_name_extract`.
+`vendor_name_generate` is deliberately left out:
+re-running it on 2026-07-24 returned `['Simon Kan', 'SIMON SIK FAI KAN', 'SIMON SIK FAI KAN']`
+across three replicates -- the twin flips between the short and the full name, where in the
+2026-07-23 session it had returned the short form 7/7. The *resolved* value stayed
+`SIMON SIK FAI KAN` on every run either way, by both paths: equality when the twin returns
+the full name, and the more-confident-spelling rule when it shortens. Good illustration of
+the standing rule -- assert the resolved value, never the raw generate twin.
 
 ---
 
@@ -990,3 +1115,98 @@ values first, confidence second.
   pushing the model off the correct recap line.
 - A twin pair stuck in a low confidence band on a field that is otherwise easy is a
   symptom of an ambiguous prompt, not of a hard document.
+
+---
+
+## `invoice_number` on water / gas bills: the filename IS the answer
+
+**Business rule (confirmed by the product owner, 2026-07-24):** water, sewer, and
+metered-utility bills, and natural gas bills such as FortisBC, **do not have an invoice
+number**. The SharePoint filename is the intended value, supplied by the municipal
+filename fallback in `gates.evaluate`. A city business licence / permit renewal notice
+*does* have one -- its licence number -- and a BC Hydro electricity bill prints a real
+invoice number. Both of those were already correct.
+
+**Symptom (found by the corpus):** `burnaby_water`, `richmond_water` and `vancouver_water`
+came back UNSTABLE, flipping between the filename and a short number printed beside the
+bill's title:
+
+```
+burnaby r0: ext='1243'@0.974  gen='1243'@0.829  -> '1243'            (wrong)
+        r1: ext=None@0.782    gen=None@0.782    -> 'burnaby_water'   (correct)
+```
+
+That number -- the `1243` in `# UTILITY NOTICE 1243`, the `11802` in `# UTILITY BILL
+11802`, the `1740` / `12339` after a `Metered Utility Bill` heading -- is a **notice or
+form number, not an invoice number**. The twins picked it up on roughly 1 run in 3, and
+because `invoice_number` is critical for the municipal bucket the bill then carried a wrong
+identifier while still routing `HAPPY_PATH_CANDIDATE`.
+
+**Wrong turn worth recording.** The first attempt read the layout and concluded the
+opposite: that these bills *do* print a bill number and the filename fallback was masking
+it. That change made all four docs return the notice number -- a regression, caught only
+because the product owner recognised it. The OCR layout genuinely looks like an invoice
+number (unlabeled digits, right after the title, distinct from the ACCT NUMBER row); the
+document cannot tell you it is not one. **This was a business rule, not something derivable
+from the page, and it should have been asked rather than inferred.**
+
+**Fix (prompt-only, both twins):** keep the genre rule from `4d424ea` and make it decisive
+rather than hedged -- "usually has only a customer account number" became "have only a
+customer account number and NO invoice number: return null/empty" -- plus an explicit trap
+warning naming the number beside the title as a notice/form number that must never be
+returned. BC Hydro and the licence-number path are called out so they stay unaffected.
+
+**Reusable lessons:**
+- A fallback that substitutes a plausible value (filename, today's date) hides the failure
+  it compensates for. Both invoice-number-to-filename and invoice-date-to-today were
+  invisible in production and surfaced only when the corpus asserted the field across
+  replicates. Assert the fields the fallbacks protect.
+- When a corpus assertion and the model disagree, the assertion may be encoding a *business
+  rule* the document does not state. Reading the layout harder cannot settle that -- ask.
+- A hedged prompt claim ("usually has no invoice number") leaves the model free to disagree
+  whenever the page looks otherwise. If the rule is absolute, say so, and name the specific
+  lookalike to reject.
+
+**Corpus coverage (2026-07-24): 273 assertions across 15 docs.** Every sidecar
+(`tests/pre-commit-test/<stem>.expected.json`) asserts the **complete `writeValues` set**
+the Function produces -- all of `field_policy.WRITE_FIELDS` plus the derived
+`amount_excluding_gst` -- not just the critical fields. Stably-null values are asserted
+too: `"gst_amount": null` on a water bill is a real assertion ("this bill charges no
+GST"), and `"po_or_job_number": null` pins that a municipal bill carries none.
+
+A key is left out only for one of four reasons, and each sidecar's `note` ends with a
+machine-generated `|| NOT asserted here: ...` list so the note can never drift from the
+file:
+
+1. **Unstable across replicates.** `number_of_days` on 2 docs; the billing-period dates on
+   `bug_260601_0018` and `vancouver_water` (the latter flips between the billing period and
+   the meter-read dates). **`invoice_description` is excluded by rule on all 15**, not by
+   measurement: across 3 replicates x 15 docs it reworded itself on 7 -- a trailing period
+   (`Electricity utility charges` / `...charges.`), a synonym (`Waste and recycling dumpster
+   service` / `Dumpster and recycling service`), `&` vs `and`. Any 3-run sample where free
+   text agrees is luck, so asserting it anywhere guarantees future red runs.
+2. **Date-dependent.** A *defaulted* `invoice_date` or `payment_due_date` is today /
+   today+30 -- stable within one run, red the next day. Three bills print no due date
+   (`bug_260601_0018`, `bug_260615_0006`, `business_license`) and `business_license`
+   prints no issue date.
+3. **Verified wrong.** `billing_period_start_date` on `bug_260605_0017`: both twins return
+   `2006-01-26` on 3/3 -- a year misparse of the printed `Service Period: 06/01/26-06/30/26`
+   (June 2026). Stable but incorrect, so asserting it would lock in the bug. **Open item:
+   a slashed 2-digit-year range is misread as year 2006.**
+4. **Genuinely non-deterministic in the pipeline.** `vendor_name` on `fortisbc` (resolved
+   spelling follows whichever twin is more confident) and `bug_260605_0017`;
+   `service_address` on three docs whose extract intermittently returns null; and
+   `routingDecision` on those same docs, because a null base-critical field sends the run
+   to review.
+
+**The `invoice_date` twins are not asserted on any document.** Building this coverage
+showed the `invoice_date_extract` twin returning `null` on roughly 1 run in 3-6 across at
+least five unrelated docs (`abbotsford_water`, `bchydro`, `bug_260609_0031`,
+`bug_260629_0026`, `fortisbc`) -- a property of the field, not of particular documents,
+and precisely what the corroborated rescue exists to absorb. The *resolved* `invoice_date`
+is stable on all 15. Same story for `service_address`. **That intermittent null on a
+base-critical field is a real production behaviour worth its own investigation -- it means
+a clean invoice occasionally lands in the review queue for no document-side reason.**
+
+The rule throughout: assert the resolved value, never a raw twin, and never a value that
+moved across replicates.

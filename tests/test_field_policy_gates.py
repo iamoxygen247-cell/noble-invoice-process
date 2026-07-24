@@ -625,6 +625,20 @@ def test_vendor_extract_generate_twin():
     check("legal suffix stays dropped regardless of confidence",
           r["writeValues"]["vendor_name"] == "PROTECH PEST CONTROL", str(r["writeValues"].get("vendor_name")))
 
+    # An OCR line break inside a company name is an artifact -- it flips run to run on the
+    # same document, so the written value collapses whitespace.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("WASTE MANAGEMENT\nOF CANADA CORPORATION", 0.95),
+        vendor_name_generate=fstr("Waste Management", 0.50),
+    ))
+    check("newline inside the vendor name is collapsed",
+          r["writeValues"]["vendor_name"] == "WASTE MANAGEMENT OF CANADA CORPORATION",
+          repr(r["writeValues"].get("vendor_name")))
+    check("service_address keeps its legitimate multi-line form",
+          "\n" in str(ev(commercial_fields(
+              service_address_extract=fstr("2985 GRANVILLE ST\nVANCOUVER BC", 0.95),
+          ))["writeValues"]["service_address"]))
+
 
 def test_service_address_extract_generate_twin():
     print("\n[gates: service_address extract (authoritative) + generate (validator)]")
@@ -1407,6 +1421,64 @@ def test_invoice_date_twin_and_future_gate():
               gates.parse_fields(municipal_fields(invoice_number_extract=fstr("", None),
                                                   invoice_number_generate=fstr("BL-9", 0.90))),
               THRESHOLD)[2] is True)
+
+    # ... unless the SAME calendar day is printed in the document text. The extract twin
+    # intermittently returns nothing on bills that plainly show their date; a grounded
+    # generate value is accepted rather than substituting today.
+    md = "<td>BILLING DATE:</td> <td>May 26, 2026</td> <td>DUE DATE:</td> <td>Jun 25, 2026</td>"
+    r = gates.evaluate(
+        cu_result(commercial_fields(invoice_date_extract=fdate(None, None),
+                                    invoice_date_generate=fdate("2026-05-26", 0.60)),
+                  markdown=md),
+        THRESHOLD)
+    check("printed date corroborates a generate-only value",
+          r["writeValues"]["invoice_date"] == "2026-05-26", str(r["writeValues"].get("invoice_date")))
+    check("corroborated source recorded",
+          r["resolutions"]["invoice_date"]["source"] == "corroborated",
+          str(r["resolutions"].get("invoice_date")))
+    check("corroborated date is not a default",
+          "invoice_date" not in r["defaultedFields"], str(r["defaultedFields"]))
+    check("corroboration advisory raised",
+          any("printed in the document text" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # The business_license case: the only date-shaped text is a slashed page-footer print
+    # timestamp, which must never ground a value -- the date still defaults to today.
+    r = gates.evaluate(
+        cu_result(commercial_fields(invoice_date_extract=fdate(None, None),
+                                    invoice_date_generate=fdate("2026-01-13", 0.82)),
+                  markdown="<!-- PageFooter: 1/13/26 10:12AM -->"),
+        THRESHOLD)
+    check("a slashed footer timestamp does not corroborate",
+          r["writeValues"]["invoice_date"] != "2026-01-13", str(r["writeValues"].get("invoice_date")))
+    check("uncorroborated generate still defaults",
+          "invoice_date" in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # A corroborated date in the future still goes to a human.
+    r = gates.evaluate(
+        cu_result(commercial_fields(invoice_date_extract=fdate(None, None),
+                                    invoice_date_generate=fdate("2099-12-31", 0.60)),
+                  markdown="Invoice date: December 31, 2099"),
+        THRESHOLD)
+    check("corroborated future date still routes to review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # helper: unambiguous printed forms ground a date; ambiguous/absent ones do not.
+    corr = field_policy.date_corroborated_in_text
+    check("month-name form", corr("2026-05-26", "BILLING DATE: May 26, 2026") == "2026-05-26")
+    check("abbreviated month", corr("2026-06-17", "<td>Jun 17, 2026</td>") == "2026-06-17")
+    check("full month name", corr("2026-06-17", "issued June 17, 2026") == "2026-06-17")
+    check("day-first form", corr("2026-05-26", "dated 26 May 2026") == "2026-05-26")
+    check("ISO form", corr("2026-05-26", "date 2026-05-26 ok") == "2026-05-26")
+    check("date split across an OCR line break",
+          corr("2026-05-26", "from May\n26, 2026 to") == "2026-05-26")
+    check("slashed short form never corroborates",
+          corr("2026-01-13", "<!-- PageFooter: 1/13/26 10:12AM -->") is None)
+    check("a date absent from the text does not corroborate",
+          corr("2010-03-26", "Payment must be received by December 31, 2025") is None)
+    check("empty text does not corroborate", corr("2026-05-26", "") is None)
+    check("unparseable value does not corroborate", corr(None, "May 26, 2026") is None)
+    check("a different day in the same month does not corroborate",
+          corr("2026-05-27", "BILLING DATE: May 26, 2026") is None)
 
     # A generate that disagrees never overrides a passing extract.
     r = ev(commercial_fields(invoice_date_extract=fdate("2026-05-01", 0.95),

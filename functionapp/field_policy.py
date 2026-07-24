@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "twin-resolution-v6"
+POLICY_VERSION = "twin-resolution-v7"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -385,6 +385,43 @@ def invoice_date_in_future(value: Any, now: Optional[datetime] = None) -> bool:
     if normalized is None:
         return False
     return datetime.strptime(normalized, DATE_FORMAT).date() > _now_pacific(now).date()
+
+
+# Three-letter month prefixes, indexed by month number - 1. Used to recognise a date
+# printed in month-name form in the OCR text (see date_corroborated_in_text).
+_MONTH_PREFIXES = (
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+)
+
+
+def date_corroborated_in_text(value: Any, text: str) -> Optional[str]:
+    """
+    The normalised YYYY-MM-DD when ``value`` is printed in ``text`` as an unambiguous
+    month-name or ISO date ("Jun 17, 2026", "17 June 2026", "2026-06-17"), else None.
+
+    This grounds a date the generate twin produced on its own: the twin answers even when
+    the document states no date, so its value is only trustworthy when the same calendar
+    day is actually printed. Slashed forms (1/13/26) deliberately never corroborate --
+    they are ambiguous (see _normalize_date), and the observed false positive, a page
+    print timestamp, is always printed that way.
+
+    Whitespace in the haystack is collapsed first, so a date broken across an OCR line
+    ("May\\n26, 2026") still matches.
+    """
+    normalized = _normalize_date(value)
+    if normalized is None or not text:
+        return None
+    flat = re.sub(r"\s+", " ", text)
+    year, month, day = normalized.split("-")
+    month_name = _MONTH_PREFIXES[int(month) - 1]
+    patterns = (
+        rf"\b{month_name}[a-z]*\.?\s+0?{int(day)},?\s+{year}\b",
+        rf"\b0?{int(day)}\s+{month_name}[a-z]*\.?\s+{year}\b",
+        rf"\b{normalized}\b",
+    )
+    if any(re.search(p, flat, re.IGNORECASE) for p in patterns):
+        return normalized
+    return None
 
 
 # --- derived value -----------------------------------------------------------
@@ -771,6 +808,14 @@ def build_write_values(
                 defaulted.append(name)
         else:
             write[name] = value
+
+    # A line break inside a company name is an OCR artifact, not part of the name, and it
+    # flips run to run on the same document ("WASTE MANAGEMENT\nOF CANADA CORPORATION" vs
+    # the spaced form). Collapse it so Dynamics gets one stable spelling. Vendor only --
+    # service_address is legitimately multi-line.
+    vendor = write[VENDOR_FINAL]
+    if isinstance(vendor, str):
+        write[VENDOR_FINAL] = " ".join(vendor.split())
 
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.

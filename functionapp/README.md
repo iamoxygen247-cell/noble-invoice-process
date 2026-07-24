@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "twin-resolution-v6",
+  "policyBucket": "commercial", "policyVersion": "twin-resolution-v7",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -120,7 +120,10 @@ name (`Simon Kan` / `Simon Sik Fai Kan`) whose dropped words sit in the middle. 
 agreement the written spelling is the generate twin's whenever both twins carry the
 same name (so casing stays clean and `Ltd.`/`Inc.` stays dropped); when the spellings
 genuinely differ, whichever twin the model was **more confident** in is written, with
-a tie keeping the normalised generate name.
+a tie keeping the normalised generate name. Runs of whitespace in the written value
+are collapsed — OCR breaks a long company name across a line on some runs and not
+others, and that line break is an artifact, not part of the name. (`service_address`
+keeps its legitimate multi-line form.)
 
 Municipal invoice-number fallback: when a municipal bill's invoice-number twins
 both come back empty, the field defaults to `fileName` without its extension.
@@ -135,10 +138,14 @@ boost included: two sub-threshold twins naming the same calendar day pass, with
 `resolutions.invoice_date.source` = `"agreement"`). Only when the twins resolve to
 nothing usable — absent, unparseable, or below the bar and disagreeing — does the
 write value fall back to **today (PST)**, recorded in `defaultedFields`. Unlike the
-other twins, a confident generate value never rescues an *absent* extract here
+other twins, a confident generate value does not rescue an *absent* extract here
 (`field_policy.NO_GENERATE_RESCUE`): with no extract span behind it the reasoning
-twin has been seen answering with a page-footer print timestamp, and today's date is
-the safer substitution. A resolved
+twin has been seen answering with a page-footer print timestamp. It is accepted only
+when **corroborated** — the same calendar day printed in the OCR text in an
+unambiguous month-name or ISO form (`Jun 17, 2026`, `2026-06-17`), which yields
+`resolutions.invoice_date.source` = `"corroborated"` and an advisory flag. Slashed
+forms (`1/13/26`) never corroborate: they are ambiguous, and the print timestamp is
+always printed that way. A resolved
 date **after today** (America/Vancouver) routes the run to
 `REVIEW_B4_CRITICAL_FIELD` — a future issue date is either a misread or a document
 that shouldn't be paid yet — with the extracted date written unchanged so the

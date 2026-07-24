@@ -543,6 +543,29 @@ def evaluate(
                 note += f" (replacing unverified {start_source} value {start_val!r})"
             advisory.append(note)
 
+    # Corroborated invoice-date rescue: the extract twin intermittently returns nothing
+    # on bills that plainly print their date, and a generate-only value is refused by
+    # default (NO_GENERATE_RESCUE -- it may be a page print timestamp). When the SAME
+    # calendar day is printed in the OCR text in an unambiguous month-name or ISO form,
+    # the value is grounded, so accept it rather than substituting today. Runs before B4
+    # so the future-date gate below judges the rescued value.
+    date_val, date_conf, date_passed, _date_note, date_source = (
+        resolutions[field_policy.INVOICE_DATE_FINAL]
+    )
+    if not date_passed and date_source == "generate":
+        corroborated = field_policy.date_corroborated_in_text(date_val, collect_markdown(full))
+        if corroborated is not None:
+            resolutions[field_policy.INVOICE_DATE_FINAL] = (
+                corroborated, date_conf, True, None, "corroborated",
+            )
+            write_values[field_policy.INVOICE_DATE_FINAL] = corroborated
+            if field_policy.INVOICE_DATE_FINAL in defaulted:
+                defaulted.remove(field_policy.INVOICE_DATE_FINAL)
+            advisory.append(
+                f"invoice_date {corroborated} accepted from the generate twin: the date "
+                "is printed in the document text"
+            )
+
     b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)
     if len(po_candidates) > 1:
         b4_reasons.append(
