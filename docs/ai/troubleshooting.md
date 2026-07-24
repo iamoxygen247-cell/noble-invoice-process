@@ -6,6 +6,66 @@ reusable and secret-free; machine-specific paths and account values belong in
 
 ---
 
+## A scratch analyzer is NOT reachable by setting `AZURE_CU_GENERAL_ANALYZER_ID`
+
+**Symptom (verified 2026-07-23):** pushed an edited prompt to `generalinvoicescratch`, set
+`AZURE_CU_GENERAL_ANALYZER_ID=generalinvoicescratch` in `functionapp/local.settings.json`,
+restarted the host, and ran `scripts/test.py`. The run returned a *plausible* result --
+but from the **prod** analyzer. The edited prompt was never exercised.
+
+**Cause:** the child analyzer is chosen by the **router**, not by that env var.
+`analyzers/create-router-analyzer.json` hardwires
+`config.contentCategories.general_invoice.analyzerId = "generalinvoice"`, so CU always
+runs the prod child. `AZURE_CU_GENERAL_ANALYZER_ID` is only used by
+`gates.find_child_content()` to pick which content block to *read* from the router's
+result. With it set to a scratch id the first match fails and the function falls through
+to `matched category == general_invoice and fields present` -- i.e. the prod output.
+
+**Tell:** `childSelection` in the decision JSON. `matched analyzerId == <your scratch id>`
+means you really hit the scratch analyzer; `matched category == general_invoice ...` means
+you silently read prod.
+
+**How to verify a prompt change:** call the analyzer directly (no router, no function
+host) and read the raw twins -- this is what the stored `out/scratch-*/*.json` raw results
+are. Mirror `cu_client.analyze_binary` with `begin_analyze_binary(analyzer_id=...)`
+against the scratch id, then optionally replay the saved raw JSON through the real
+decision path offline with `scripts/diag.py --replay <raw.json>` to check `writeValues`.
+Routing through the function only matters when the *code* changed. If you do need the
+function end-to-end on a scratch prompt, you must also provision a scratch **router**
+pointing at the scratch child and set `AZURE_CU_ANALYZER_ID` to it.
+
+---
+
+## `scripts/create_analyzer.py` fails with `CERTIFICATE_VERIFY_FAILED` behind TLS inspection
+
+**Symptom (verified 2026-07-23):**
+`CU provisioning failed: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+Basic Constraints of CA cert not marked critical`. Same root cause as the `az` entry
+below, now hitting the project's own scripts. Clearing `REQUESTS_CA_BUNDLE` does **not**
+help -- verification still fails.
+
+**Fix:** inject `truststore` (already in the root `.venv`) so Python verifies against the
+Windows cert store, without editing any project file:
+
+```powershell
+# scratch wrapper: injects truststore, then runs the target script
+#   import truststore; truststore.inject_into_ssl()
+#   runpy.run_path(sys.argv[1], run_name="__main__")
+.\.venv\Scripts\python.exe <wrapper>.py scripts\create_analyzer.py --analyzer-id generalinvoicescratch
+```
+
+A probe confirming the three cases: default -> FAIL, `REQUESTS_CA_BUNDLE` removed ->
+FAIL, `truststore.inject_into_ssl()` -> HTTP 200. For a locally started `func` host, the
+equivalent is a `sitecustomize.py` on `PYTHONPATH` doing the same injection.
+
+**Also note:** `func start` picks its Python worker off `PATH`, so a host launched from a
+shell without the root `.venv` activated grabs global Python (3.14 here) and dies at
+import with `ZoneInfoNotFoundError: 'America/Vancouver'` -- `tzdata` is installed in the
+root `.venv` only. Set `languageWorkers__python__defaultExecutablePath` to
+`.venv\Scripts\python.exe` when starting the host non-interactively.
+
+---
+
 ## Azure CLI (`az`) fails with SSL / connection-reset errors behind TLS inspection
 
 **Symptoms (this dev machine, June 2026):**
