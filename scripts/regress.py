@@ -250,6 +250,21 @@ def score_doc(
 # --- expectation scaffolding -------------------------------------------------
 
 
+def add_doc(runner: CuRunner, analyzer_hash: str, pdf: pathlib.Path, replicates: int) -> int:
+    """Copy a new PDF into the corpus, then scaffold its expectation sidecar. One
+    command to grow the regression footprint after a bug fix."""
+    import shutil
+
+    if not pdf.is_file():
+        raise SystemExit(f"no such PDF: {pdf}")
+    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CORPUS_DIR / pdf.name
+    if dest.resolve() != pdf.resolve():
+        shutil.copy2(pdf, dest)
+        print(f"copied {pdf.name} -> {dest}")
+    return update_expected(runner, analyzer_hash, dest.stem, replicates)
+
+
 def update_expected(runner: CuRunner, analyzer_hash: str, stem: str, replicates: int) -> int:
     pdf_path = CORPUS_DIR / f"{stem}.pdf"
     if not pdf_path.is_file():
@@ -259,24 +274,49 @@ def update_expected(runner: CuRunner, analyzer_hash: str, stem: str, replicates:
         _decision(raw_result(runner, analyzer_hash, pdf_path, pdf_hash, r, force=False), stem)
         for r in range(replicates)
     ]
-    # Only propose keys that are stable across replicates; leave the human to
-    # keep or trim them.
-    write = decisions[0].get("writeValues", {})
-    proposed_wv = {
-        k: write.get(k)
-        for k in field_policy.WRITE_FIELDS
-        if all(_values_equal(write.get(k), d.get("writeValues", {}).get(k)) for d in decisions)
-    }
+
+    def stable(section_getter, key):
+        vals = [section_getter(d).get(key) for d in decisions]
+        return all(_values_equal(vals[0], v) for v in vals[1:]), vals[0], vals
+
+    # Only propose keys that are stable across replicates; an unstable key is
+    # listed as a warning, never asserted (asserting a coin-flip guarantees a
+    # future red run).
+    write0 = decisions[0].get("writeValues", {})
+    proposed_wv, unstable = {}, []
+    for k in field_policy.WRITE_FIELDS:
+        ok, v, vals = stable(lambda d: d.get("writeValues", {}), k)
+        if v is None:
+            continue
+        (proposed_wv.__setitem__(k, v) if ok else unstable.append((k, vals)))
+
+    # The twin fields for total_invoice_amount are the most common bug target;
+    # include them when stable so the scaffold matches the hand-written sidecars.
+    proposed_fields = {}
+    for k in ("total_invoice_amount_extract", "total_invoice_amount_generate"):
+        ok, v, _ = stable(lambda d: {n: (e.get("value") if isinstance(e, dict) else None)
+                                     for n, e in d.get("fields", {}).items()}, k)
+        if ok and v is not None:
+            proposed_fields[k] = v
+
     sidecar = {
-        "note": "REVIEW before trusting: observed values, not yet human-verified.",
+        "note": "REVIEW before trusting: observed values, not yet human-verified. "
+                "Read the PDF, trim to what you have verified, then keep it.",
         "expect": {
             "routingDecision": decisions[0].get("routingDecision"),
             "writeValues": proposed_wv,
+            "fields": proposed_fields,
         },
     }
     out = CORPUS_DIR / f"{stem}.expected.json"
     out.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-    print(f"wrote {out} ({runner.calls} CU calls). Review and trim before committing to trust it.")
+    print(f"\nwrote {out} ({runner.calls} CU calls).")
+    if unstable:
+        print("  UNSTABLE across replicates (left OUT of the sidecar -- do not assert these):")
+        for k, vals in unstable:
+            print(f"    {k}: {vals}")
+    print("  NEXT: open the sidecar, delete every value you have not verified against the PDF,")
+    print("        keep the bug's field, then commit -- the pre-commit hook will assert it.")
     return 0
 
 
@@ -322,8 +362,11 @@ def main(argv=None) -> int:
     ap.add_argument("--replicates", type=int, default=3, help="runs per doc (default 3)")
     ap.add_argument("--analyzer-file", type=pathlib.Path, default=DEFAULT_ANALYZER_FILE,
                     help="analyzer definition to test (default: the working-tree general analyzer)")
+    ap.add_argument("--add", metavar="PDF", type=pathlib.Path,
+                    help="copy a new PDF into the corpus and scaffold its expectation sidecar, then exit "
+                         "(the one-command way to grow the corpus after a bug fix)")
     ap.add_argument("--update-expected", metavar="STEM",
-                    help="write an expectation sidecar from observed values for one corpus doc, then exit")
+                    help="rewrite the expectation sidecar from observed values for a corpus doc already present, then exit")
     ap.add_argument("--force", action="store_true", help="ignore the cache and re-call CU for every replicate")
     ap.add_argument("--no-stamp", action="store_true", help="do not write the out/regress/<sha>.json stamp on green")
     ap.add_argument("--load-local-settings", action="store_true",
@@ -340,6 +383,8 @@ def main(argv=None) -> int:
     runner = CuRunner(analyzer_file)
 
     try:
+        if args.add:
+            return add_doc(runner, analyzer_hash, args.add, args.replicates)
         if args.update_expected:
             return update_expected(runner, analyzer_hash, args.update_expected, args.replicates)
 

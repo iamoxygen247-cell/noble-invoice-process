@@ -71,7 +71,7 @@
   <h2><span class="num">0</span>Pre-flight (local)</h2>
   <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process"
 
-# 1. Confirm the offline suite is green
+# 1. Confirm the offline suite is green (now includes the analyzer contract tests)
 .\.venv\Scripts\python.exe -m pytest          # expect: all green
 
 # 2. Confirm auth + subscription
@@ -79,16 +79,38 @@ az account show --query name -o tsv           # -> dev-Document Intelligence
 
 # 3. Find your Function App name + resource group
 az functionapp list --query "[].{name:name, rg:resourceGroup, state:state}" -o table</code></pre>
-  <p>Note the <span class="ph">&lt;APP&gt;</span> and <span class="ph">&lt;RG&gt;</span> from step 3.</p>
+  <p>Note the <span class="ph">&lt;APP&gt;</span> and <span class="ph">&lt;RG&gt;</span> from step 3.
+     Commit any analyzer/prompt edit <em>before</em> the next step — the regression stamp describes a clean HEAD.</p>
 
-  <h2><span class="num">1</span>Re-provision the CU analyzer (the 8-digit prompt)</h2>
-  <p>Editing <code>analyzers\create-generalinvoice-analyzer.json</code> changes nothing live. Push it to CU:</p>
+  <h2><span class="num">1</span>Re-provision the CU analyzer (the prompt)</h2>
+  <p>Editing <code>analyzers\create-generalinvoice-analyzer.json</code> changes nothing live — it must be
+     pushed to CU. A push to the <strong>prod <code>generalinvoice</code></strong> id is now
+     <strong>gated</strong>: <code>create_analyzer.py</code> refuses unless a green golden-corpus
+     regression stamp exists for the current clean HEAD. So the order is
+     <strong>commit → <code>regress.py</code> → <code>create_analyzer.py</code></strong>.</p>
   <pre><code># AZURE_CU_ENDPOINT is required (the script has no baked-in default) — point it at dev:
 $env:AZURE_CU_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
+
+# 1a. Golden-corpus regression -> must be PASS; a green run on a clean HEAD writes
+#     out\regress\&lt;sha&gt;.json (the stamp the push gate requires). ~1s on a cache hit;
+#     real CU calls only when the analyzer prompt actually changed.
+.\.venv\Scripts\python.exe scripts\regress.py --load-local-settings
+
+# 1b. Push the prod analyzer (gate now passes because the stamp exists)
 .\.venv\Scripts\python.exe scripts\create_analyzer.py</code></pre>
-  <p>Expect <code>Done. analyzer_id=generalinvoice…</code>. Auth uses your <code>az login</code>; your
+  <p>Expect <code>Prod push gate: green regression stamp found…</code> then
+     <code>Done. analyzer_id=generalinvoice…</code>. Auth uses your <code>az login</code>; your
      identity needs <strong>Cognitive Services User</strong> on <code>invoice-processing-dev-resource</code>.
      This overwrites the live <code>generalinvoice</code> analyzer (<code>allow_replace=True</code>).</p>
+  <div class="warn">
+    <strong>Gate escapes &amp; TLS.</strong> Pass <code>--force</code> to <code>create_analyzer.py</code> only for an
+    emergency (e.g. a roll-back) where you accept skipping the regression. Both scripts inject
+    <code>truststore</code> so they verify through the corporate TLS inspector automatically — no
+    <code>--insecure</code> and no wrapper needed. A scratch/test push
+    (<code>--analyzer-id generalinvoicescratch</code>) is <em>never</em> gated. The router
+    (<code>--file analyzers\create-router-analyzer.json --analyzer-id invoicerouter</code>) deploys separately
+    and only when it changed.
+  </div>
 
   <h2><span class="num">2</span>Deploy the Function code</h2>
   <h3>Option A — Core Tools (CLI)</h3>
@@ -171,10 +193,12 @@ az functionapp keys list -g $RG -n $APP --query "functionKeys.default" -o tsv</c
 
   <div class="ok">
     <strong>Recommended order:</strong> <code>pytest</code> green →
-    <code>create_analyzer.py</code> (analyzer prompt) →
+    commit the prompt edit →
+    <code>regress.py</code> (golden corpus PASS + stamp) →
+    <code>create_analyzer.py</code> (analyzer prompt; gate passes) →
     <code>func … publish</code> (code + gate) →
     verify App Settings / roles →
-    <code>verify_fn.py</code> smoke tests (incl. the 8-digit case) →
+    <code>scripts\test.py</code> smoke tests →
     confirm ledger rows.
   </div>
 

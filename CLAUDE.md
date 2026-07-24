@@ -112,6 +112,36 @@ If a command fails, do not immediately guess. Read the error, identify the faili
 
 ---
 
+## Analyzer / Prompt Changes and the Regression Corpus
+
+Changes to `analyzers/*.json` (the Content Understanding prompts) have no automated
+coverage from the unit suite alone. A two-tier net guards them — offline contract tests
+(`tests/test_analyzer_contract.py`, part of `pytest`) and a golden-corpus CU regression
+(`scripts/regress.py` over `tests/pre-commit-test/`, a gitignored folder of real
+invoices). Full description: `docs/ai/troubleshooting.md` → "Verifying analyzer / prompt
+changes".
+
+**Standing rule — every bug fix that has a reproduction PDF must grow the corpus.**
+When you fix an extraction/routing bug and a sample PDF reproduces it, add that PDF as a
+permanent regression anchor in the same change:
+
+```powershell
+# copies the PDF into tests/pre-commit-test/ and scaffolds its expectation sidecar
+.\.venv\Scripts\python.exe scripts\regress.py --add ".\samples\<bug>.pdf" --load-local-settings
+```
+
+Then **open the generated `<stem>.expected.json`, delete every value you have not
+verified against the PDF, and keep the field the bug was about** (a sidecar is a hard
+assertion — an unverified value becomes a false failure later). Do not commit an
+untrimmed, still-"REVIEW" sidecar. The corpus and its sidecars are gitignored, so they
+never enter git history; only the *fact* that a doc was added lives in the fix's notes.
+
+Never weaken the net to make a change pass: do not delete a corpus doc, loosen a sidecar,
+or push the prod `generalinvoice` analyzer with `create_analyzer.py --force`, unless the
+user explicitly asks. A red regression means investigate, not suppress.
+
+---
+
 ## Python Dependency Rules
 
 When adding a Python package:

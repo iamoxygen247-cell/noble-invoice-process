@@ -51,12 +51,23 @@ Usage (PowerShell, from repo root):
 .\.venv\Scripts\python.exe scripts\regress.py --analyzer-file <path>     # A/B a control built from git show
 ```
 
-**Promoting an expectation:** `--update-expected <stem>` writes observed, still-
-unverified values into the sidecar; **read the PDF, trim to what you have actually
-verified, then keep it.** A sidecar is a hard assertion — only put verified values in
-it. (When the corpus was seeded, one stale baseline value — `business_license`
-routing — was caught by the very first run and corrected; that is the mechanism
-working, not a one-off.)
+**Adding a doc after a bug fix (the one command):**
+
+```powershell
+.\.venv\Scripts\python.exe scripts\regress.py --add ".\samples\<bug>.pdf" --load-local-settings
+```
+
+`--add` copies the PDF into `tests/pre-commit-test/` and scaffolds its
+`<stem>.expected.json` from a few replicates, listing any UNSTABLE field it left out.
+It is the only step needed beyond having the PDF — a PDF with **no sidecar is silently
+skipped** (`no sidecar (not scored)`), so the copy alone buys nothing.
+
+**Then trim.** Open the sidecar, **delete every value you have not verified against the
+PDF, and keep the field the bug was about.** A sidecar is a hard assertion — an
+unverified value becomes a false red later. `--update-expected <stem>` re-scaffolds a
+doc already in the folder. (When the corpus was seeded, one stale baseline value —
+`business_license` routing — was caught by the very first run and corrected; that is the
+mechanism working, not a one-off.)
 
 **When these run:**
 

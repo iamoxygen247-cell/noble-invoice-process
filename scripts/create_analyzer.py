@@ -28,6 +28,17 @@ import pathlib
 import subprocess
 import sys
 
+# TLS: this dev machine sits behind a TLS-inspecting agent that OpenSSL
+# strict-rejects; verify against the Windows store instead, like func/.NET (see
+# docs/ai/troubleshooting.md). No-op where truststore is absent (e.g. in Azure).
+os.environ.pop("REQUESTS_CA_BUNDLE", None)
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # pragma: no cover - truststore is a dev-only dependency
+    pass
+
 # Reuse the canonical CU endpoint/api-version from functionapp/cu_client.py so
 # this script targets exactly what the Function uses.
 _HERE = pathlib.Path(__file__).resolve().parent
