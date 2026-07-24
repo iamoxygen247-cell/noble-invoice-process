@@ -6,6 +6,75 @@ reusable and secret-free; machine-specific paths and account values belong in
 
 ---
 
+## Verifying analyzer / prompt changes: the regression safety net
+
+**Why it exists:** every bug in `analyzers/create-generalinvoice-analyzer.json`
+shipped because the file had no automated coverage — the whole test suite passed
+without ever opening it, and "correct" was judged by eyeballing one stochastic run.
+See the deposit/balance-forward entry below for the session that motivated this.
+
+Two tiers:
+
+- **Tier A — `tests/test_analyzer_contract.py`** (offline, ~1s, part of `pytest`).
+  Asserts the analyzer JSON and the code agree: the field set equals
+  `gates.FIELD_PRINT_ORDER` minus the computed finals, every `field_policy` twin
+  constant resolves to a field of the right `method`, money/date `type`s are right,
+  classify enums match `field_policy`, generate-step numbering is `1..N`, and the
+  router routes `general_invoice` to `cu_client.DEFAULT_GENERAL_ANALYZER_ID`. A
+  renamed/dropped field, a wrong type, or a mis-pointed router fails here for free.
+
+- **Tier B — `scripts/regress.py`** (golden corpus). Provisions the working-tree
+  definition as throwaway id `generalinvoicetest`, runs each PDF in
+  `tests/pre-commit-test/` through the real `gates.evaluate`, and compares against a
+  per-doc `<stem>.expected.json`. Each (doc, field) is **OK / WRONG / UNSTABLE**
+  (replicates disagreeing → UNSTABLE, which is how a coin-flip doc is told apart
+  from a clean regression). Non-zero exit on any WRONG/UNSTABLE.
+
+**The corpus is gitignored** (`tests/pre-commit-test/`) — real customer invoices,
+same as `samples/`. A missing folder is a clean skip, so a fresh clone still passes.
+Every future bug-fix PDF goes in this folder with a sidecar asserting the field the
+bug was about.
+
+**Content-addressed cache is why Tier B can run on every commit.** Key is
+`(analyzer-hash, pdf-hash, replicate)` under `out/regress-cache/`. When neither the
+prompt nor the PDFs changed, a run makes **zero CU calls** and re-scores cached raw
+JSON in ~1s; a `gates.py`/`field_policy.py` change also re-scores for free. Real CU
+calls happen only when the analyzer definition actually changes.
+
+Usage (PowerShell, from repo root):
+
+```powershell
+# set AZURE_CU_ENDPOINT + AZURE_CU_KEY first, or pass --load-local-settings
+.\.venv\Scripts\python.exe scripts\regress.py                      # score the corpus
+.\.venv\Scripts\python.exe scripts\regress.py --replicates 5       # stricter stability check
+.\.venv\Scripts\python.exe scripts\regress.py --update-expected <stem>   # scaffold a sidecar to review
+.\.venv\Scripts\python.exe scripts\regress.py --analyzer-file <path>     # A/B a control built from git show
+```
+
+**Promoting an expectation:** `--update-expected <stem>` writes observed, still-
+unverified values into the sidecar; **read the PDF, trim to what you have actually
+verified, then keep it.** A sidecar is a hard assertion — only put verified values in
+it. (When the corpus was seeded, one stale baseline value — `business_license`
+routing — was caught by the very first run and corrected; that is the mechanism
+working, not a one-off.)
+
+**When these run:**
+
+- `pytest` → Tier A + the offline suite.
+- **every `git commit`** → the `scripts/hooks/pre-commit` hook runs `pytest`, then
+  `regress.py`. Install it with `scripts/hooks/install.ps1` (`.git/hooks` is not
+  versioned). `NOBLE_SKIP_REGRESS=1` skips only Tier B, loudly — never for a prompt
+  change.
+- **prod analyzer push** → `scripts/create_analyzer.py` refuses to push the prod
+  `generalinvoice` id unless a green regression stamp exists for the current clean
+  HEAD (`out/regress/<sha>.json`, written by a green `regress.py` run). `--force`
+  overrides. Scratch/test/router pushes are never gated.
+
+So the prod-push flow is: commit → `regress.py` (green, writes the stamp) →
+`create_analyzer.py`.
+
+---
+
 ## A scratch analyzer is NOT reachable by setting `AZURE_CU_GENERAL_ANALYZER_ID`
 
 **Symptom (verified 2026-07-23):** pushed an edited prompt to `generalinvoicescratch`, set

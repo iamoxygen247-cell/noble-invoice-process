@@ -1,0 +1,41 @@
+#!/bin/sh
+# Noble invoice pipeline pre-commit hook.
+#
+#   Tier A  - pytest (analyzer contract tests + the offline suite). Always runs,
+#             ~1s, no network. Blocks the commit on any failure.
+#   Tier B  - scripts/regress.py: the golden-corpus regression. On a cache hit
+#             (no analyzer-prompt or PDF change) this is ~1s and makes zero CU
+#             calls; when the analyzer JSON changed it re-provisions the test
+#             analyzer and calls CU, which needs network + AZURE_CU_* (seeded
+#             from functionapp/local.settings.json).
+#
+# Escape hatch: NOBLE_SKIP_REGRESS=1 skips ONLY Tier B (Tier A still runs) and
+# prints a loud notice. Do not use it for analyzer/prompt changes.
+#
+# Install once with scripts/hooks/install.ps1 (or copy this file to
+# .git/hooks/pre-commit and chmod +x).
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+PY="$ROOT/.venv/Scripts/python.exe"       # Windows venv layout
+[ -x "$PY" ] || PY="$ROOT/.venv/bin/python"  # POSIX venv fallback
+if [ ! -x "$PY" ]; then
+    echo "[pre-commit] cannot find the project venv python ($PY). Aborting commit." >&2
+    exit 1
+fi
+
+echo "[pre-commit] Tier A: pytest (offline) ..."
+"$PY" -m pytest -q
+
+if [ "${NOBLE_SKIP_REGRESS:-0}" = "1" ]; then
+    echo "[pre-commit] ##############################################################"
+    echo "[pre-commit] NOBLE_SKIP_REGRESS=1 -- SKIPPING the CU golden-corpus regression."
+    echo "[pre-commit] Offline tests ran; the corpus did NOT. Never skip for an"
+    echo "[pre-commit] analyzer / prompt change."
+    echo "[pre-commit] ##############################################################"
+    exit 0
+fi
+
+echo "[pre-commit] Tier B: golden-corpus regression (scripts/regress.py) ..."
+"$PY" "$ROOT/scripts/regress.py" --load-local-settings

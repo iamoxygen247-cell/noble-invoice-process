@@ -4,6 +4,9 @@ __pycache__/
 functionapp/local.settings.json
 output/
 samples/
+# Regression corpus: real customer invoices + expectation sidecars that embed
+# their service addresses / account numbers. Local-only, like samples/.
+tests/pre-commit-test/
 *.key
 .DS_Store
 Thumbs.db

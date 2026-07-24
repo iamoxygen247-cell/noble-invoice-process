@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import pathlib
+import subprocess
 import sys
 
 # Reuse the canonical CU endpoint/api-version from functionapp/cu_client.py so
@@ -36,6 +37,40 @@ if _FUNCTIONAPP.is_dir() and str(_FUNCTIONAPP) not in sys.path:
     sys.path.insert(0, str(_FUNCTIONAPP))
 
 import cu_client  # noqa: E402  -- imported after the sys.path bootstrap above
+
+
+def _git(*args: str) -> str:
+    out = subprocess.run(["git", *args], cwd=str(_REPO), capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _require_green_regression() -> None:
+    """Abort a PROD general-analyzer push unless a green regression run for the
+    current clean HEAD is on file. This is the structural guard against pushing a
+    prompt to production without the golden-corpus check (scripts/regress.py) --
+    the exact gap that let the deposit/balance-forward bugs ship. Scratch, test,
+    and router pushes never reach here. --force overrides.
+    """
+    sha = _git("rev-parse", "HEAD")
+    dirty = bool(_git("status", "--porcelain"))
+    stamp = _REPO / "out" / "regress" / f"{sha}.json"
+    hint = (
+        "Run the golden-corpus regression first, then re-push:\n"
+        "    .\\.venv\\Scripts\\python.exe scripts\\regress.py\n"
+        "(or pass --force to override, e.g. an emergency roll-back)."
+    )
+    if not sha:
+        raise SystemExit("Refusing prod push: not in a git repo / no HEAD.\n" + hint)
+    if dirty:
+        raise SystemExit(
+            "Refusing prod push: working tree is dirty, so a regression stamp would "
+            "not describe what you are pushing. Commit or stash first.\n" + hint
+        )
+    if not stamp.is_file():
+        raise SystemExit(
+            f"Refusing prod push: no green regression stamp for HEAD ({sha[:12]}).\n" + hint
+        )
+    print(f"Prod push gate: green regression stamp found for HEAD {sha[:12]}.")
 
 
 def _build_credential():
@@ -66,9 +101,18 @@ def main() -> int:
     ap.add_argument("--endpoint", default=None,
                     help="CU endpoint. Default: the AZURE_CU_ENDPOINT environment variable (required if this flag is omitted).")
     ap.add_argument("--api-version", default=cu_client.api_version(), help="CU API version. Default: %(default)s")
+    ap.add_argument("--force", action="store_true",
+                    help="skip the prod push gate (a green regression stamp for a clean HEAD). "
+                         "Only affects a push to the prod general-invoice id.")
     args = ap.parse_args()
     if not args.endpoint:
         args.endpoint = cu_client.endpoint()  # raises with a clear message if AZURE_CU_ENDPOINT is unset
+
+    # Prod push gate: only a push to the literal prod general-invoice id is gated;
+    # scratch / test / router pushes are unaffected. Checked against the constant,
+    # not the env-overridable id, so the gate can't be dodged via an env var.
+    if args.analyzer_id == cu_client.DEFAULT_GENERAL_ANALYZER_ID and not args.force:
+        _require_green_regression()
 
     path = pathlib.Path(args.file)
     if not path.is_file():
