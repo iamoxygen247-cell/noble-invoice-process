@@ -88,20 +88,29 @@ az functionapp list --query "[].{name:name, rg:resourceGroup, state:state}" -o t
      <strong>gated</strong>: <code>create_analyzer.py</code> refuses unless a green golden-corpus
      regression stamp exists for the current clean HEAD. So the order is
      <strong>commit → <code>regress.py</code> → <code>create_analyzer.py</code></strong>.</p>
-  <pre><code># AZURE_CU_ENDPOINT is required (the script has no baked-in default) — point it at dev:
-$env:AZURE_CU_ENDPOINT = "https://invoice-processing-dev-resource.services.ai.azure.com/"
+  <pre><code># Both scripts take --load-local-settings: they seed the CU endpoint + key (the same values the
+# Function uses) from functionapp\local.settings.json when those env vars are unset. Needed on this
+# machine because the TLS inspector blocks every az-login / DefaultAzureCredential token path, so the
+# CU key is the only working auth. Nothing is printed; the key never leaves local.settings.json.
 
 # 1a. Golden-corpus regression -> must be PASS; a green run on a clean HEAD writes
 #     out\regress\&lt;sha&gt;.json (the stamp the push gate requires). ~1s on a cache hit;
 #     real CU calls only when the analyzer prompt actually changed.
 .\.venv\Scripts\python.exe scripts\regress.py --load-local-settings
 
-# 1b. Push the prod analyzer (gate now passes because the stamp exists)
-.\.venv\Scripts\python.exe scripts\create_analyzer.py</code></pre>
+# 1b. Push the prod analyzer (key auth via --load-local-settings; gate passes because the stamp exists)
+.\.venv\Scripts\python.exe scripts\create_analyzer.py --load-local-settings</code></pre>
   <p>Expect <code>Prod push gate: green regression stamp found…</code> then
-     <code>Done. analyzer_id=generalinvoice…</code>. Auth uses your <code>az login</code>; your
-     identity needs <strong>Cognitive Services User</strong> on <code>invoice-processing-dev-resource</code>.
-     This overwrites the live <code>generalinvoice</code> analyzer (<code>allow_replace=True</code>).</p>
+     <code>Done. analyzer_id=generalinvoice…</code>. This overwrites the live
+     <code>generalinvoice</code> analyzer (<code>allow_replace=True</code>).
+     Auth is the CU <strong>key</strong> that <code>--load-local-settings</code> seeds: <code>create_analyzer.py</code> uses
+     <code>AZURE_CU_KEY</code> when set and otherwise falls back to <code>DefaultAzureCredential</code>.
+     On this machine that fallback <em>always fails</em> — <code>DefaultAzureCredential failed to retrieve a
+     token from the included credentials</code>, because the TLS inspector blocks az-CLI / PowerShell / IMDS
+     token acquisition. That is a <em>different</em> failure from request-TLS (which <code>truststore</code>
+     already handles), so the fix is the key, not <code>--insecure</code>. In Azure the app runs as its
+     managed identity over AAD and needs <strong>Cognitive Services User</strong> on
+     <code>invoice-processing-dev-resource</code>.</p>
   <div class="warn">
     <strong>Gate escapes &amp; TLS.</strong> Pass <code>--force</code> to <code>create_analyzer.py</code> only for an
     emergency (e.g. a roll-back) where you accept skipping the regression. Both scripts inject
@@ -123,6 +132,14 @@ func azure functionapp publish $APP --build remote</code></pre>
      <span class="ph">&lt;APP&gt;</span>. It uses <code>deploySubpath: functionapp</code> automatically;
      confirm the overwrite prompt.</p>
   <p>Either way, wait for the upload + remote build to finish and the <code>process_invoice</code> function to be listed.</p>
+  <div class="warn">
+    <strong>Analyzer before code — not just a preference this release.</strong> When a release renames or adds
+    an extracted field, deploying the Function <em>before</em> re-provisioning the analyzer makes the new code
+    read a field the live analyzer doesn't emit yet. The 2026-07-24 release renamed
+    <code>invoice_date</code> → <code>invoice_date_extract</code> and added <code>invoice_date_generate</code>,
+    so shipping this code against the old analyzer would default <em>every</em> invoice to today's date until
+    Step 1 lands. Always finish Step 1 before Step 2.
+  </div>
 
   <h2><span class="num">3</span>Confirm Azure App Settings + identity (critical)</h2>
   <p>Because <code>local.settings.json</code> is not deployed, verify these exist on <span class="ph">&lt;APP&gt;</span>:</p>

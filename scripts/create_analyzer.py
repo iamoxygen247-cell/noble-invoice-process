@@ -14,9 +14,15 @@ api-version comes from the same env var or default as cu_client. The
 identity needs 'Cognitive Services User' on the CU resource. allow_replace=True,
 so an existing analyzer with the same id is overwritten.
 
-Run from the repo root, after `az login`:
-    .\\.venv\\Scripts\\python.exe scripts\\create_analyzer.py
-    .\\.venv\\Scripts\\python.exe scripts\\create_analyzer.py --file analyzers\\create-router-analyzer.json --analyzer-id invoicerouter
+--load-local-settings seeds AZURE_CU_* (endpoint, key, api-version) from
+functionapp/local.settings.json when unset — the same convenience flag regress.py
+has. Use it on a dev box behind a TLS inspector that blocks every
+DefaultAzureCredential token path, where the CU key is the only working auth.
+
+Run from the repo root (use --load-local-settings for key auth on this dev
+machine; omit it where `az login` works or in Azure via managed identity):
+    .\\.venv\\Scripts\\python.exe scripts\\create_analyzer.py --load-local-settings
+    .\\.venv\\Scripts\\python.exe scripts\\create_analyzer.py --load-local-settings --file analyzers\\create-router-analyzer.json --analyzer-id invoicerouter
 """
 
 from __future__ import annotations
@@ -97,6 +103,21 @@ def _build_credential():
     return DefaultAzureCredential()
 
 
+def _load_local_settings() -> None:
+    """Seed AZURE_CU_* from functionapp/local.settings.json when not already set.
+    Mirrors regress.py's flag so a prod push needs no manual env seeding on this dev
+    machine, where the CU key is the only auth that works behind the TLS inspector.
+    Never overrides an env var already present, so an explicit shell or CI still wins."""
+    settings = _FUNCTIONAPP / "local.settings.json"
+    if not settings.is_file():
+        return
+    # utf-8-sig: local.settings.json is often written by PowerShell with a BOM.
+    values = json.loads(settings.read_text(encoding="utf-8-sig")).get("Values", {})
+    for key in ("AZURE_CU_ENDPOINT", "AZURE_CU_KEY", "AZURE_CU_API_VERSION"):
+        if not os.getenv(key) and values.get(key):
+            os.environ[key] = values[key]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="(Re)provision a CU analyzer from a JSON definition.")
     ap.add_argument(
@@ -111,13 +132,25 @@ def main() -> int:
     )
     ap.add_argument("--endpoint", default=None,
                     help="CU endpoint. Default: the AZURE_CU_ENDPOINT environment variable (required if this flag is omitted).")
-    ap.add_argument("--api-version", default=cu_client.api_version(), help="CU API version. Default: %(default)s")
+    ap.add_argument("--api-version", default=None,
+                    help=f"CU API version. Default: the AZURE_CU_API_VERSION environment variable, else {cu_client.DEFAULT_API_VERSION}.")
     ap.add_argument("--force", action="store_true",
                     help="skip the prod push gate (a green regression stamp for a clean HEAD). "
                          "Only affects a push to the prod general-invoice id.")
+    ap.add_argument("--load-local-settings", action="store_true",
+                    help="seed AZURE_CU_* env (endpoint, key, api-version) from functionapp/local.settings.json "
+                         "when unset. Dev convenience for key auth behind a TLS inspector that blocks az login.")
     args = ap.parse_args()
+
+    # Seed key auth (and endpoint/api-version) before resolving anything, so a dev box behind
+    # the TLS inspector needs no manual env seeding. Never overrides values already in the env.
+    if args.load_local_settings:
+        _load_local_settings()
+
     if not args.endpoint:
         args.endpoint = cu_client.endpoint()  # raises with a clear message if AZURE_CU_ENDPOINT is unset
+    if not args.api_version:
+        args.api_version = cu_client.api_version()
 
     # Prod push gate: only a push to the literal prod general-invoice id is gated;
     # scratch / test / router pushes are unaffected. Checked against the constant,
