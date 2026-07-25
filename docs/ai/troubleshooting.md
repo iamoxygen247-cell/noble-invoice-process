@@ -1210,3 +1210,59 @@ a clean invoice occasionally lands in the review queue for no document-side reas
 
 The rule throughout: assert the resolved value, never a raw twin, and never a value that
 moved across replicates.
+
+---
+
+## `service_address` empty when the invoice is addressed only to the Bill To block
+
+**Symptoms (verified 2026-07-24, `samples/bug_260629_0012.pdf`, JMEC Electric):** a small
+trade/contractor invoice with **no** SHIP TO / Service Address / Attention block. The only
+address that names a location is the Bill To block (`Noble & Associates, #307-7480 Gilbert
+Road, Richmond BC, [Job# 11024565]`). Both `service_address` twins correctly returned empty
+(the prompt excludes Bill To / customer-mailing addresses), so the invoice routed to
+`REVIEW_B4_CRITICAL_FIELD` even though a usable address was on the page.
+
+**Cause (by design, not a bug):** `service_address` is a base-critical twin whose prompt
+deliberately excludes the Bill To block. With no other candidate the field is empty and the
+critical-field gate sends the doc to review.
+
+**Fix (code + prompt, additive):** a new **twinned** `bill_to_address` field
+(`bill_to_address_extract` / `bill_to_address_generate`) captures the Bill To block. It is
+**internal-only** — registered in `field_policy.TWIN_FIELDS` and `gates.FIELD_PRINT_ORDER`
+but **not** in `WRITE_FIELDS` (no Dynamics/Dataverse column). A code rescue in
+`gates.evaluate`, placed in the pre-`evaluate_b4` rescue region (alongside the PO / filename /
+billing-start rescues), promotes `bill_to_address` to `service_address` **only when the
+resolved `service_address` is empty** AND the Bill To clears the confidence bar (threshold or
+twin agreement) AND it is **not** Noble's own head office
+(`field_policy.is_noble_office_address`, a normalized-token match via `_address_tokens_agree`
+against `NOBLE_OFFICE_ADDRESSES = ("155-13988 Maycrest Way, Richmond BC  V6V3C3",)`). A
+present-but-low `service_address` is never overwritten (it found a real address and still
+routes to review, mirroring the billing-start rule). The `service_address` prompt itself is
+untouched, so the existing Bill-To *exclusion* corpus cannot regress. Scratch CU regression:
+JMEC → `#307-7480 Gilbert Road\nRichmond, BC`, `HAPPY_PATH_CANDIDATE`, stable 3/3 across two
+independent live runs.
+
+**Verification trap worth remembering (the control-run discipline).** Right after the change,
+the full corpus CU regression showed **12** `UNSTABLE` (doc, field) checks — none `WRONG`, and
+none on `service_address` / `bill_to_address`. That looked alarming, but adding a field to a CU
+prompt does not obviously cause it. The decisive check was a **live** control: re-running the
+**pre-change (HEAD) analyzer** with `--analyzer-file <git-show> --force` (fresh CU calls, not
+the cache — a *cached* control is frozen and cannot show instability). Results:
+
+| run | analyzer | non-JMEC `UNSTABLE` |
+|---|---|---|
+| regression run 1 | current (with `bill_to_address`) | 12 |
+| confirmatory run 2 | current | 4 |
+| live control | HEAD (no `bill_to_address`) | 2 |
+
+Run 2 (4) sits next to the control (2), so run 1's "12" was a high-variance draw, not a
+systematic increase. Every flip in all three runs is the same inherent-noise set already
+catalogued above (`billing_period_end_date` blank↔date, `payment_due_date` → today+30 default,
+`vendor_name` newline/casing); `bug_260601_0018`'s `billing_period_end_date` flips in **all
+three**. **Lesson:** judge a prompt change against a *live, forced* HEAD control on the same
+corpus — a single regression snapshot is a noisy instability estimator, and a cached control
+proves nothing. Do not weaken the other docs' sidecars over inherent noise.
+
+**Rollout order:** push the analyzer to prod **before** the function deploy. The rescue is
+inert (never harmful) if the deployed analyzer lacks `bill_to_address` — it just leaves
+`service_address` empty as before — but the fix only takes effect once the field is live.

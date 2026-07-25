@@ -722,6 +722,76 @@ def test_service_address_extract_generate_twin():
           not agree("1606 Broadway W Vancouver BC", "500 Robson St Burnaby BC"))
 
 
+def test_bill_to_address_backfills_empty_service_address():
+    print("\n[gates: bill_to_address backfills an empty service_address]")
+
+    # No SHIP TO / Service Address on the page: both service_address twins empty and the
+    # invoice is addressed only to the Bill To block (JMEC Electric, bug_260629_0012).
+    r = ev(commercial_fields(
+        service_address_extract=fstr("", None),
+        bill_to_address_extract=fstr("#307-7480 Gilbert Road, Richmond BC", 0.90),
+    ))
+    check("empty service_address + confident non-office Bill To -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("service_address source = bill_to_fallback",
+          r["resolutions"]["service_address"]["source"] == "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("service_address written from the Bill To block",
+          r["writeValues"]["service_address"] == "#307-7480 Gilbert Road, Richmond BC",
+          str(r["writeValues"].get("service_address")))
+    check("backfill advisory raised",
+          any("backfilled from the Bill To block" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Bill To is Noble's own head office -> names no serviced location -> not promoted -> review.
+    r = ev(commercial_fields(
+        service_address_extract=fstr("", None),
+        bill_to_address_extract=fstr("155 - 13988 Maycrest Way, Richmond, BC V6V 3C3", 0.95),
+    ))
+    check("empty service_address + Bill To = Noble head office -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("head-office Bill To is not promoted",
+          r["resolutions"]["service_address"]["source"] != "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("no backfill advisory for the head office",
+          not any("backfilled from the Bill To block" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # A real (present) service_address is never overwritten by the Bill To, even below the bar.
+    r = ev(commercial_fields(
+        service_address_extract=fstr("999 Real Site St, Vancouver BC", 0.50),
+        bill_to_address_extract=fstr("#307-7480 Gilbert Road, Richmond BC", 0.95),
+    ))
+    check("present-but-low service_address is not overwritten by the Bill To",
+          r["writeValues"]["service_address"] == "999 Real Site St, Vancouver BC",
+          str(r["writeValues"].get("service_address")))
+    check("present-but-low service_address still routes to review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # Below-threshold Bill To with no corroborating twin -> not promoted -> review.
+    r = ev(commercial_fields(
+        service_address_extract=fstr("", None),
+        bill_to_address_extract=fstr("#307-7480 Gilbert Road, Richmond BC", 0.50),
+    ))
+    check("empty service_address + below-bar Bill To (no twin) -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("below-bar Bill To is not promoted",
+          r["resolutions"]["service_address"]["source"] != "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+
+    # Below-threshold Bill To twins that AGREE clear the bar (agreement boost) -> promoted.
+    r = ev(commercial_fields(
+        service_address_extract=fstr("", None),
+        bill_to_address_extract=fstr("#307-7480 Gilbert Road, Richmond BC", 0.50),
+        bill_to_address_generate=fstr("307-7480 Gilbert Road, Richmond BC", 0.60),
+    ))
+    check("empty service_address + agreeing sub-bar Bill To twins -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("agreeing Bill To twins are promoted (source bill_to_fallback)",
+          r["resolutions"]["service_address"]["source"] == "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+
+
 def test_amount_and_po_twins():
     print("\n[gates: total / gst / po twins (numeric + digit agreement)]")
 

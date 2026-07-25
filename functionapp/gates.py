@@ -84,6 +84,9 @@ FIELD_PRINT_ORDER = [
     "service_address",
     "service_address_extract",
     "service_address_generate",
+    "bill_to_address",
+    "bill_to_address_extract",
+    "bill_to_address_generate",
     "account_number",
     "account_number_extract",
     "account_number_generate",
@@ -564,6 +567,30 @@ def evaluate(
             advisory.append(
                 f"invoice_date {corroborated} accepted from the generate twin: the date "
                 "is printed in the document text"
+            )
+
+    # Bill-To fallback for service_address: some small trade/contractor invoices carry no
+    # SHIP TO / Service Address / Attention block at all and address the invoice only to the
+    # property manager's Bill To block, so both service_address twins come back empty. When
+    # that happens, promote the resolved bill_to_address -- but only when it clears the
+    # confidence bar (bt_passed, threshold or twin agreement) and is not Noble's own head
+    # office (the generic paying-party address, which names no serviced location). A present
+    # (even sub-threshold) service_address is never overwritten -- that read found a real
+    # address and still routes to review. Runs before B4 so a rescued address prevents the
+    # critical-field review route.
+    sa_val = resolutions[field_policy.SERVICE_ADDRESS_FINAL][0]
+    if is_empty_value(sa_val):
+        bt_val, bt_conf, bt_passed, _bt_note, _bt_source = (
+            resolutions[field_policy.BILL_TO_ADDRESS_FINAL]
+        )
+        if bt_passed and not field_policy.is_noble_office_address(bt_val):
+            resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+                bt_val, bt_conf, True, None, "bill_to_fallback",
+            )
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = bt_val
+            advisory.append(
+                f"service_address backfilled from the Bill To block: {bt_val!r} "
+                "(no SHIP TO / Service Address block on the document)"
             )
 
     b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)

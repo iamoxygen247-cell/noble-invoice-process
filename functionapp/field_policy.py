@@ -73,6 +73,17 @@ SERVICE_ADDRESS_EXTRACT = "service_address_extract"
 SERVICE_ADDRESS_GENERATE = "service_address_generate"
 SERVICE_ADDRESS_FINAL = "service_address"
 
+# bill_to_address is captured from the customer / Bill To block and twinned like the
+# other fields (extract authoritative, generate validator). It is NOT critical and is
+# NOT written to Dynamics (absent from WRITE_FIELDS): it exists only to backfill
+# service_address when a document carries no SHIP TO / Service Address block at all and
+# addresses the invoice solely to the property manager's Bill To block. gates.evaluate
+# promotes it only when service_address is empty and it is not Noble's own head office
+# (see is_noble_office_address).
+BILL_TO_ADDRESS_EXTRACT = "bill_to_address_extract"
+BILL_TO_ADDRESS_GENERATE = "bill_to_address_generate"
+BILL_TO_ADDRESS_FINAL = "bill_to_address"
+
 # total_invoice_amount, gst_amount and po_or_job_number are twinned too. The final keeps
 # its original name (already the critical + write name); CU now returns the raw twins.
 TOTAL_EXTRACT = "total_invoice_amount_extract"
@@ -623,6 +634,21 @@ def _address_tokens_agree(a: Any, b: Any, min_overlap: float = 0.70) -> bool:
     return len(ta & tb) / min(len(ta), len(tb)) >= min_overlap
 
 
+# Noble's own head/billing office(s) -- the generic paying-party address(es) that name no
+# serviced property. When a document has no service address of its own and is addressed only
+# to a Bill To block, that block is promoted to service_address (gates.evaluate) UNLESS it is
+# one of these. A stable business fact, not a secret. Extend the tuple if Noble bills from
+# more than one office. Matched by normalized token overlap, so '#'/'Unit', comma, and
+# postal-code spacing differences do not matter -- the street + city tokens carry the match.
+NOBLE_OFFICE_ADDRESSES: Tuple[str, ...] = ("155-13988 Maycrest Way, Richmond BC  V6V3C3",)
+
+
+def is_noble_office_address(value: Any) -> bool:
+    """True when an address is one of Noble's own head/billing offices (the paying-party
+    address), which must never become the service address."""
+    return any(_address_tokens_agree(value, office) for office in NOBLE_OFFICE_ADDRESSES)
+
+
 def _amounts_agree(a: Any, b: Any) -> bool:
     """True when two amounts are the same money value (equal to the cent). False when
     either is missing or non-numeric."""
@@ -713,6 +739,7 @@ TWIN_FIELDS: Dict[
 ] = {
     VENDOR_FINAL: (VENDOR_EXTRACT, VENDOR_GENERATE, _vendor_values_consistent, _prefer_vendor_generate),
     SERVICE_ADDRESS_FINAL: (SERVICE_ADDRESS_EXTRACT, SERVICE_ADDRESS_GENERATE, _address_tokens_agree, None),
+    BILL_TO_ADDRESS_FINAL: (BILL_TO_ADDRESS_EXTRACT, BILL_TO_ADDRESS_GENERATE, _address_tokens_agree, None),
     TOTAL_FINAL: (TOTAL_EXTRACT, TOTAL_GENERATE, _amounts_agree, None),
     GST_FINAL: (GST_EXTRACT, GST_GENERATE, _amounts_agree, None),
     PST_FINAL: (PST_EXTRACT, PST_GENERATE, _amounts_agree, None),
