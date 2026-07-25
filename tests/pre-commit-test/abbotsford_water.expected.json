@@ -1,0 +1,28 @@
+{
+  "note": "Municipal water baseline; full municipal critical set. invoice_date 2026-05-26 is the printed BILLING DATE: the extract twin returns null on some runs and the value is carried by the printed-text corroboration, so the invoice_date twins are deliberately NOT asserted. Its '# UTILITY BILL' heading carries no number, so the filename-fallback invoice_number is correct and acts as a guard rail against an over-eager invoice_number prompt. || NOT asserted here: invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Abbotsford",
+      "service_address": "33550 SOUTH FRASER WAY",
+      "total_invoice_amount": 1855.11,
+      "invoice_date": "2026-05-26",
+      "payment_due_date": "2026-06-25",
+      "invoice_number": "abbotsford_water",
+      "po_or_job_number": null,
+      "gst_amount": null,
+      "pst_amount": 0,
+      "account_number": "120950",
+      "bill_type": "municipal",
+      "sub_bill_type": "water",
+      "billing_period_start_date": "2026-03-01",
+      "billing_period_end_date": "2026-04-30",
+      "number_of_days": 61,
+      "amount_excluding_gst": null
+    },
+    "fields": {
+      "total_invoice_amount_extract": 1855.11,
+      "total_invoice_amount_generate": 1855.11
+    }
+  }
+}

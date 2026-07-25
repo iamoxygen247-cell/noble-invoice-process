@@ -1,0 +1,29 @@
+{
+  "note": "Municipal gas baseline; full municipal critical set except vendor_name, whose resolved value flips between 'FortisBC' and 'FortisBC Energy Inc.' run to run (the two spellings normalise differently, so the more-confident-twin rule picks either). Both twins are individually stable and are asserted instead, which pins the prompt without asserting the confidence-dependent resolution. invoice_number is the filename fallback -- FortisBC gas bills carry only an account number. || NOT asserted here: invoice_description, vendor_name.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "service_address": "HSE-8667 Cartier St, Vancouver",
+      "total_invoice_amount": 228.08,
+      "invoice_date": "2026-05-29",
+      "payment_due_date": "2026-06-20",
+      "invoice_number": "fortisbc",
+      "po_or_job_number": null,
+      "gst_amount": 10.82,
+      "pst_amount": 0,
+      "account_number": "3019807",
+      "bill_type": "municipal",
+      "sub_bill_type": "gas",
+      "billing_period_start_date": "2026-05-01",
+      "billing_period_end_date": "2026-05-27",
+      "number_of_days": 27,
+      "amount_excluding_gst": 217.26
+    },
+    "fields": {
+      "total_invoice_amount_extract": 228.08,
+      "total_invoice_amount_generate": 228.08,
+      "vendor_name_extract": "FortisBC Energy Inc.",
+      "vendor_name_generate": "FortisBC"
+    }
+  }
+}

@@ -500,6 +500,15 @@ def evaluate(
                     parsed.get(field_policy.SUB_BILL_TYPE_GENERATE, (None, None))[0],
                 )
 
+    # A city bill CU labelled 'water' but whose OCR text names no water/sewer/
+    # stormwater service (only a fireline fee and/or street cleaning) is not a
+    # water bill -- demote sub_bill_type to 'other'. Decided here in code, off
+    # the OCR text, so the analyzer prompt (and the unrelated fields CU extracts
+    # from the same document) stay untouched.
+    write_values[field_policy.SUB_BILL_TYPE] = field_policy.demote_non_water_sub_type(
+        write_values[field_policy.SUB_BILL_TYPE], collect_markdown(full)
+    )
+
     # Invoice-number filename fallback: a municipal bill whose twins produced
     # nothing (both extract and generate empty) takes the SharePoint filename,
     # extension stripped, as its invoice number. Deterministic like the PO

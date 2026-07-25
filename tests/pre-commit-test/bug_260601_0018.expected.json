@@ -1,0 +1,25 @@
+{
+  "note": "Waste Connections aging-bucket; CURRENT vs AMOUNT DUE 11809.25 -> current 6207.81. Also anchors the site-block service_address fix. invoice_date 2026-05-31 is printed slashed as 05/31/26 in the cell under the INVOICE/DATE header (service lines are all May; next period 06/01/26-06/30/26). billing_period_end_date is NOT asserted (removed 2026-07-24): its twin returns blank on some runs and 2026-06-30 on others -- a run-to-run coin flip. || NOT asserted here: billing_period_start_date, billing_period_end_date, invoice_description, payment_due_date.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "WASTE CONNECTIONS OF CANADA",
+      "service_address": "8500 ALEXANDRA ROAD, RICHMOND BC",
+      "total_invoice_amount": 6207.81,
+      "invoice_date": "2026-05-31",
+      "invoice_number": "7300-0002803156",
+      "po_or_job_number": "33000152",
+      "gst_amount": 295.61,
+      "pst_amount": 0,
+      "account_number": "7300-689280-0000",
+      "bill_type": "commercial",
+      "sub_bill_type": "service",
+      "number_of_days": "",
+      "amount_excluding_gst": 5912.2
+    },
+    "fields": {
+      "total_invoice_amount_extract": 6207.81,
+      "total_invoice_amount_generate": 6207.81
+    }
+  }
+}

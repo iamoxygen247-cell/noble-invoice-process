@@ -1,0 +1,27 @@
+{
+  "note": "BC Hydro final bill; BALANCE FORWARD 24.32 -> this bill's ELECTRICITY CHARGES SUBTOTAL 11.37. invoice_date 2026-05-28 is printed in the header table; the extract twin returns null on some runs and the printed-text corroboration carries it, so the invoice_date twins are NOT asserted. payment_due_date is NOT asserted (removed 2026-07-24): the printed due date 2026-06-19 is read on some runs but the extract returns null on others and defaults to today+30, so it flips run to run. || NOT asserted here: invoice_description, payment_due_date.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "BC Hydro",
+      "service_address": "202-3538 WINDSOR ST\nVANCOUVER BC V5V 4N2",
+      "total_invoice_amount": 11.37,
+      "invoice_date": "2026-05-28",
+      "invoice_number": "137000303570",
+      "po_or_job_number": null,
+      "gst_amount": 0.54,
+      "pst_amount": 0,
+      "account_number": "13574616",
+      "bill_type": "municipal",
+      "sub_bill_type": "electric",
+      "billing_period_start_date": "2026-05-08",
+      "billing_period_end_date": "2026-05-26",
+      "number_of_days": 19,
+      "amount_excluding_gst": 10.83
+    },
+    "fields": {
+      "total_invoice_amount_extract": 11.37,
+      "total_invoice_amount_generate": 11.37
+    }
+  }
+}

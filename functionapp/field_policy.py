@@ -288,6 +288,36 @@ def resolve_sub_bill_type(
     return label if label in MUNICIPAL_SUB_TYPES else SUB_OTHER
 
 
+# A city bill CU classifies 'water' must actually bill a water service. CU reads
+# a fire-protection line (fireline) fee as 'water' because a fireline is a water
+# line, so a city bill whose only utility charges are a fireline fee and/or
+# street cleaning is labelled 'water' even though those flat levies are not
+# water/sewer/stormwater service -- the business-correct sub-type is 'other'.
+# This is decided on the OCR text (the content signal the classify label
+# misreads), not the noisy classify confidence, and deliberately in code: a
+# sub_bill_type *prompt* edit perturbs unrelated fields CU extracts from the same
+# document, so the analyzer definition is left untouched.
+_WATER_SERVICE_RE = re.compile(
+    r"\b(?:waste\s?water|storm\s?water|water|sewer|sewage|drainage)\b", re.IGNORECASE
+)
+
+
+def water_service_indicated(text: Optional[str]) -> bool:
+    """True when the document text names a water/sewer/stormwater service -- the
+    signal that a 'water' sub_bill_type is genuine. False for a bill that never
+    names such a service (for example a fireline + street-cleaning city bill)."""
+    return bool(text) and _WATER_SERVICE_RE.search(text) is not None
+
+
+def demote_non_water_sub_type(sub_bill_type: Any, text: Optional[str]) -> Any:
+    """Demote a 'water' sub_bill_type to 'other' when the document names no water
+    service (see water_service_indicated). Any other value passes through
+    unchanged, so this is a no-op for every non-'water' bill."""
+    if str(sub_bill_type or "").strip().lower() == "water" and not water_service_indicated(text):
+        return SUB_OTHER
+    return sub_bill_type
+
+
 # Contiguous 8-digit 110/330 run not embedded in a longer digit run, so a
 # 9-digit artifact like 330001022 never yields a false 33000102.
 _PO_CONTIGUOUS = re.compile(r"(?<!\d)(?:110|330)\d{5}(?!\d)")

@@ -1,0 +1,28 @@
+{
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# City of Surrey - Utility Bill Information') carries no number, so this bill genuinely has no invoice number and the filename fallback is correct. Guard rail: if the invoice_number prompt ever over-reaches, this goes red. || NOT asserted here: invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Surrey",
+      "service_address": "13615 27 AVE",
+      "total_invoice_amount": 401.71,
+      "invoice_date": "2026-05-28",
+      "payment_due_date": "2026-07-02",
+      "invoice_number": "surrey_water",
+      "po_or_job_number": null,
+      "gst_amount": null,
+      "pst_amount": 0,
+      "account_number": "425096",
+      "bill_type": "municipal",
+      "sub_bill_type": "water",
+      "billing_period_start_date": "2026-01-08",
+      "billing_period_end_date": "2026-04-29",
+      "number_of_days": 112,
+      "amount_excluding_gst": null
+    },
+    "fields": {
+      "total_invoice_amount_extract": 401.71,
+      "total_invoice_amount_generate": 401.71
+    }
+  }
+}

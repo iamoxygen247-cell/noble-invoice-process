@@ -1680,9 +1680,41 @@ def test_sub_bill_type():
     r = ev(municipal_fields())
     check("municipal fixture -> business_license", r["subBillType"] == "business_license",
           str(r.get("subBillType")))
-    r = ev(municipal_fields(sub_bill_type=fstr("water", 0.9),
-                            sub_bill_type_generate=fstr("water", 0.85)))
-    check("municipal water label -> water", r["subBillType"] == "water", str(r.get("subBillType")))
+    # content-based water demotion (pure helpers): a 'water' label only stands
+    # when the document text names a water/sewer/stormwater service.
+    check("water text indicates water service",
+          field_policy.water_service_indicated("Water consumption 12 m3"))
+    check("sewer counts as a water service",
+          field_policy.water_service_indicated("Sewer utility levy 5.00"))
+    check("stormwater counts as a water service",
+          field_policy.water_service_indicated("Stormwater drainage charge"))
+    check("fireline + street cleaning names no water service",
+          not field_policy.water_service_indicated("Annual Fireline (100mm)\nStreet Cleaning"))
+    check("demote 'water' when text names no water service",
+          field_policy.demote_non_water_sub_type("water", "Fireline 564\nStreet Cleaning 144") == "other")
+    check("keep 'water' when text names water",
+          field_policy.demote_non_water_sub_type("water", "Water consumption 12 m3") == "water")
+    check("demotion is a no-op for non-water labels",
+          field_policy.demote_non_water_sub_type("electric", "no service named here") == "electric")
+    check("'water' with empty text -> other (no service named)",
+          field_policy.demote_non_water_sub_type("water", "") == "other")
+
+    # end-to-end: a genuine water bill names water in its OCR text -> stays water.
+    r = gates.evaluate(cu_result(
+        municipal_fields(sub_bill_type=fstr("water", 0.9),
+                         sub_bill_type_generate=fstr("water", 0.85)),
+        markdown="City Utility Bill\nWater consumption 12 m3 45.00\nSewer 5.00"), THRESHOLD)
+    check("municipal water label + water in text -> water",
+          r["subBillType"] == "water", str(r.get("subBillType")))
+
+    # a city bill CU labels 'water' whose only charges are a fireline fee and
+    # street cleaning names no water service -> demoted to other.
+    r = gates.evaluate(cu_result(
+        municipal_fields(sub_bill_type=fstr("water", 0.9),
+                         sub_bill_type_generate=fstr("water", 0.85)),
+        markdown="City Utility Bill\nAnnual Fireline (100mm) 564.00\nStreet Cleaning 144.00"), THRESHOLD)
+    check("municipal water label, no water service in text -> other",
+          r["subBillType"] == "other", str(r.get("subBillType")))
 
     # below-bar label whose generate twin disagrees -> other, and never gates routing.
     r = ev(municipal_fields(sub_bill_type=fstr("gas", 0.50)))

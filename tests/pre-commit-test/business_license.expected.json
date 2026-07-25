@@ -1,0 +1,23 @@
+{
+  "note": "Municipal baseline. invoice_date is deliberately NOT asserted: this renewal notice prints no issue date (only a due date and a page-footer print timestamp), so the value correctly defaults to today and would go red the next day. The generate twin answering with that footer timestamp is why invoice_date refuses an uncorroborated generate value. service_address and routingDecision are NOT asserted either: the address extract returns null on roughly 1 run in 3, and because service_address is base-critical that sends routing to review on those runs. Its heading is followed by 'Account number: 994194' -- a LABELLED number, which invoice_number must never take; the correct value is the licence number 26-158696. number_of_days is NOT asserted on this doc -- reason 1, UNSTABLE, and this is the only doc in the corpus where the field flips: 5x '' / 5x 1 across 10 replicates (analyzer 34250234b372, 2026-07-24). Both billing-period dates are empty on all 10 runs, so the 1 is NOT derived from a period -- the analyzer invents a one-day period on a renewal notice that prints no service period. Recorded here rather than asserted, because a coin-flip assertion guarantees a future red run. || NOT asserted here: invoice_date, invoice_description, number_of_days, payment_due_date, routingDecision, service_address.",
+  "expect": {
+    "writeValues": {
+      "vendor_name": "City of Vancouver",
+      "total_invoice_amount": 98,
+      "invoice_number": "26-158696",
+      "po_or_job_number": null,
+      "gst_amount": null,
+      "pst_amount": 0,
+      "account_number": "994194",
+      "bill_type": "municipal",
+      "sub_bill_type": "business_license",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "amount_excluding_gst": null
+    },
+    "fields": {
+      "total_invoice_amount_extract": 98,
+      "total_invoice_amount_generate": 98
+    }
+  }
+}

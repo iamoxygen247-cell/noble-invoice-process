@@ -1,0 +1,28 @@
+{
+  "note": "Municipal baseline; Previous bill 627.90 but BALANCE FORWARD 0.00 -> total is this bill's 462.49. Full municipal critical set. || NOT asserted here: invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "BC Hydro",
+      "service_address": "HSE-2985 GRANVILLE ST\nVANCOUVER BC V6H 3J6",
+      "total_invoice_amount": 462.49,
+      "invoice_date": "2026-06-09",
+      "payment_due_date": "2026-07-02",
+      "invoice_number": "123000315972",
+      "po_or_job_number": null,
+      "gst_amount": 22.02,
+      "pst_amount": 0,
+      "account_number": "12956781",
+      "bill_type": "municipal",
+      "sub_bill_type": "electric",
+      "billing_period_start_date": "2026-05-07",
+      "billing_period_end_date": "2026-06-05",
+      "number_of_days": 30,
+      "amount_excluding_gst": 440.47
+    },
+    "fields": {
+      "total_invoice_amount_extract": 462.49,
+      "total_invoice_amount_generate": 462.49
+    }
+  }
+}

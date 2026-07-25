@@ -1,0 +1,28 @@
+{
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "District of West Vancouver",
+      "service_address": "2487 WESTHILL COURT",
+      "total_invoice_amount": 598.82,
+      "invoice_date": "2026-03-31",
+      "payment_due_date": "2026-05-29",
+      "invoice_number": "west_van_water",
+      "po_or_job_number": null,
+      "gst_amount": null,
+      "pst_amount": 0,
+      "account_number": "122901",
+      "bill_type": "municipal",
+      "sub_bill_type": "water",
+      "billing_period_start_date": "2026-01-01",
+      "billing_period_end_date": "2026-03-31",
+      "number_of_days": 86,
+      "amount_excluding_gst": null
+    },
+    "fields": {
+      "total_invoice_amount_extract": 598.82,
+      "total_invoice_amount_generate": 598.82
+    }
+  }
+}

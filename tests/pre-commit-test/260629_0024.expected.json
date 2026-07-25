@@ -1,0 +1,24 @@
+{
+  "note": "PRIORITY Appliance Service commercial repair invoice (Miele fridge). Anchors: (1) service_address is the 'Service Location' block (5189 CAMBIE ST # 111, VANCOUVER), NOT the Paying Party (13988 MAYCREST WAY # 155 = Noble's own address); (2) pst_amount 34.75 -- a rare invoice that actually charges BC PST, so it exercises real PST extraction rather than the default-0 path. total 1016.93 = Invoice Total (Parts 496.41 + Labor 439.00 + PST 34.75 + GST 46.77); no carried-forward, Payments Received blank. po 11022266 ('# 11022266', 110-prefix) -> sub_bill_type derived 'repair'. vendor passes on twin agreement (both below the 0.73 bar but identical). billing-period fields blank (one-time repair). || NOT asserted here: invoice_date (the 'Date Order Taken and Completed' values 8/6/25 & 4/27/26 are slashed/ambiguous -> _normalize_date rejects them, so 2 of 3 runs defaulted to today); payment_due_date (none printed -> defaults to today+30); account_number (analyzer grabs the '#11022266' job number, unstable with/without the '#'); invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "PRIORITY appliance service",
+      "service_address": "5189 CAMBIE ST # 111\nVANCOUVER, BC V5Z0J4",
+      "total_invoice_amount": 1016.93,
+      "invoice_number": "429259",
+      "po_or_job_number": "11022266",
+      "gst_amount": 46.77,
+      "pst_amount": 34.75,
+      "bill_type": "commercial",
+      "sub_bill_type": "repair",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 1016.93,
+      "total_invoice_amount_generate": 1016.93
+    }
+  }
+}

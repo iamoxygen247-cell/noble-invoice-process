@@ -1,0 +1,26 @@
+{
+  "note": "Sole-proprietor trade invoice. Anchors invoice_date (printed 'Date: June 11, 2026'; used to be replaced by today whenever the extract confidence dipped) and vendor_name (printed 'SIMON SIK FAI KAN' vs the generate twin's shortened 'SIMON KAN'). vendor_name_generate is NOT asserted: it flips between the short and full name. service_address and routingDecision are NOT asserted either -- the address extract returns null on roughly 1 run in 6, which sends routing to review. payment_due_date is never asserted anywhere: not printed, so it defaults to today+30. || NOT asserted here: invoice_description, payment_due_date, routingDecision, service_address.",
+  "expect": {
+    "writeValues": {
+      "vendor_name": "SIMON SIK FAI KAN",
+      "total_invoice_amount": 493.5,
+      "invoice_date": "2026-06-11",
+      "invoice_number": "260135",
+      "po_or_job_number": "11024469",
+      "gst_amount": 23.5,
+      "pst_amount": 0,
+      "account_number": null,
+      "bill_type": "commercial",
+      "sub_bill_type": "repair",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": "",
+      "amount_excluding_gst": 470.0
+    },
+    "fields": {
+      "total_invoice_amount_extract": 493.5,
+      "total_invoice_amount_generate": 493.5,
+      "vendor_name_extract": "SIMON SIK FAI KAN"
+    }
+  }
+}

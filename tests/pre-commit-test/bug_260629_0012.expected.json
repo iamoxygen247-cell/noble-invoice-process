@@ -1,0 +1,27 @@
+{
+  "note": "bug_260629_0012 (JMEC Electric Ltd.): the invoice has NO SHIP TO / Service Address / Attention block -- it is addressed only to the property manager's Bill To block (Noble & Associates, #307-7480 Gilbert Road, Richmond BC, with [Job# 11024565]). service_address must be backfilled from bill_to_address (which is NOT Noble's head office 155-13988 Maycrest Way), so the doc routes HAPPY_PATH_CANDIDATE instead of REVIEW_B4_CRITICAL_FIELD. total 420 = Balance Due (subtotal 400 + gst 20 @ 5%), so amount_excluding_gst 400. po 11024565 (110-prefix) -> sub_bill_type derived 'repair'. invoice_date/payment_due_date both printed 06-25-2026. billing-period fields blank (one-time repair, no period) -- asserted blank to guard against a generate twin inventing one. Values verified against the PDF 2026-07-24. || NOT asserted here: invoice_description (low-confidence generate summary, drifts run-to-run: 'Troubleshooting service' vs 'Electrical troubleshooting and repair'); account_number (none printed).",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "JMEC Electric",
+      "service_address": "#307-7480 Gilbert Road\nRichmond, BC",
+      "total_invoice_amount": 420,
+      "invoice_date": "2026-06-25",
+      "payment_due_date": "2026-06-25",
+      "invoice_number": "2026-170",
+      "po_or_job_number": "11024565",
+      "gst_amount": 20,
+      "pst_amount": 0,
+      "bill_type": "commercial",
+      "sub_bill_type": "repair",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": "",
+      "amount_excluding_gst": 400
+    },
+    "fields": {
+      "total_invoice_amount_extract": 420,
+      "total_invoice_amount_generate": 420
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the filename stem. The '11802' in '# UTILITY BILL 11802' is a notice/form number, not an invoice number. || NOT asserted here: billing_period_end_date, billing_period_start_date, invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Vancouver",
+      "service_address": "4204 10TH AVE W",
+      "total_invoice_amount": 823.11,
+      "invoice_date": "2026-03-10",
+      "payment_due_date": "2026-04-22",
+      "invoice_number": "vancouver_water",
+      "po_or_job_number": null,
+      "gst_amount": null,
+      "pst_amount": 0,
+      "account_number": "6012807",
+      "bill_type": "municipal",
+      "sub_bill_type": "water",
+      "number_of_days": 117,
+      "amount_excluding_gst": null
+    },
+    "fields": {
+      "total_invoice_amount_extract": 823.11,
+      "total_invoice_amount_generate": 823.11
+    }
+  }
+}

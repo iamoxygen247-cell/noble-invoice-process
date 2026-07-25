@@ -4,9 +4,13 @@ __pycache__/
 functionapp/local.settings.json
 output/
 samples/
-# Regression corpus: real customer invoices + expectation sidecars that embed
-# their service addresses / account numbers. Local-only, like samples/.
-tests/pre-commit-test/
+# Regression corpus: the invoice PDFs stay local-only, like samples/. The
+# expectation sidecars are tracked so the corpus assertions are reviewable and
+# shared; note they embed real service addresses / account numbers.
+# (Ignore the directory *contents*, not the directory, or the negation below
+# would never be reached -- git does not descend into an excluded directory.)
+tests/pre-commit-test/*
+!tests/pre-commit-test/*.expected.json
 *.key
 .DS_Store
 Thumbs.db

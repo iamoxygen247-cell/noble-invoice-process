@@ -1,0 +1,28 @@
+{
+  "note": "BC Hydro security deposit; BALANCE FORWARD 0.00 -> Total Due 198.14, not the 21.14 current charges. invoice_date 2026-06-17 is printed in the header table; carried by the printed-text corroboration on runs where the extract twin returns null, so the invoice_date twins are NOT asserted. || NOT asserted here: invoice_description.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "BC Hydro",
+      "service_address": "2502-2381 BETA AVE\nBURNABY BC V5C 0P7",
+      "total_invoice_amount": 198.14,
+      "invoice_date": "2026-06-17",
+      "payment_due_date": "2026-07-09",
+      "invoice_number": "132000274539",
+      "po_or_job_number": null,
+      "gst_amount": 1.01,
+      "pst_amount": 0,
+      "account_number": "13632134",
+      "bill_type": "municipal",
+      "sub_bill_type": "electric",
+      "billing_period_start_date": "2026-06-01",
+      "billing_period_end_date": "2026-06-15",
+      "number_of_days": 15,
+      "amount_excluding_gst": 197.13
+    },
+    "fields": {
+      "total_invoice_amount_extract": 198.14,
+      "total_invoice_amount_generate": 198.14
+    }
+  }
+}
