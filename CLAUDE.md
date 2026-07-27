@@ -117,13 +117,13 @@ If a command fails, do not immediately guess. Read the error, identify the faili
 Changes to `analyzers/*.json` (the Content Understanding prompts) have no automated
 coverage from the unit suite alone. A two-tier net guards them — offline contract tests
 (`tests/test_analyzer_contract.py`, part of `pytest`) and a golden-corpus CU regression
-(`scripts/regress.py` over `tests/pre-commit-test/`, a gitignored folder of real
-invoices). Full description: `docs/ai/troubleshooting.md` → "Verifying analyzer / prompt
-changes".
+(`scripts/regress.py` over `tests/pre-commit-test/`, a folder of real invoices whose PDFs
+are gitignored). Full description: `docs/ai/troubleshooting.md` → "Verifying analyzer /
+prompt changes".
 
-**Standing rule — every bug fix that has a reproduction PDF must grow the corpus.**
-When you fix an extraction/routing bug and a sample PDF reproduces it, add that PDF as a
-permanent regression anchor in the same change:
+**Standing rule — the corpus must track every change.** Every bug fix that has a
+reproduction PDF must grow the corpus. When you fix an extraction/routing bug and a sample
+PDF reproduces it, add that PDF as a permanent regression anchor in the same change:
 
 ```powershell
 # copies the PDF into tests/pre-commit-test/ and scaffolds its expectation sidecar
@@ -133,8 +133,20 @@ permanent regression anchor in the same change:
 Then **open the generated `<stem>.expected.json`, delete every value you have not
 verified against the PDF, and keep the field the bug was about** (a sidecar is a hard
 assertion — an unverified value becomes a false failure later). Do not commit an
-untrimmed, still-"REVIEW" sidecar. The corpus and its sidecars are gitignored, so they
-never enter git history; only the *fact* that a doc was added lives in the fix's notes.
+untrimmed, still-"REVIEW" sidecar. The invoice PDFs are gitignored and never enter git
+history; the `.expected.json` sidecars **are** tracked, so sidecar changes are reviewable
+in the diff.
+
+**A requirement change must update every sidecar.** When a change adds a field or alters
+what an existing field means, backfill it into **all** `tests/pre-commit-test/*.expected.json`
+sidecars — not just the document that motivated the change. A field asserted on one document
+has a sample size of one, and the next prompt edit can break it on the others silently.
+Verify each backfilled value against its PDF before asserting it; an unverified value is a
+future false failure.
+
+**If it is unclear whether corpus changes are required, ask for direction — do not assume.**
+Guessing is expensive in both directions: a skipped update leaves a hole in the net, an
+invented one asserts a value nobody checked.
 
 Never weaken the net to make a change pass: do not delete a corpus doc, loosen a sidecar,
 or push the prod `generalinvoice` analyzer with `create_analyzer.py --force`, unless the
