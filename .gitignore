@@ -22,4 +22,5 @@ CLAUDE.local.md
 __azurite_db*.json
 __blobstorage__/
 __queuestorage__/
+AzuriteConfig
 
