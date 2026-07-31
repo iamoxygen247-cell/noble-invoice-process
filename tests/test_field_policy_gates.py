@@ -634,6 +634,7 @@ def test_vendor_extract_generate_twin():
     check("newline inside the vendor name is collapsed",
           r["writeValues"]["vendor_name"] == "WASTE MANAGEMENT OF CANADA CORPORATION",
           repr(r["writeValues"].get("vendor_name")))
+
     check("service_address keeps its legitimate multi-line form",
           "\n" in str(ev(commercial_fields(
               service_address_extract=fstr("2985 GRANVILLE ST\nVANCOUVER BC", 0.95),
@@ -998,6 +999,9 @@ def test_billing_period_twins_and_derivation():
     fields = municipal_fields(
         number_of_days_extract=fint(83, 0.50),
         number_of_days_generate=fstr("83 days", 0.60),
+        # A period end is required for the count to be written at all (a day count on a
+        # bill with no billing period is meaningless -- see the invented-"1" case below).
+        billing_period_end_date_extract=fdate("2026-03-31", 0.90),
     )
     r = ev(fields)
     check("days both below but equal -> agreement",
@@ -1124,12 +1128,27 @@ def test_billing_period_twins_and_derivation():
     check("junk days -> blank", r["writeValues"]["number_of_days"] == "",
           str(r["writeValues"].get("number_of_days")))
 
-    # A day count stated in prose reaches the value via the generate twin (BC Hydro
-    # 'used over 30 days' shape).
+    # A day count is kept only for a bill that HAS a billing period. Without one it is
+    # meaningless, and the reasoning twin was observed inventing "1" (0.45-0.98) on four
+    # corpus bills printing no period at all, where the extract twin correctly returned
+    # nothing. Blank beats a substituted count, the same principle as the period dates.
     r = ev(municipal_fields(number_of_days_generate=fstr("30 days", 0.90)))
-    check("prose day count rescued by generate", r["writeValues"]["number_of_days"] == 30,
-          str(r["writeValues"].get("number_of_days")))
-    check("days rescue source = generate", r["resolutions"]["number_of_days"]["source"] == "generate")
+    check("day count with NO billing period is dropped",
+          r["writeValues"]["number_of_days"] == "", str(r["writeValues"].get("number_of_days")))
+
+    # With a period printed, the count is kept however it was read -- including from the
+    # generate twin alone, the BC Hydro 'used over 30 days' shape that bug_260609_0031
+    # relies on (its extract twin returns nothing on 2 runs in 3).
+    period = dict(billing_period_end_date_extract=fdate("2026-05-26", 0.90))
+    check("generate-only count IS kept when a period is printed",
+          ev(municipal_fields(number_of_days_generate=fstr("19 days", 0.66), **period))
+          ["writeValues"]["number_of_days"] == 19)
+    check("sub-threshold extract count is kept (span-grounded)",
+          ev(municipal_fields(number_of_days_extract=fint(19, 0.50), **period))
+          ["writeValues"]["number_of_days"] == 19)
+    check("derived start still uses the kept count",
+          ev(municipal_fields(number_of_days_generate=fstr("19 days", 0.66), **period))
+          ["writeValues"]["billing_period_start_date"] == "2026-05-08")
 
     # Helpers.
     check("_dates_agree across formats", field_policy._dates_agree("2026-05-07", "May 7, 2026"))
@@ -1483,7 +1502,7 @@ def test_invoice_date_twin_and_future_gate():
     check("ungrounded generate-only date is refused", wv["invoice_date"] == TODAY, wv["invoice_date"])
     check("refused generate -> defaulted", "invoice_date" in defaulted, str(defaulted))
     check("invoice_date is in NO_GENERATE_RESCUE",
-          field_policy.NO_GENERATE_RESCUE == frozenset({"invoice_date"}),
+          "invoice_date" in field_policy.NO_GENERATE_RESCUE,
           str(field_policy.NO_GENERATE_RESCUE))
     check("the refusal is invoice_date-only (invoice_number still rescues)",
           field_policy.resolve_field(

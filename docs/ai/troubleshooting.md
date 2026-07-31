@@ -1266,3 +1266,162 @@ proves nothing. Do not weaken the other docs' sidecars over inherent noise.
 **Rollout order:** push the analyzer to prod **before** the function deploy. The rescue is
 inert (never harmful) if the deployed analyzer lacks `bill_to_address` — it just leaves
 `service_address` empty as before — but the fix only takes effect once the field is live.
+
+---
+
+## OPEN BUG — `vendor_name` drops the "dba" trade name (3 fixes attempted, all reverted)
+
+> **Status 2026-07-30: UNFIXED and not shipped.** Three designs were built and measured
+> against the corpus; every one regressed something worse than the bug. All of it was
+> reverted — `analyzers/create-generalinvoice-analyzer.json` is untouched. This section is
+> kept so the next attempt starts from the measurements instead of repeating them. Do not
+> re-try approaches 1-3 below without new information.
+>
+> The reproduction PDF stays at `samples/bug_260504_0021.pdf`. It was deliberately **not**
+> left in `tests/pre-commit-test/`: the standing rule is that a bug fix grows the corpus, but
+> there is no fix here, and a sidecar asserting the correct `vendor_name` would be red from
+> the moment it landed. Add it in the same change as a working fix.
+
+**Symptoms (verified 2026-07-29, `samples/bug_260504_0021.pdf`, Goodbye Graffiti inv 37766):**
+the bill prints the vendor on two lines — `Graffiti Guys Removal Services` / `dba Goodbye
+Graffiti Surrey` — and the resolved `vendor_name` coin-flipped across three replicates:
+`Goodbye Graffiti` (the logo wordmark), the correct full pair, and `Graffiti Guys Removal
+Services`. All three routed `HAPPY_PATH_CANDIDATE`, so nothing flagged it.
+
+**Cause (three independent faults, all still present):**
+
+1. `vendor_name_extract` truncates at the line break on some runs (`Graffiti Guys Removal
+   Services` at 0.981) and returns the full pair on others (0.468 / 0.728, with a `\n`).
+2. `vendor_name_generate` answers with the logo (`Goodbye Graffiti`, 0.609) — its prompt
+   asks for "the short common name the vendor is known by".
+3. `_prefer_vendor_generate` then picks the **more confident** of two spellings that
+   "agree" by substring containment. On the first replicate the correct full string
+   (0.468) therefore lost to the logo (0.609).
+
+### What was tried, and what each attempt cost
+
+Each was measured on the 20-doc corpus at 5 replicates, against a live HEAD control.
+
+**Attempt 1 — the rule in `vendor_name_extract`.** Fixed the target doc. Broke `fortisbc`
+outright: its bill prints the disclaimer *"FortisBC Energy Inc. does business as FortisBC."*
+and the twin returned that **entire sentence** 5/5 where the control was 8/8 stable
+`FortisBC Energy Inc.` Confidence fell corpus-wide: control `260629_0010` 0.94→0.74,
+`fortisbc` 0.91→0.76; `260521_0024` −0.197, `burnaby_water` −0.172, `vancouver_water`
+−0.165, `richmond_water` −0.148. Also truncated `PRIORITY appliance service` → `PRIORITY`
+2/5 on an unrelated doc.
+
+**Attempt 2 — the rule in `vendor_name_generate` only.** Commercial docs improved
+(`bug_260504_0021` +0.333, `bug_260615_0006` +0.501, `bug_260601_0018` +0.349) but **every
+municipal doc regressed**: `surrey_water` **−0.410** (2/5→5/5 sub-threshold, and its casing
+destabilised so `City of Surrey` flipped to `CITY OF SURREY` 2/5 — a corpus failure),
+`abbotsford_water` −0.265, `west_van_water` −0.250, plus `bchydro` and `260521_0024` pushed
+under the bar. A trade-name rule has nothing to say about `City of Surrey`, so for those
+documents it is pure noise in the prompt.
+
+**Attempt 3 — a dedicated `vendor_dba_name` twin + a promotion in `gates.evaluate`,** with
+both vendor prompts byte-identical to prod. This *worked* for vendor names: target doc 5/5
+correct, the new field returned null 5/5 on the four control docs, and the municipal
+confidence lost in attempt 2 came back (`surrey_water` 0.39→0.74, `west_van_water`
+0.46→0.64, `abbotsford_water` 0.56→0.78). **But it wrecked `invoice_date`** — same day,
+with and without the new field: `fortisbc` extract 5/5 dated → **3/5 null**,
+`west_van_water` 3/5 dated → **5/5 null**, and the corpus went `WRONG` on
+`west_van_water writeValues.invoice_date` (defaulted to today on every replicate).
+`invoice_date` defaults to today when the extract returns nothing, so this silently writes
+a wrong date — strictly worse than the bug being fixed.
+
+**The claim that broke attempt 3 — and the lesson that matters most here:** "an additive
+field is safe by construction because it does not edit any existing prompt". **That is
+false.** The analyzer is a single CU call; adding a field changes the model's behaviour on
+*other* fields. The suspected driver is bulk — `vendor_dba_name_generate` was a 6-step
+reasoning prompt, roughly two-thirds of the added text — but that was not isolated before
+the work was reverted. **Any new field must be judged by a full corpus run against a
+same-day live control, exactly like a prompt edit.** The `bill_to_address` section above
+hints at this; attempt 3 is the proof.
+
+**Lesson 1 — a prohibition primes the pattern.** The first draft described the connector by
+its spelled-out phrasing ("doing business as"). FortisBC bills print the disclaimer
+*"FortisBC Energy Inc. does business as FortisBC."*, and `vendor_name_extract` returned that
+**entire sentence** 5/5 (live control: 8/8 stable `FortisBC Energy Inc.`). Adding a
+prohibition — *"Never answer with a sentence of prose such as 'X Inc. does business as Y'"* —
+did **not** fix it; the generate twin then produced exactly that sentence on 2/5 runs. What
+worked was a **positive worked example**: *"a footer reading 'FortisBC Energy Inc. does
+business as FortisBC.' gives 'FortisBC'"* → 5/5 `FortisBC`. State what to answer, not what
+to avoid; naming the bad pattern makes it available.
+
+**Lesson 2 (the expensive one) — do not teach an existing prompt a narrow rule; add a
+field.** Two full iterations were burned learning this, and both failed the same way: a rule
+that applies to a handful of documents dilutes the prompt for every other document.
+
+*Attempt 1, the rule in `vendor_name_extract`:* same-day live control `260629_0010`
+0.94→0.74 and `fortisbc` 0.91→0.76; cross-day `260521_0024` −0.197, `burnaby_water` −0.172,
+`vancouver_water` −0.165, `richmond_water` −0.148. It also truncated
+`PRIORITY appliance service` → `PRIORITY` on 2/5 runs of an unrelated doc.
+
+*Attempt 2, the rule in `vendor_name_generate` only:* the split was starkly systematic —
+commercial docs improved (`bug_260504_0021` +0.333, `bug_260615_0006` +0.501,
+`bug_260601_0018` +0.349) while **every municipal doc regressed**: `surrey_water` **−0.410**
+(2/5→5/5 sub-threshold, and its casing destabilised so `City of Surrey` flipped to
+`CITY OF SURREY` 2/5), `abbotsford_water` −0.265, `west_van_water` −0.250, plus `bchydro`
+and `260521_0024` pushed under the bar. Obvious in hindsight: a trade-name rule has nothing
+to say about `City of Surrey`, so for those documents it is pure noise in the prompt.
+
+*And a dedicated field did not escape it either* — see attempt 3 above, which moved the
+damage from `vendor_name` to `invoice_date`. **A prompt is a shared resource: every sentence
+added for one document is paid for by all the others, and adding a whole field is the
+biggest edit of all, not an exemption from the rule.**
+
+**Lesson 3 — scope a confidence gate to the fields you changed.** A sub-threshold-rate sweep
+over every `(doc, field)` pair at n=5 returned **37 "regressed" vs 39 "improved"**, with
+untouched fields swinging ±0.3 — symmetric noise, no discriminating power, and it would have
+justified any conclusion. The identical metric restricted to the two edited fields gave a
+clean directional signal (12 docs down and large, 8 up and small) that located the real
+regression. A confidence gate is only meaningful on the fields under test.
+
+**Technique worth reusing — the targeted live control.** A full 5-replicate corpus control is
+100 CU calls. Running only the docs that flipped, against `git show HEAD:analyzers/...`, and
+writing the results to a **reserved replicate band (`r100+`)** answers the same question for
+~25 calls without overwriting the existing cached baseline. Extract the HEAD analyzer with
+Python, not PowerShell `>` redirection — the latter adds a BOM and changes the file hash.
+
+---
+
+## `number_of_days_generate` invented a 1-day count
+
+**Symptoms (verified 2026-07-29):** on bills that print **no billing period at all**, the
+reasoning twin answered `1` while `number_of_days_extract` correctly returned nothing at
+0.904 every run — `260629_0010` 2/5 (0.447–0.468), `bug_260629_0012` 4/5 (one at **0.984**),
+`bug_260601_0018` 3/5, `bug_260605_0017` 2/5. Reproduced on a live HEAD control, so it is
+independent of any prompt change. Same family as the `invoice_date` print-timestamp case.
+
+**Cause:** `build_write_values` passes non-date fields through **regardless of confidence** —
+`write[DAYS_FINAL] = days if days is not None else ""` never consulted the twin resolution,
+so an ungrounded value reached Dynamics with `passed=False`.
+
+**Fix:** `DAYS_FINAL` added to `NO_GENERATE_RESCUE`, plus a reliability gate on the written
+value. Verified by replaying all 100 cached results: the four flipping docs go stably blank
+and all eleven legitimate counts survive 5/5.
+
+**Trade-off, accepted deliberately (confirmed with the user 2026-07-30):** this removes the
+generate-only "prose day count" rescue (`bchydro`-style *"used over 30 days"*) that a unit
+test documented. Justified because every real day count in the corpus is span-grounded —
+`bchydro`'s 30 comes from the **extract** twin at 0.71–0.98, not from prose — and because
+confidence alone cannot filter the invented values (one landed at 0.984). It feeds the tenant
+utility-sharing math and the billing-start derivation, where the standing policy is already
+"blank beats a substituted value". Twin **agreement** still writes a sub-threshold count.
+
+---
+
+## `260629_0010` asserted a routing decision that was always a coin-flip
+
+**Symptoms:** the sidecar asserted `routingDecision: HAPPY_PATH_CANDIDATE`, but the doc
+returns `REVIEW_B4_CRITICAL_FIELD` on roughly 2 runs in 5 — including on a **live HEAD
+control with the unmodified prod prompt**, so it flakes for anyone's change.
+
+**Cause:** `service_address_extract` returns a *confident null* (~0.78) on those runs, and the
+generate twin that then supplies the address straddles the 0.73 bar (0.62–0.87 observed).
+The written `service_address` is byte-identical on every run; only the routing moves.
+
+**Fix:** the `routingDecision` assertion removed and the mechanism recorded in the sidecar
+note; every value assertion kept. This is *not* corpus-loosening in the forbidden sense — the
+corpus's own rule is that an unstable key is never asserted, and asserting a coin-flip
+guarantees a future red run. The intermittent-null extract remains a standing open item.

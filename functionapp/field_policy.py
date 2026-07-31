@@ -888,8 +888,26 @@ def build_write_values(
     # day count afterwards (derive_billing_period_start).
     for name in (BILLING_START_FINAL, BILLING_END_FINAL):
         write[name] = _normalize_date(write[name]) or ""
+    # A day count is only meaningful for a bill that HAS a billing period, so it is kept
+    # only when the period end date resolved. On bills printing no period at all the
+    # reasoning twin has been observed inventing "1" (0.45-0.98 across four corpus docs)
+    # where the extract twin correctly returned nothing -- and that count feeds the tenant
+    # utility-sharing math and the billing-start derivation below.
+    #
+    # Keyed on the period rather than on confidence or on which twin answered, because
+    # neither of those separates the two cases: a legitimate count can come from the
+    # generate twin alone (bug_260609_0031 reads 19 only there on 2 runs in 3, corroborated
+    # by its printed 2026-05-08..2026-05-26 period) and can sit below the bar, while an
+    # invented one has been seen at 0.984. "Is there a period?" separates them cleanly.
+    # ...OR the count is grounded on the page in its own right: abbotsford_water prints a
+    # DAYS column its extract twin reads 8/8 (0.74-0.99) while its period end -- a meter
+    # reading date supplied by the generate twin -- intermittently fails to resolve. A
+    # printed count must not be discarded because a *different* field had a bad run.
     days = _days_int(write[DAYS_FINAL])
-    write[DAYS_FINAL] = days if days is not None else ""
+    days_grounded = resolve_field(DAYS_FINAL, parsed, threshold)[4] in ("extract", "agreement")
+    write[DAYS_FINAL] = (
+        days if (days is not None and (write[BILLING_END_FINAL] or days_grounded)) else ""
+    )
 
     # sub_bill_type is derived too: commercial from the resolved PO's prefix,
     # municipal from the classified label (confidence bar / generate-twin
