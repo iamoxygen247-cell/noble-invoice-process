@@ -561,6 +561,50 @@ def test_vendor_extract_generate_twin():
     check("vendor rescue writes the generate value", r["writeValues"]["vendor_name"] == "FortisBC",
           str(r["writeValues"].get("vendor_name")))
 
+    # A "dba" bill prints the legal entity AND the trade name; the generate twin returns
+    # only the trade name, which agrees by substring containment. The printed name wins
+    # regardless of confidence -- without this the more confident trade name is written.
+    dba = "Graffiti Guys Removal Services\ndba Goodbye Graffiti Surrey"
+    fields = commercial_fields(
+        vendor_name_extract=fstr(dba, 0.662),
+        vendor_name_generate=fstr("Goodbye Graffiti", 0.710),
+    )
+    r = ev(fields)
+    check("dba: printed name beats a MORE confident trade name",
+          r["writeValues"]["vendor_name"] == "Graffiti Guys Removal Services dba Goodbye Graffiti Surrey",
+          str(r["writeValues"].get("vendor_name")))
+    check("dba: below threshold but corroborated -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("dba: source = agreement", r["resolutions"]["vendor_name"]["source"] == "agreement",
+          str(r["resolutions"].get("vendor_name")))
+
+    # Same bill, a replicate where CU truncated the extract at the line break: no dba
+    # connector to see, extract clears on its own, legal name written.
+    fields = commercial_fields(
+        vendor_name_extract=fstr("Graffiti Guys Removal Services", 0.981),
+        vendor_name_generate=fstr("Goodbye Graffiti", 0.710),
+    )
+    r = ev(fields)
+    check("dba truncated by CU -> extract stands on its own",
+          r["writeValues"]["vendor_name"] == "Graffiti Guys Removal Services",
+          str(r["writeValues"].get("vendor_name")))
+    check("dba truncated -> source = extract",
+          r["resolutions"]["vendor_name"]["source"] == "extract", str(r["resolutions"].get("vendor_name")))
+
+    # dba detector: connector spellings recognised, ordinary vendor names untouched.
+    has_dba = field_policy._has_dba_clause
+    check("dba connector recognised", has_dba("ABC Services dba Xyz"))
+    check("d/b/a recognised", has_dba("ABC Services d/b/a Xyz"))
+    check("d.b.a. recognised", has_dba("ABC Services D.B.A. Xyz"))
+    check("dba after a newline recognised", has_dba(dba))
+    check("dba in parentheses recognised", has_dba("ABC Services (dba Xyz)"))
+    for name in ("City of Surrey", "BC Hydro", "FortisBC Energy Inc.", "SIMON SIK FAI KAN",
+                 "PRIORITY appliance service", "WASTE CONNECTIONS OF CANADA", "JMEC Electric",
+                 "District of West Vancouver", "Vangate Locksmith"):
+        check(f"no false dba match: {name}", not has_dba(name))
+    check("dba inside a word is not a connector", not has_dba("Dbanks Roofing"))
+    check("dba detector ignores non-strings", not has_dba(None))
+
     # consistency helper: suffixes / case / spacing ignored; genuinely different names are not.
     consistent = field_policy._vendor_values_consistent
     check("legal suffix ignored in comparison", consistent("FortisBC Energy Inc.", "FortisBC"))

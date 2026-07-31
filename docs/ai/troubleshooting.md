@@ -1269,18 +1269,89 @@ inert (never harmful) if the deployed analyzer lacks `bill_to_address` — it ju
 
 ---
 
-## OPEN BUG — `vendor_name` drops the "dba" trade name (3 fixes attempted, all reverted)
+## `vendor_name` drops the "dba" trade name — FIXED in code (4 prompt attempts failed first)
 
-> **Status 2026-07-30: UNFIXED and not shipped.** Three designs were built and measured
-> against the corpus; every one regressed something worse than the bug. All of it was
-> reverted — `analyzers/create-generalinvoice-analyzer.json` is untouched. This section is
-> kept so the next attempt starts from the measurements instead of repeating them. Do not
-> re-try approaches 1-3 below without new information.
+> **Status 2026-07-31: FIXED, code-side, prompt untouched.** The fix is one branch in
+> `field_policy._prefer_vendor_generate`: when the extract twin carries a "dba" connector,
+> the printed name wins over the generate twin's short common name, regardless of
+> confidence. `analyzers/create-generalinvoice-analyzer.json` is **unchanged** — a fourth
+> prompt attempt was measured and reverted too (attempt 4 below).
 >
-> The reproduction PDF stays at `samples/bug_260504_0021.pdf`. It was deliberately **not**
-> left in `tests/pre-commit-test/`: the standing rule is that a bug fix grows the corpus, but
-> there is no fix here, and a sidecar asserting the correct `vendor_name` would be red from
-> the moment it landed. Add it in the same change as a working fix.
+> The reproduction PDF is now a corpus anchor at `tests/pre-commit-test/bug_260504_0021.pdf`.
+> Its sidecar does **not** assert `vendor_name` (see below); the real guard is the
+> deterministic dba block in `tests/test_field_policy_gates.py::test_vendor_extract_generate_twin`.
+
+**The fault that was actually fixed — #3, the only one never attempted.** Of the three
+faults catalogued below, only #3 fired on the 2026-07-31 reproduction. Replaying the
+observed twins through the real resolver:
+
+```
+extract  = 'Graffiti Guys Removal Services\ndba Goodbye Graffiti Surrey'  @ 0.662
+generate = 'Goodbye Graffiti'                                             @ 0.710
+agree = True (substring containment)   prefer_generate = True (0.710 >= 0.662)
+=> RESOLVED 'Goodbye Graffiti', passed=True, source=agreement  -- the bug
+```
+
+The extract twin had the vendor **right** and the confidence tiebreak threw it away.
+Attempts 1-3 were all prompt-side, which is why three rounds of prompt work never reached
+it. Lesson: when a twin is correct and the *arbitration* discards it, fix the arbitration.
+
+**Why this fix is cheap and safe:** it touches no prompt, so `regress.py` re-scores the
+cached raw CU results for free (0 CU calls), no prod analyzer push is needed, and there is
+no cross-field coupling risk. It is a no-op on all 20 known corpus and test vendor values —
+none contains a dba connector — and all 10 pinned vendor cases (FortisBC ×2, SIMON ×2,
+LevEllen, ACME, Whoever, empty-extract rescue, CITY OF SURREY, Xpert) are byte-identical.
+
+**Verified live, 10 replicates, both arms** — `writeValues.vendor_name` was never
+`Goodbye Graffiti` in 20/20 runs. The written value legitimately flips between two
+acceptable forms because the extract twin itself truncates at the line break on some runs:
+`Graffiti Guys Removal Services dba Goodbye Graffiti Surrey` (8/10) and
+`Graffiti Guys Removal Services` (2/10). The business decision (2026-07-31) is that both
+are acceptable, so the sidecar asserts neither.
+
+### Attempt 4 — re-ranking the sources in `vendor_name_generate`. Measured HARMFUL, reverted.
+
+Rewrote the printed-before-logo rule as an explicit ranked list, logo last:
+*"Prefer printed text over a stylized logo …: (1) remittance/remit-to; (2) footer legal name
+or a 'does business as' clause; (3) contact block or website domain; (4) a stylized logo …,
+only when the name is printed nowhere else."* Same-day A/B, 10 replicates per arm, on the
+target document:
+
+| `vendor_name_generate` | HEAD | attempt 4 |
+|---|---|---|
+| `Graffiti Guys Removal Services` (legal name) | **8/10** | **0/10** |
+| `Goodbye Graffiti` (trade name) | 2/10 | **10/10** |
+
+It made the twin *worse* on the document it was written for. Two probable causes, both in
+the edit: it **deleted** the sentence *"When the name appears both as a stylized logo and as
+printed body text, use the printed text"* — exactly the both-present tiebreak this bill needs
+— and it converted a rejection (*"rather than a stylized logo"*) into a **permission**
+(*"(4) a logo … only when"*). That is Lesson 1 again from the other direction: naming the bad
+pattern as an allowed fallback makes it available.
+
+**Corrected premise worth keeping.** It was assumed (in an earlier draft of this section, and
+again in 2026-07-31 planning) that the generate twin returns the trade name because that *is*
+the short common name, and that `Goodbye Graffiti` came from printed text rather than the
+logo. Both are wrong: under the shipped prompt the twin returns the **legal name 8/10**. The
+`Goodbye Graffiti` in the bug report was the 2/10 minority case.
+
+**Method note — a cached control proves nothing, restated the hard way.** Attempt 4's first
+corpus run showed 2 UNSTABLE docs (`abbotsford_water total_invoice_amount_generate`,
+`surrey_water billing_period_start_date`), each stable across 12 cached buckets, which looked
+like proof the edit caused them. It was not. A fresh 5-replicate run on the **unedited** HEAD
+prompt produced its own novel UNSTABLE (`bug_260605_0017 payment_due_date`, likewise stable
+in 12 buckets). Each bucket holds only 3-5 replicates of a given field, so a ~1-in-5 flip
+simply had not landed yet; every fresh 5-replicate corpus run surfaces one or two, in
+whichever bucket is fresh. **At n=5 the corpus has a background flake rate of 1-2 UNSTABLE
+(doc, field) pairs — a raw UNSTABLE count cannot attribute causation.** What settled attempt 4
+was a same-day, both-arms A/B on the single document under test, in a reserved replicate band
+(`r100+`), which cost 20 calls instead of ~400.
+
+**Known pre-existing instability, not caused by this change:** `bug_260605_0017`
+`payment_due_date` defaults to today+30 on roughly 1 run in 5 (its cached `r4` in bucket
+`2ecdbe8dca80` holds such a run, so `--replicates 5` stays red on that pair until the cache
+is rebuilt). The default 3-replicate run the pre-commit hook and the prod-push gate use is
+green: 348/348 across 20 docs.
 
 **Symptoms (verified 2026-07-29, `samples/bug_260504_0021.pdf`, Goodbye Graffiti inv 37766):**
 the bill prints the vendor on two lines — `Graffiti Guys Removal Services` / `dba Goodbye

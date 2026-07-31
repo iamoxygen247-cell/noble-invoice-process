@@ -540,6 +540,17 @@ def _vendor_values_consistent(a: Any, b: Any) -> bool:
     return ta <= tb or tb <= ta
 
 
+# A "does business as" connector joining a legal entity to its trade name, e.g.
+# "Graffiti Guys Removal Services / dba Goodbye Graffiti Surrey". Word-boundary anchored
+# so it cannot fire inside an ordinary vendor word.
+_DBA_CONNECTOR = re.compile(r"(?i)(?:^|(?<=[\s,.;:()\-]))(?:dba|d/b/a|d\.b\.a\.?)(?=$|[\s,.;:()\-])")
+
+
+def _has_dba_clause(value: Any) -> bool:
+    """True when the printed vendor name carries a 'does business as' connector."""
+    return isinstance(value, str) and _DBA_CONNECTOR.search(value) is not None
+
+
 def _prefer_vendor_generate(
     e_val: Any, e_conf: Optional[float], g_val: Any, g_conf: Optional[float]
 ) -> bool:
@@ -549,6 +560,15 @@ def _prefer_vendor_generate(
     the spellings genuinely differ -- a shortened personal name, a dropped descriptor --
     write whichever twin the model was more confident in; a tie keeps the normalised
     generate name."""
+    # An extract carrying a "dba" clause printed both the legal entity and the trade name;
+    # the generate twin returns only the short common name, which on such a bill is the
+    # trade name alone ("Goodbye Graffiti" for "Graffiti Guys Removal Services dba Goodbye
+    # Graffiti Surrey"). The trade name "agrees" by substring containment, so without this
+    # the confidence tiebreak below would discard the fuller printed name whenever the
+    # generate twin scored higher -- which is the bug: a 0.710 trade name beat the correct
+    # 0.662 extract. The printed name wins on these bills regardless of confidence.
+    if _has_dba_clause(e_val):
+        return False
     if _normalize_vendor(e_val) == _normalize_vendor(g_val):
         return True
     return (g_conf or 0.0) >= (e_conf or 0.0)

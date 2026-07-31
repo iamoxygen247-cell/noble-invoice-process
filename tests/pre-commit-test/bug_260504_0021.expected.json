@@ -1,0 +1,24 @@
+{
+  "note": "Commercial 'dba' invoice (Goodbye Graffiti inv 37766) -- the anchor for the vendor_name trade-name bug. The bill prints the vendor on two lines, 'Graffiti Guys Removal Services' over 'dba Goodbye Graffiti Surrey', and the pipeline used to write the trade name 'Goodbye Graffiti' alone: the generate twin returns the short common name, that name agrees with the printed pair by substring containment, and _prefer_vendor_generate then picked whichever twin scored higher -- a 0.710 trade name beat the correct 0.662 printed name. Fixed in field_policy._prefer_vendor_generate, which now keeps the printed name whenever the extract carries a dba connector. vendor_name is deliberately NOT asserted: across 10 live replicates the extract twin returns the full pair 8/10 and truncates at the line break 2/10, so the written value flips between two ACCEPTABLE forms ('Graffiti Guys Removal Services dba Goodbye Graffiti Surrey' and 'Graffiti Guys Removal Services') -- asserting either would be asserting a coin flip. Same reason as fortisbc and bug_260605_0017. The fix itself is code, not prompt, so its real guard is the deterministic dba block in tests/test_field_policy_gates.py::test_vendor_extract_generate_twin; what this doc anchors is that the trade name never wins on a live document. payment_due_date is printed (2026-05-31, Net 30) but is NOT asserted: on 1 run in 5 the extract returns nothing and it defaults to today+30, the catalogued payment_due_date instability. || NOT asserted here: vendor_name, payment_due_date, invoice_description, account_number (none printed).",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "service_address": "14795 108 Ave\nSurrey, BC",
+      "total_invoice_amount": 192.94,
+      "invoice_date": "2026-05-01",
+      "invoice_number": "37766",
+      "po_or_job_number": "33001669",
+      "gst_amount": 9.19,
+      "pst_amount": 0,
+      "bill_type": "commercial",
+      "sub_bill_type": "service",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 192.94,
+      "total_invoice_amount_generate": 192.94
+    }
+  }
+}
