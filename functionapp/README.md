@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "twin-resolution-v7",
+  "policyBucket": "commercial", "policyVersion": "twin-resolution-v8",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -167,6 +167,20 @@ endpoints — with `resolutions.billing_period_start_date.source` = `"derived"`,
 confidence the weaker of the two inputs, and an advisory flag recording the
 derivation. A printed start value, even below the confidence bar, is never
 overwritten by the derivation.
+
+Sectioned-bill GST (municipal bills only): a utility bill that splits its charges
+into sections prints a GST line under each and need not print a bill-level recap,
+and on such a bill CU has been observed returning one section's line from *both*
+twins — so they agree, the pair passes on corroboration, and no twin-resolution
+rule can catch it. The GST amounts printed in the OCR text are read instead: when
+two or more appear, the answer is the printed recap (the one amount equal to the
+sum of the others) or, when none is printed, their sum. The candidate is written
+only if it satisfies the bill's own arithmetic — GST ≈ 5% of `total − gst − pst` —
+and the value CU resolved does not, with `resolutions.gst_amount.source` =
+`"sectioned_sum"`, confidence `1.0`, and an advisory flag. Text proposes the
+candidate and arithmetic confirms it; neither is trusted alone, so a bill carrying
+an untaxed charge (a security deposit, a levy) fails the check and is left alone.
+`amount_excluding_gst` is recomputed from the corrected value.
 
 When gate A1 short-circuits (another invocation is processing the same item), the
 response has `alreadyProcessed: true`, `skippedCU: true`, and `routingDecision`

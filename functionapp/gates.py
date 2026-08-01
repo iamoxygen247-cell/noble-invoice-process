@@ -602,6 +602,52 @@ def evaluate(
                 "(no SHIP TO / Service Address block on the document)"
             )
 
+    # Sectioned-bill GST. A utility bill that splits its charges into sections prints a
+    # GST line under each and need not print a bill-level recap
+    # (samples/bug_260528_0016.pdf: 0.90 under "Gas charges" + 0.75 under "Other charges
+    # & adjustments" on a 34.69 bill). BOTH twins return the first section's line there --
+    # 0.90 at 0.517 / 0.461, the confidence signature of picking between equally-labelled
+    # candidates -- so they agree, the pair passes on corroboration, and no twin-resolution
+    # rule can help. Read the printed GST lines instead and let the bill's own arithmetic
+    # confirm the total (field_policy.resolve_sectioned_gst).
+    #
+    # Municipal only: sectioned GST is a utility-bill pattern, and confining it here keeps
+    # out the commercial shapes whose GST legitimately breaks the 5% identity (a trade
+    # invoice whose admin fee is quoted "incl. 5% GST", a multi-invoice statement).
+    #
+    # NOT gated on the field being critical, unlike the PO rescue: gst_amount is critical
+    # for the commercial bucket only, which is exactly why the observed failure shipped
+    # HAPPY_PATH_CANDIDATE on a municipal bill -- with a silently wrong derived
+    # amount_excluding_gst -- and never reached a reviewer.
+    pst_resolution = resolutions[field_policy.PST_FINAL]
+    if (bucket == field_policy.MUNICIPAL
+            # The identity divides by the total, so a total we do not trust could
+            # corroborate a wrong candidate. Same for PST: when the pst twins come back
+            # empty the field defaults to 0, which is a fact only if nothing was found
+            # anywhere (source "none") rather than found and disbelieved.
+            and resolutions[field_policy.TOTAL_FINAL][2]
+            and (pst_resolution[2] or pst_resolution[4] == "none")):
+        gst_value = resolutions[field_policy.GST_FINAL][0]
+        summed_gst = field_policy.resolve_sectioned_gst(
+            field_policy.find_gst_line_amounts(collect_markdown(full)),
+            gst_value,
+            write_values[field_policy.TOTAL_FINAL],
+            write_values[field_policy.PST_FINAL],
+        )
+        if summed_gst is not None:
+            # Confidence 1.0 and passed like the PO rescue: the value is a pure function
+            # of the OCR text and the bill's arithmetic, not a model read.
+            resolutions[field_policy.GST_FINAL] = (summed_gst, 1.0, True, None, "sectioned_sum")
+            write_values[field_policy.GST_FINAL] = summed_gst
+            write_values["amount_excluding_gst"] = field_policy.amount_excluding_gst(
+                write_values[field_policy.TOTAL_FINAL], summed_gst
+            )
+            advisory.append(
+                f"gst_amount {summed_gst} taken from the bill's own GST lines: this bill "
+                f"taxes each charge section separately and CU returned {gst_value!r}, one "
+                "section's line"
+            )
+
     b4_review, b4_reasons, b4_failed = evaluate_b4(fields, critical, field_threshold, resolutions)
     if len(po_candidates) > 1:
         b4_reasons.append(

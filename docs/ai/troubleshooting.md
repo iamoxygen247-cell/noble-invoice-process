@@ -1118,6 +1118,90 @@ values first, confidence second.
 
 ---
 
+## `gst_amount`: the same bug again on a bill with no recap -- fixed in code, not the prompt
+
+**Symptoms (measured 2026-07-31, `samples/bug_260528_0016.pdf`):** a FortisBC gas bill
+that taxes each charge section separately -- `GST (5% of ' amounts) $0.90` under
+`Gas charges`, `GST (5% of # amounts) $0.75` under `Other charges & adjustments` -- and
+prints **no** bill-level tax recap. Correct `gst_amount` is 1.65; production wrote
+**0.90**, so `amount_excluding_gst` shipped as 33.79 instead of 33.04. The bill is
+municipal, where `gst_amount` is not critical, so it shipped `HAPPY_PATH_CANDIDATE` with
+no review.
+
+**Cause -- two layers, and the second is why the previous prompt fix could not help:**
+
+1. *Both* twins returned the first section's line: `gst_amount_extract` 0.90 @ **0.517**
+   and `gst_amount_generate` 0.90 @ **0.461** (`out/verify_scorecard.html`). The
+   sectioned-bill branch added in `c24dad1` illustrates sections with BC Hydro's
+   vocabulary (`TAXES ON ACCOUNT CHARGES`); FortisBC uses category headers and footnote
+   symbols, and the branch did not trigger. The ~0.5 confidence band is the same
+   "choosing between equally-labelled candidates" signature recorded above.
+2. Because the twins **agree**, the pair passes on corroboration and
+   `field_policy.resolve_twin` is doing exactly what it should. There is no
+   twin-resolution change that fixes this, and no confidence change either: raising
+   confidence on 0.90 only ships the wrong value harder, and lowering it cannot route a
+   field that is not critical for its bucket.
+
+**Fix (shipped 2026-07-31, code-only -- the analyzer is untouched, so no prod push):**
+`gates.evaluate` reads the GST amounts printed in the OCR markdown
+(`field_policy.find_gst_line_amounts`) and, on **municipal** bills only, resolves them
+(`resolve_sectioned_gst`): with two or more amounts, the answer is the printed recap --
+the one amount equal to the sum of the others -- or, with no recap, their sum. It is
+written only when it satisfies the bill's arithmetic (`gst_consistent_with_total`:
+GST ≈ 5% of `total − gst − pst`) **and** the value CU resolved does not. Source
+`"sectioned_sum"`, confidence 1.0, plus an advisory; `amount_excluding_gst` is
+recomputed.
+
+**Why the guards are shaped the way they are (all measured, not assumed):**
+
+| document | bucket | residual vs the 5% identity | why it must not fire |
+|---|---|---|---|
+| `bug_260528_0016` (the bug), correct 1.65 | municipal | 0.1% | *must* fire |
+| same bill, wrong 0.90 | municipal | 88% | the value being replaced |
+| `fortisbc` 228.08 / 10.82 | municipal | **0.40%** | the BC clean energy levy is charged but NOT GST-taxable -- a systematic miss on every FortisBC bill, so the tolerance must admit it |
+| `trade11` 222.88 / 9.95 | commercial | **7.0%** | an admin fee printed "incl. 5% GST" -- must stay outside |
+| `bug_260629_0026` 198.14 / 1.01 | municipal | **876%** | an untaxed $177 security deposit |
+
+Hence the tolerance `max(2 cents, 1% of expected)` -- it sits in the real gap between
+≤0.4% (correct values, rounding + untaxed levy) and ≥7% (everything else). **Do not
+widen it**; the tests assert both `fortisbc` and `trade11` so a later widening fails
+loudly.
+
+`bug_260629_0026` is the one landmine still in scope, and note *why* it is safe: it does
+**not** have a single GST line (an earlier reading of this was wrong -- it prints three:
+0.68, 0.33, and a recap 1.01). It is declined because the recap branch identifies
+1.01 = 0.68 + 0.33, which is what CU already resolved. Its sidecar asserts
+`gst_amount 1.01` / `amount_excluding_gst 197.13`, so `regress.py` is the tripwire.
+
+**Measured blast radius:** across all 22 corpus documents x 5 replicates the rule fires
+on exactly one document (`bug_260528_0016` -> 1.65, 5/5), and `find_gst_line_amounts`
+returns an identical result on every replicate of every document. `pytest` 96 passed;
+`regress.py` 387/387 expectations OK with 0 CU calls.
+
+**Corpus:** both `bug_260528_0016` (no recap) and `bug_260624_0015` (recap printed) were
+added. The latter motivated the 2026-07-23 prompt fix but had never been added, so the
+recap branch had no coverage at all until now.
+
+**Reusable lessons:**
+- When **both** twins agree on a wrong value at ~0.5 confidence, the prompt is
+  underdetermined for that document shape and no resolution-rule or threshold change can
+  reach it. That is the point to stop layering prompt wording (this would have been the
+  third layer on a ~450-word description) and derive the value deterministically.
+- Confidence is not a fix for a wrong value. Check *which gate is actually failing*
+  before tuning confidence -- here nothing was failing, and the field was not even
+  critical for its bucket.
+- Pair a text-derived value with an independent arithmetic check. Either alone is
+  unsafe: text alone would sum a multi-invoice statement, arithmetic alone cannot
+  propose a value.
+- Scoping a rule to the bucket where the pattern actually occurs (municipal utilities)
+  removed two of the three known landmines for free.
+- Read the real cached OCR markdown before writing any text rule. CU renders the same
+  vendor's bill as an HTML table on one document and as flat lines on another, and the
+  amount lives in a *different cell* from its label -- a line-based regex written from
+  the PDF's visual layout would have failed on both.
+
+---
+
 ## `invoice_number` on water / gas bills: the filename IS the answer
 
 **Business rule (confirmed by the product owner, 2026-07-24):** water, sewer, and

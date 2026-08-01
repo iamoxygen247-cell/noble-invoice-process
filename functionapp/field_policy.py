@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "twin-resolution-v7"
+POLICY_VERSION = "twin-resolution-v8"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -468,7 +468,7 @@ def date_corroborated_in_text(value: Any, text: str) -> Optional[str]:
 # --- derived value -----------------------------------------------------------
 
 
-def _amount_excluding_gst(total: Any, gst: Any) -> Optional[float]:
+def amount_excluding_gst(total: Any, gst: Any) -> Optional[float]:
     """
     total - gst, when both are present. In a multi-tax province this equals
     (subtotal + PST), i.e. literally "amount excluding GST" -- not a pre-tax
@@ -481,6 +481,155 @@ def _amount_excluding_gst(total: Any, gst: Any) -> Optional[float]:
         return round(float(total) - float(gst), 2)
     except (TypeError, ValueError):
         return None
+
+
+# --- sectioned-bill GST ------------------------------------------------------
+
+GST_RATE = 0.05
+# How far the GST identity below may miss and still corroborate: 2 cents, or 1% of
+# the expected GST, whichever is larger. Both bounds are pinned by real documents.
+# The floor covers per-section cent rounding (worst measured 0.9 cents on a 66.39
+# bill). The ratio exists for FortisBC: its BC clean energy levy is charged but NOT
+# GST-taxable, a systematic 0.40%-of-GST miss on every FortisBC bill (228.08/10.82
+# residual 0.043). Above that the next cluster starts at 7.0% (a trade invoice
+# whose admin fee is printed "incl. 5% GST") and runs to 876% (a bill carrying an
+# untaxed security deposit) -- both of which MUST stay outside. The gap between
+# 0.4% and 7% is where this tolerance lives; widening it lets a wrong amount
+# corroborate.
+GST_IDENTITY_TOLERANCE = 0.02
+GST_IDENTITY_TOLERANCE_RATIO = 0.01
+
+
+def gst_consistent_with_total(gst: Any, total: Any, pst: Any = 0) -> bool:
+    """
+    True when ``gst`` is ~5% of this bill's pre-tax amount (total - gst - pst).
+
+    Asymmetric evidence: a True means the amount fits the bill's arithmetic and is
+    almost certainly the document-level GST. A False means nothing on its own --
+    any non-taxable charge (a security deposit, a levy, a fee quoted tax-included)
+    breaks the identity for the *correct* value too. Only True is ever acted on.
+    """
+    g, t = _money(gst), _money(total)
+    if g is None or t is None:
+        return False
+    expected = GST_RATE * (t - g - (_money(pst) or 0.0))
+    tolerance = max(GST_IDENTITY_TOLERANCE, GST_IDENTITY_TOLERANCE_RATIO * abs(expected))
+    return abs(g - expected) <= tolerance
+
+
+def _money(value: Any) -> Optional[float]:
+    """A money value parsed from a CU number or string, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+_GST_LABEL = re.compile(r"(?i)\bG\.?\s?S\.?\s?T\.?\b|\bgoods and services tax\b")
+# A charged amount: optional $, optional thousands separators, exactly two decimals,
+# and not a percentage. The two-decimal requirement is what keeps a GST registration
+# number printed in the same cell out of the results -- "BC GST 866808298RT0007 |
+# $295.61" yields 295.61, and "GST Registration # R121454151" yields nothing. The
+# %-exclusion drops the rate column on invoices that print "GST | 5.00% | $23.50".
+_GST_MONEY = re.compile(r"\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?!\d)(?!\s*%)")
+_TABLE_ROW = re.compile(r"<tr>.*?</tr>", re.S)
+
+
+def find_gst_line_amounts(text: Optional[str]) -> List[float]:
+    """
+    Distinct GST amounts printed in the document text, in order of first appearance.
+
+    CU renders a bill's charge table either as an HTML table or as flat lines, and
+    both shapes occur on FortisBC bills, so both are read: a table row is one unit,
+    and in flat text a label line plus the line after it is one unit. Within a unit
+    the LAST amount is the charge -- 'TAXES ON ELECTRICITY CHARGES * GST 5% on
+    $49.72 | $2.49' prints the base the tax was computed on first and the tax
+    itself last.
+
+    Distinct by value on purpose (like find_po_candidates): a bill that prints the
+    same GST twice -- one section plus a recap of the same amount -- collapses to a
+    single amount, and the caller then declines. The cost is that two sections
+    charging *identical* GST also collapse, which under-fires rather than writing a
+    wrong sum.
+    """
+    if not text:
+        return []
+    out: List[float] = []
+    seen: set = set()
+
+    def take(unit: str) -> None:
+        label = _GST_LABEL.search(unit)
+        if label is None:
+            return
+        # Only amounts printed AFTER the label belong to it. This drops the neighbouring
+        # column on a row that ends with the GST cell ("... | 5,912.20 | BC GST ... |
+        # $295.61"), and in flat text it stops a label line from claiming the amount
+        # printed above it.
+        amounts = [
+            float(m.group(1).replace(",", ""))
+            for m in _GST_MONEY.finditer(unit[label.end():])
+        ]
+        if amounts and amounts[-1] not in seen:
+            seen.add(amounts[-1])
+            out.append(amounts[-1])
+
+    spans = [(m.start(), m.end()) for m in _TABLE_ROW.finditer(text)]
+    for start, end in spans:
+        take(re.sub(r"\s+", " ", text[start:end]))
+
+    lines = text.split("\n")
+    offset = 0
+    for i, line in enumerate(lines):
+        line_start, offset = offset, offset + len(line) + 1
+        if any(a <= line_start < b for a, b in spans):
+            continue  # already read as part of a table row
+        take(line + " | " + (lines[i + 1] if i + 1 < len(lines) else ""))
+    return out
+
+
+def resolve_sectioned_gst(
+    amounts: List[float], current: Any, total: Any, pst: Any = 0
+) -> Optional[float]:
+    """
+    The bill-level GST for a utility bill that taxes each charge section separately,
+    or None when the rule does not apply.
+
+    A sectioned bill prints a GST line under each section and may or may not print a
+    bill-level recap. When a recap IS printed one of the amounts equals the sum of
+    the others, and that amount is the answer; when it is not, the sections add up
+    to it. Both branches are then checked against the bill's own arithmetic
+    (gst_consistent_with_total), so a sum that does not fit the total is never
+    written -- text proposes the candidate, arithmetic confirms it, neither is
+    trusted alone.
+
+    Declines (returns None) when fewer than two GST amounts are printed, when the
+    candidate is what was already resolved, when the candidate fails the identity,
+    or when the current value already satisfies it.
+    """
+    if len(amounts) < 2:
+        return None
+
+    candidate = None
+    total_printed = sum(amounts)
+    for amount in amounts:
+        # "The others" by subtraction rather than by filtering the list, so a line that
+        # happens to carry the same amount as another is not silently dropped.
+        if abs(amount - (total_printed - amount)) < 0.005:
+            candidate = amount  # a printed recap covering the section lines
+            break
+    if candidate is None:
+        candidate = round(sum(amounts), 2)
+
+    current_value = _money(current)
+    if current_value is not None and abs(candidate - current_value) < 0.005:
+        return None
+    if not gst_consistent_with_total(candidate, total, pst):
+        return None
+    if gst_consistent_with_total(current_value, total, pst):
+        return None
+    return candidate
 
 
 def derive_billing_period_start(
@@ -942,6 +1091,6 @@ def build_write_values(
 
     # amount_excluding_gst is derived from the resolved total and gst, not the raw CU
     # fields (which are now the *_extract / *_generate twins).
-    write["amount_excluding_gst"] = _amount_excluding_gst(write[TOTAL_FINAL], write[GST_FINAL])
+    write["amount_excluding_gst"] = amount_excluding_gst(write[TOTAL_FINAL], write[GST_FINAL])
 
     return write, defaulted

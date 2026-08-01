@@ -1,0 +1,28 @@
+{
+  "note": "Sectioned-bill GST anchor, recap printed -- the counterpart to bug_260528_0016. This BC Hydro bill taxes each section separately (TAXES ON ACCOUNT CHARGES * GST 5% $0.68, TAXES ON ELECTRICITY CHARGES * GST 5% on $49.72 $2.49) AND prints the bill-level total in a recap (TAX SUMMARY GST 5% on $63.22 $3.17). gst_amount must be the recap 3.17, never one section's line and never the 6.34 grand sum of all three printed GST amounts. This document motivated the 2026-07-23 prompt fix but was never added to the corpus; it is the only doc pinning the recap branch. || NOT asserted here: invoice_description, which flips between 'Electricity utility charges' and 'Electricity charges and account set-up' run to run.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "BC Hydro",
+      "service_address": "6928 FREMLIN ST\nVANCOUVER BC V6P 3W4",
+      "total_invoice_amount": 66.39,
+      "invoice_date": "2026-06-17",
+      "payment_due_date": "2026-07-09",
+      "invoice_number": "114016421014",
+      "po_or_job_number": null,
+      "gst_amount": 3.17,
+      "pst_amount": 0,
+      "account_number": "13621820",
+      "bill_type": "municipal",
+      "sub_bill_type": "electric",
+      "billing_period_start_date": "2026-05-19",
+      "billing_period_end_date": "2026-06-15",
+      "number_of_days": 28,
+      "amount_excluding_gst": 63.22
+    },
+    "fields": {
+      "total_invoice_amount_extract": 66.39,
+      "total_invoice_amount_generate": 66.39
+    }
+  }
+}

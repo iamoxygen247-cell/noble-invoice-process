@@ -920,6 +920,226 @@ def test_amount_and_po_twins():
     check("empty po does not agree", not field_policy._po_values_agree("", "12345678"))
 
 
+# --- sectioned-bill GST ------------------------------------------------------
+
+# Real OCR shapes, copied from the cached CU markdown of the corpus documents named.
+MD_FORTIS_TWO_SECTIONS = """<table>
+<tr><td>Basic charge (25 days at 0.4216 per day)</td><td>$10.54+&lt;</td></tr>
+<tr><td>BC clean energy levy (0.40% of + amounts)</td><td>$0.07</td></tr>
+<tr><td>GST (5% of ' amounts)</td><td>$0.90</td></tr>
+<tr><td>Total gas charges</td><td>$18.94</td></tr>
+<tr><td colspan="2">Other charges &amp; adjustments</td></tr>
+<tr><td>Application charge</td><td>$15.00#</td></tr>
+<tr><td>GST (5% of # amounts)</td><td>$0.75</td></tr>
+<tr><td>Total other charges</td><td>$15.75</td></tr>
+<tr><td>Pay<br>$</td><td>34.69</td></tr>
+</table>
+GST: R100431592"""
+
+MD_HYDRO_RECAP = """GST Registration # R121454151
+<table>
+<tr><td>TAXES ON ACCOUNT CHARGES<br>* GST 5%</td><td>$0.68</td></tr>
+<tr><td>TAXES ON ELECTRICITY CHARGES<br>* GST 5% on $49.72</td><td>$2.49</td></tr>
+<tr><td>TOTAL DUE</td><td>$66.39</td></tr>
+<tr><td>TAX SUMMARY<br>GST 5% on $63.22</td><td>$3.17</td></tr>
+</table>"""
+
+# bug_260629_0026: the untaxed $177 security deposit bill. Three GST lines, and the
+# third is a recap of the first two -- the landmine this rule must decline on.
+MD_HYDRO_DEPOSIT = """GST Registration # R121454151
+<table>
+<tr><td>TAXES ON ACCOUNT CHARGES<br>* GST 5%</td><td>$0.68</td></tr>
+<tr><td>TAXES ON ELECTRICITY CHARGES<br>* GST 5% on $6.63</td><td>$0.33</td></tr>
+<tr><td>TAX SUMMARY</td><td></td></tr>
+<tr><td>GST 5% on $20.13</td><td>$1.01</td></tr>
+</table>"""
+
+# The corpus fortisbc.pdf renders flat, not as a table: label line, amount below.
+MD_FORTIS_FLAT = """Total gas charges
+$216.39
+Energy taxes & fees
+BC clean energy levy (0.40% of + amounts)
+$0.87
+GST (5% of ' amounts)
+$10.82
+Total energy taxes & fees
+$11.69
+Pay
+$228.08
+GST: R100431592"""
+
+
+def ev_md(fields, markdown, category="general_invoice", file_name=""):
+    """evaluate() with OCR markdown attached to the child result."""
+    return gates.evaluate(
+        cu_result(fields, category=category, markdown=markdown), THRESHOLD, file_name=file_name
+    )
+
+
+def test_gst_consistent_with_total():
+    print("\n[field_policy: the 5% GST identity]")
+    ok = field_policy.gst_consistent_with_total
+
+    check("exact 5% corroborates", ok(5.0, 105.0))
+    check("bchydro rounding corroborates", ok(22.02, 462.49))
+    check("small-bill rounding corroborates", ok(0.54, 11.37))
+    check("recap value corroborates (bug_260624_0015)", ok(3.17, 66.39))
+    # Both bounds below are pinned by real documents: widening the tolerance to admit
+    # trade11 would also admit wrong amounts, and narrowing it drops fortisbc.
+    check("fortisbc corroborates despite the untaxed clean energy levy (0.40% off)",
+          ok(10.82, 228.08))
+    check("trade11 'Admin (incl. 5% GST)' stays outside (7.0% off)", not ok(9.95, 222.88))
+    check("bug_260629_0026 untaxed security deposit stays outside (876% off)",
+          not ok(1.01, 198.14))
+
+    check("PST bill corroborates when pst is supplied", ok(46.77, 1016.93, 34.75))
+    check("...and does NOT when pst is missing", not ok(46.77, 1016.93, 0))
+
+    check("one section's GST does not corroborate", not ok(0.90, 34.69))
+    check("the summed section GST does corroborate", ok(1.65, 34.69))
+
+    check("None gst never corroborates", not ok(None, 105.0))
+    check("non-numeric gst never corroborates", not ok("N/A", 105.0))
+    check("missing total never corroborates", not ok(5.0, None))
+
+
+def test_find_gst_line_amounts():
+    print("\n[field_policy: OCR-text GST line scanner]")
+    find = field_policy.find_gst_line_amounts
+
+    check("two table sections, no recap", find(MD_FORTIS_TWO_SECTIONS) == [0.90, 0.75],
+          str(find(MD_FORTIS_TWO_SECTIONS)))
+    check("two sections + recap, in order", find(MD_HYDRO_RECAP) == [0.68, 2.49, 3.17],
+          str(find(MD_HYDRO_RECAP)))
+    check("flat (non-table) layout reads the line below the label",
+          find(MD_FORTIS_FLAT) == [10.82], str(find(MD_FORTIS_FLAT)))
+
+    # The amount is the LAST money in the row: 'GST 5% on $49.72 | $2.49' is a tax of
+    # 2.49 charged on a base of 49.72, never 49.72.
+    check("base amount in the label is not mistaken for the tax",
+          find("<tr><td>TAXES ON ELECTRICITY CHARGES<br>* GST 5% on $440.47</td>"
+               "<td>$22.02</td></tr>") == [22.02])
+
+    # Registration numbers have no cents, so the two-decimal rule excludes them.
+    check("bare registration number yields nothing", find("GST Registration # R121454151") == [])
+    check("registration number with a colon yields nothing", find("GST: R100431592") == [])
+    check("registration number in the label does not block the amount beside it",
+          find("<tr><td>BC GST 866808298RT0007</td><td>$295.61</td></tr>") == [295.61])
+    check("a rate column is not an amount",
+          find("<tr><td>GST On Sales</td><td></td><td>5.00%</td><td>9.19</td></tr>") == [9.19])
+    check("thousands separators parse",
+          find("<tr><td>GST</td><td>$1,234.56</td></tr>") == [1234.56])
+    check("repeated identical amounts dedupe",
+          find("<tr><td>GST</td><td>$5.00</td></tr><tr><td>GST</td><td>$5.00</td></tr>") == [5.00])
+    check("non-GST rows ignored", find("<tr><td>Total gas charges</td><td>$18.94</td></tr>") == [])
+    check("empty text -> no amounts", find("") == [])
+    check("None text -> no amounts", find(None) == [])
+
+
+def test_sectioned_gst_rescue():
+    print("\n[gates: sectioned-bill GST sum]")
+
+    # bug_260528_0016: both twins return the FIRST section's 0.90 and agree, so the pair
+    # passes on corroboration -- the failure no twin rule can catch.
+    bug = dict(
+        total_invoice_amount_extract=fnum(34.69, 0.391),
+        total_invoice_amount_generate=fnum(34.69, 0.520),
+        gst_amount_extract=fnum(0.90, 0.517),
+        gst_amount_generate=fnum(0.90, 0.461),
+    )
+    r = ev_md(municipal_fields(**bug), MD_FORTIS_TWO_SECTIONS)
+    check("sectioned bill writes the summed GST", r["writeValues"]["gst_amount"] == 1.65,
+          str(r["writeValues"]["gst_amount"]))
+    check("derived amount_excluding_gst follows the corrected GST",
+          r["writeValues"]["amount_excluding_gst"] == 33.04,
+          str(r["writeValues"]["amount_excluding_gst"]))
+    check("source = sectioned_sum", r["resolutions"]["gst_amount"]["source"] == "sectioned_sum")
+    check("rescued GST passes", r["resolutions"]["gst_amount"]["passed"] is True)
+    check("advisory names the correction",
+          any("taxes each charge section separately" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("still auto-writes", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE,
+          r["routingDecision"])
+
+    # A printed recap wins over the grand sum: 0.68 + 2.49 + 3.17 would be 6.34.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(66.39, 0.90),
+        gst_amount_extract=fnum(0.68, 0.80),
+    ), MD_HYDRO_RECAP)
+    check("recap value wins, not the grand sum", r["writeValues"]["gst_amount"] == 3.17,
+          str(r["writeValues"]["gst_amount"]))
+
+    # ...and when CU already read the recap, nothing changes.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(66.39, 0.90),
+        gst_amount_extract=fnum(3.17, 0.80),
+    ), MD_HYDRO_RECAP)
+    check("already-correct recap value is left alone", r["writeValues"]["gst_amount"] == 3.17)
+    check("...and is not relabelled", r["resolutions"]["gst_amount"]["source"] != "sectioned_sum")
+
+    # The landmine. bug_260629_0026 carries an untaxed $177 security deposit, so its GST
+    # is 876% off the identity. It is declined because its third GST line is a recap of
+    # the first two -- the candidate equals what CU already resolved.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(198.14, 0.90),
+        gst_amount_extract=fnum(1.01, 0.758),
+    ), MD_HYDRO_DEPOSIT)
+    check("untaxed-deposit bill keeps its GST", r["writeValues"]["gst_amount"] == 1.01,
+          str(r["writeValues"]["gst_amount"]))
+    check("...and its derived amount", r["writeValues"]["amount_excluding_gst"] == 197.13)
+    check("...and is not relabelled", r["resolutions"]["gst_amount"]["source"] != "sectioned_sum")
+
+    # A single GST line is not a sectioned bill (the corpus fortisbc.pdf).
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(228.08, 0.90),
+        gst_amount_extract=fnum(10.82, 0.90),
+    ), MD_FORTIS_FLAT)
+    check("single GST line -> no rescue", r["writeValues"]["gst_amount"] == 10.82)
+    check("...source untouched", r["resolutions"]["gst_amount"]["source"] != "sectioned_sum")
+
+    # Commercial bills are out of scope even on an identical document.
+    r = ev_md(commercial_fields(
+        total_invoice_amount_extract=fnum(34.69, 0.96),
+        gst_amount_extract=fnum(0.90, 0.93),
+    ), MD_FORTIS_TWO_SECTIONS)
+    check("commercial bucket -> no rescue", r["writeValues"]["gst_amount"] == 0.90,
+          str(r["writeValues"]["gst_amount"]))
+
+    # A sum that does not fit the bill's arithmetic is never written: same two GST lines,
+    # but a total that makes neither 0.90 nor 1.65 credible.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(500.00, 0.90),
+        gst_amount_extract=fnum(0.90, 0.80),
+    ), MD_FORTIS_TWO_SECTIONS)
+    check("uncorroborated sum -> no rescue", r["writeValues"]["gst_amount"] == 0.90,
+          str(r["writeValues"]["gst_amount"]))
+
+    # An untrusted total is not a denominator worth dividing by.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(34.69, 0.40),
+        total_invoice_amount_generate=fnum(100.00, 0.45),
+        gst_amount_extract=fnum(0.90, 0.80),
+    ), MD_FORTIS_TWO_SECTIONS)
+    check("untrusted total -> no rescue", r["writeValues"]["gst_amount"] == 0.90,
+          str(r["writeValues"]["gst_amount"]))
+
+    # PST found but disbelieved: the 0 default would shift the identity, so decline.
+    r = ev_md(municipal_fields(
+        total_invoice_amount_extract=fnum(34.69, 0.90),
+        gst_amount_extract=fnum(0.90, 0.80),
+        pst_amount_extract=fnum(2.00, 0.40),
+        pst_amount_generate=fnum(0.0, 0.45),
+    ), MD_FORTIS_TWO_SECTIONS)
+    check("untrusted PST -> no rescue", r["writeValues"]["gst_amount"] == 0.90,
+          str(r["writeValues"]["gst_amount"]))
+
+    # A municipal bill charging no GST at all (the water bills) is untouched.
+    r = ev_md(municipal_fields(total_invoice_amount_extract=fnum(163.08, 0.95)),
+              "<tr><td>Water consumption</td><td>$163.08</td></tr>")
+    check("no GST lines -> gst stays empty", r["writeValues"]["gst_amount"] is None,
+          str(r["writeValues"]["gst_amount"]))
+
+
 def test_pst_twin_and_zero_default():
     print("\n[gates: pst twin (informational only) + written 0 default]")
 
