@@ -1529,6 +1529,61 @@ def test_billing_period_twins_and_derivation():
     check("derive junk days -> None", derive("2026-04-30", 0.9, "n/a", 0.9) is None)
 
 
+def test_payment_due_date_corroboration_rescue():
+    print("\n[gates: a printed payment_due_date survives a sub-threshold confidence]")
+
+    # payment_due_date is a lone extract, so a sub-threshold read has no twin to corroborate
+    # it and build_write_values substitutes today+30 -- for a date the bill plainly prints
+    # (bug_260528_0016: the same 2026-06-16 read at 0.721 on one run and 0.9+ on the next).
+    # These assert defaultedFields membership rather than the today+30 string: gates.evaluate
+    # has no injectable clock, so the default value moves with the real date.
+    PRINTED = "Amount owing $34.69\n\nDue Tuesday, Jun 16, 2026\n\nBilling date: May 25, 2026"
+
+    r = ev_md(commercial_fields(payment_due_date=fdate("2026-06-16", 0.72)), PRINTED)
+    check("sub-threshold due date is kept when the page prints it",
+          r["writeValues"]["payment_due_date"] == "2026-06-16",
+          str(r["writeValues"].get("payment_due_date")))
+    check("rescued due date is no longer marked defaulted",
+          "payment_due_date" not in r["defaultedFields"], str(r["defaultedFields"]))
+    check("rescue advisory raised",
+          any("payment_due_date 2026-06-16 kept instead of the +30 default" in a
+              for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # Not printed anywhere -> nothing grounds the low-confidence read -> default stands.
+    r = ev_md(commercial_fields(payment_due_date=fdate("2026-06-16", 0.72)),
+              "Amount owing $34.69\n\nThank you for your business")
+    check("sub-threshold due date with no printed date still defaults",
+          "payment_due_date" in r["defaultedFields"], str(r["defaultedFields"]))
+    check("uncorroborated due date is not written",
+          r["writeValues"]["payment_due_date"] != "2026-06-16",
+          str(r["writeValues"].get("payment_due_date")))
+
+    # CU found no due date at all: the rescue must not adopt some other date off the page.
+    r = ev_md(commercial_fields(payment_due_date=fdate(None, None)), PRINTED)
+    check("absent due date is never invented from the page text",
+          "payment_due_date" in r["defaultedFields"], str(r["defaultedFields"]))
+    check("absent due date raises no rescue advisory",
+          not any("payment_due_date" in a and "kept instead" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Slashed dates never corroborate -- ambiguous, and the shape a print timestamp takes.
+    r = ev_md(commercial_fields(payment_due_date=fdate("2026-06-16", 0.72)),
+              "Amount owing $34.69\n\nDue 06/16/2026")
+    check("a slashed printed form does not corroborate",
+          "payment_due_date" in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # The happy path is untouched: a confident due date is written without any rescue.
+    r = ev_md(commercial_fields(), PRINTED)
+    check("confident due date is written unchanged",
+          r["writeValues"]["payment_due_date"] == "2026-05-31",
+          str(r["writeValues"].get("payment_due_date")))
+    check("confident due date is not defaulted",
+          "payment_due_date" not in r["defaultedFields"], str(r["defaultedFields"]))
+    check("no rescue advisory on the happy path",
+          not any("kept instead of the +30 default" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+
 def test_po_ocr_rescue():
     print("\n[gates: PO rescue from OCR markdown]")
 
@@ -2199,6 +2254,7 @@ def main():
     test_b4_review_summary()
     test_po_ocr_rescue()
     test_billing_period_twins_and_derivation()
+    test_payment_due_date_corroboration_rescue()
 
     print("\n" + "=" * 60)
     print("ALL CHECKS PASSED")

@@ -578,6 +578,33 @@ def evaluate(
                 "is printed in the document text"
             )
 
+    # Corroborated payment-due-date rescue. payment_due_date is a lone extract: no twin, so
+    # no agreement boost, and CU's confidence on it jitters right across the 0.73 bar --
+    # 2026-06-20 at 0.677/0.721/0.722/0.723 and again at 0.9+ on the SAME document. On the
+    # sub-bar runs build_write_values substitutes today+30 for a date the bill plainly
+    # prints, and since payment_due_date is not critical the doc still routes happy, so the
+    # fabricated date reaches Dynamics unseen. BC utility terms are ~22 days, so the +30
+    # default lands about a week PAST the real due date every time.
+    #
+    # Same grounding rule as invoice_date above: accept the read when the same calendar day
+    # is printed in the OCR text in an unambiguous month-name or ISO form. This is the safer
+    # direction of that precedent -- there it rescues a *generate* value with no span behind
+    # it, here the value is an *extract* and corroboration is a second check on top.
+    # A document that prints no due date is untouched: CU returns None, which never
+    # corroborates, so the field keeps defaulting exactly as before.
+    if field_policy.PAYMENT_DUE_FINAL in defaulted:
+        due_val = parsed.get(field_policy.PAYMENT_DUE_FINAL, (None, None))[0]
+        corroborated_due = field_policy.date_corroborated_in_text(
+            due_val, collect_markdown(full)
+        )
+        if corroborated_due is not None:
+            write_values[field_policy.PAYMENT_DUE_FINAL] = corroborated_due
+            defaulted.remove(field_policy.PAYMENT_DUE_FINAL)
+            advisory.append(
+                f"payment_due_date {corroborated_due} kept instead of the +30 default: "
+                "the date is printed in the document text"
+            )
+
     # Bill-To fallback for service_address, on two shapes that both leave the field without a
     # serviced property:
     #

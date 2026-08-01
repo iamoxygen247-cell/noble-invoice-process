@@ -167,6 +167,10 @@ WRITE_FIELDS: Tuple[str, ...] = (
 )
 DATE_FIELDS: Tuple[str, ...] = ("invoice_date", "payment_due_date")
 
+# payment_due_date is a lone extract -- no twin, so no agreement boost to carry a
+# sub-threshold read. Named here because gates.evaluate rescues it by corroboration.
+PAYMENT_DUE_FINAL = "payment_due_date"
+
 MUNICIPAL = "municipal"
 COMMERCIAL = "commercial"
 

@@ -957,10 +957,70 @@ written value, so a defaulted (today) date can never trip it.
 the resolved `invoice_date`; none assert its twins, because the extract twin returns null
 on roughly 1 run in 3-6 corpus-wide (see the corpus-coverage note in the `invoice_number`
 entry below).
-Deliberately **not** asserted anywhere: `payment_due_date`. Most of these bills do not print
-one (`Terms: 30 Days`), so it defaults to today+30 and would go red the next day -- the
-`--add` scaffold proposes it because it is stable *within* one session, which is the trap to
-watch for on any bill lacking a printed due date.
+`payment_due_date` is asserted **only on bills that actually print one** (13 sidecars as of
+2026-07-31). On a bill that prints no due date (`Terms: 30 Days`) it correctly defaults to
+today+30 and would go red the next day -- yet the `--add` scaffold still proposes it, because
+a today-relative default is stable *within* one session. That is the trap to watch for on any
+bill lacking a printed due date; check the raw field is non-null before asserting it.
+
+---
+
+## `payment_due_date`: a correctly-read printed date discarded over a confidence dip
+
+**Symptoms (verified 2026-07-31, corpus-wide):** the same failure class as `invoice_date`
+above, on the sibling field, and it survived that fix. `payment_due_date` is a lone `extract`
+-- no twin, so no agreement boost -- and `build_write_values` substitutes **today + 30**
+whenever confidence falls under 0.73. CU's confidence on this field jitters right across that
+bar while the *value never changes*:
+
+```
+fortisbc          2026-06-20 at 0.677 | 0.721 | 0.722 | 0.723 | ... | 0.979
+business_license  2025-12-31 at 0.588 ... 0.742 | 0.884 | 0.901 | 0.959
+bug_260528_0016   2026-06-16 at 0.721 | 0.803 | 0.813 | 0.900 | 0.946 | 0.973
+```
+
+**Blast radius, measured over 1,204 cached corpus runs:** 996 not defaulted; 182 defaulted
+because CU returned `None` (**correct** -- no due date printed); **26 defaulted despite a
+correct, printed date**. Eight of the nineteen documents that print a due date are affected,
+at 2%-19% of runs.
+
+**Why it mattered.** All 26 routed `HAPPY_PATH_CANDIDATE` -- `payment_due_date` is not
+critical, so a defaulted value never reaches a reviewer and the fabricated date is written
+straight through. It is recorded in the ledger's `DefaultedFields` column, but the Power
+Automate design only branches on `defaultedFields` for `invoice_number`. And the error is
+*systematic, not random*: BC utility terms run ~22 days, so a +30 default lands about **8 days
+past** the real due date on every affected utility bill. `business_license` is the worst case
+-- its due date is already in the past, so the default masked an overdue renewal as
+not-yet-due.
+
+**Fix (code-only, `gates.evaluate`):** reuse `field_policy.date_corroborated_in_text` -- the
+same grounding rule as the `invoice_date` rescue. Keep the sub-threshold read when the same
+calendar day is printed in the OCR text in an unambiguous month-name or ISO form
+(`Due Tuesday, Jun 16, 2026`); slashed forms never corroborate. This is the *safer* direction
+of that precedent: there it grounds a `generate` value the model can invent outright, here the
+value is an `extract` with a span behind it and corroboration is a second check on top.
+Deliberately **not** in `build_write_values`, which stays a pure function of `parsed` with no
+OCR access -- the rescue layers on in gates, exactly as the invoice-date one does.
+
+**Non-regression is structural, not statistical.** `date_corroborated_in_text(None, ...)`
+returns `None`, so the 182 legitimate "no due date printed" defaults cannot be touched. Of
+1,204 runs the change moves exactly the 26, with **zero** runs in the ambiguous "value present
+but not corroborated" bucket. No confidence floor was added: the observed minimum is 0.588 and
+any floor would be an invented number -- corroboration is the real guard.
+
+**The corpus was the loudest symptom.** `payment_due_date` had been unasserted from three
+sidecars on three separate occasions (`bug_260609_0031` 07-24, `bug_260605_0017` and
+`bug_260528_0016` 07-31) because the assertion kept going red, while four more sidecars still
+asserted it and were latent reds. One unfixed code behaviour was quietly eroding the net, and
+each recurrence looked like a fresh mystery. Three assertions were **restored** with the fix;
+`bug_260609_0031` stays unasserted because it returns a genuine `None` on 4/53 runs, which no
+rescue can fix. `bug_260528_0016` r0 and `business_license` r2 *are* the sub-bar replicates, so
+those two restored assertions are the end-to-end test of the rescue -- if it breaks, they go red.
+
+**Lesson:** when a sidecar assertion is removed for flakiness, record the *mechanism*, then ask
+whether the mechanism is a bug. Twice the note blamed "the extract returns null" when the
+cached evidence showed a present value with a sub-threshold confidence -- a different fault
+with a different fix.
 
 ---
 
