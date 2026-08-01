@@ -1,12 +1,11 @@
 {
-  "note": "Sectioned-bill GST anchor, no recap printed. This FortisBC gas bill taxes each charge section separately -- GST $0.90 under 'Gas charges' and GST $0.75 under 'Other charges & adjustments' -- and prints NO bill-level tax recap, so gst_amount must be 1.65 and amount_excluding_gst 33.04. Both CU twins return 0.90 (the first section's line) at ~0.52/0.46 and AGREE, so the pair passes on corroboration and no twin-resolution rule can catch it; gates.evaluate sums the printed GST lines and confirms the sum against the 5% identity. invoice_number is the filename fallback -- FortisBC gas bills carry only an account number. || NOT asserted here: vendor_name, whose resolved value flips between 'FortisBC Energy Inc.' and 'FortisBC' run to run (the two spellings normalise differently, so the more-confident-twin rule picks either). Both twins are individually stable and are asserted instead.",
+  "note": "Sectioned-bill GST anchor, no recap printed. This FortisBC gas bill taxes each charge section separately -- GST $0.90 under 'Gas charges' and GST $0.75 under 'Other charges & adjustments' -- and prints NO bill-level tax recap, so gst_amount must be 1.65 and amount_excluding_gst 33.04. Both CU twins return 0.90 (the first section's line) at ~0.52/0.46 and AGREE, so the pair passes on corroboration and no twin-resolution rule can catch it; gates.evaluate sums the printed GST lines and confirms the sum against the 5% identity. invoice_number is the filename fallback -- FortisBC gas bills carry only an account number. || NOT asserted here: vendor_name, whose resolved value flips between 'FortisBC Energy Inc.' and 'FortisBC' run to run (the two spellings normalise differently, so the more-confident-twin rule picks either). Both twins are individually stable and are asserted instead. || ALSO not asserted, removed 2026-07-31 after measuring 5 live replicates: payment_due_date and invoice_description. Both were coin-flips all along and were only ever green because the cached draw happened to be a clean one; a forced live HEAD control (unmodified prod prompt) flaked on both. payment_due_date: CU returns the correct 2026-06-16 on 5/5 runs, but its CONFIDENCE straddles the 0.73 bar (0.721 / 0.813 / 0.803 / 0.946 / 0.973), and on the sub-bar run build_write_values substitutes the today+30 default -- so the assertion is date-relative and would go red on a later date anyway. That a correct, stable, printed date is discarded over a 0.009 confidence dip is a real open item, tracked separately, NOT a corpus problem. invoice_description: the generate summary drifts 'Natural gas charges' (4/5) vs 'Natural gas utility charges' (1/5). Neither field is touched by any code path in the service_address change that surfaced this.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "service_address": "28-3400 Devonshire Ave, Coquitlam",
       "total_invoice_amount": 34.69,
       "invoice_date": "2026-05-25",
-      "payment_due_date": "2026-06-16",
       "invoice_number": "bug_260528_0016",
       "po_or_job_number": null,
       "gst_amount": 1.65,
@@ -14,7 +13,6 @@
       "account_number": "4517813",
       "bill_type": "municipal",
       "sub_bill_type": "gas",
-      "invoice_description": "Natural gas charges",
       "billing_period_start_date": "2026-05-01",
       "billing_period_end_date": "2026-05-25",
       "number_of_days": 25,

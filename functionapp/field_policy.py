@@ -834,18 +834,41 @@ def _address_tokens_agree(a: Any, b: Any, min_overlap: float = 0.70) -> bool:
 
 
 # Noble's own head/billing office(s) -- the generic paying-party address(es) that name no
-# serviced property. When a document has no service address of its own and is addressed only
-# to a Bill To block, that block is promoted to service_address (gates.evaluate) UNLESS it is
-# one of these. A stable business fact, not a secret. Extend the tuple if Noble bills from
-# more than one office. Matched by normalized token overlap, so '#'/'Unit', comma, and
-# postal-code spacing differences do not matter -- the street + city tokens carry the match.
+# serviced property. gates.evaluate consults this on both paths that can set service_address:
+# a Bill To block is promoted only when it is NOT one of these, and a service_address read
+# straight off the page is rejected when it IS one. A stable business fact, not a secret.
+# Extend the tuple if Noble bills from more than one office. Matched by normalized token
+# overlap plus the unit and street numbers (see is_noble_office_address), so '#'/'Unit',
+# comma, and postal-code spacing differences do not matter.
 NOBLE_OFFICE_ADDRESSES: Tuple[str, ...] = ("155-13988 Maycrest Way, Richmond BC  V6V3C3",)
+
+
+def _numeric_tokens(tokens: set) -> set:
+    """The purely-numeric tokens of an address -- its unit and street numbers. A postal-code
+    token ('v6v3c3', '3c3') mixes letters and digits and is excluded, which matters because
+    postal codes tokenize inconsistently ('V6V 3C3' vs 'V6V3C3')."""
+    return {t for t in tokens if t.isdigit()}
 
 
 def is_noble_office_address(value: Any) -> bool:
     """True when an address is one of Noble's own head/billing offices (the paying-party
-    address), which must never become the service address."""
-    return any(_address_tokens_agree(value, office) for office in NOBLE_OFFICE_ADDRESSES)
+    address), which must never become the service address.
+
+    Token overlap alone is too loose to *reject* an address with: it scores over the smaller
+    token set, so 'Richmond, BC' (both tokens shared) and 'Unit 200 - 13988 Maycrest Way'
+    (a different unit of the same building) both clear the bar. That is harmless where a match
+    only blocks a Bill To promotion, but gates.evaluate also discards a service_address on a
+    match. So require the office's own unit and street numbers to be present as well -- they
+    are what actually identify the office, and every spelling of it seen in the corpus
+    ('155-13988 Maycrest Way', '13988 MAYCREST WAY # 155', '13988 Maycrest Way, Unit 155',
+    '155 13988 MAYCREST WAY', 'Unit 155 - 13988 Maycrest Way') carries both.
+    """
+    value_tokens = _normalize_address_tokens(value)
+    return any(
+        _address_tokens_agree(value, office)
+        and _numeric_tokens(_normalize_address_tokens(office)) <= value_tokens
+        for office in NOBLE_OFFICE_ADDRESSES
+    )
 
 
 def _amounts_agree(a: Any, b: Any) -> bool:

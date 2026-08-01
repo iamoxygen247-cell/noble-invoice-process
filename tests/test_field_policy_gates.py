@@ -837,6 +837,100 @@ def test_bill_to_address_backfills_empty_service_address():
           str(r["resolutions"].get("service_address")))
 
 
+def test_noble_office_service_address_is_never_written():
+    print("\n[gates: a service_address that is Noble's own office is never written]")
+
+    # The SHIP TO block is Noble's own head office while the serviced property sits in the
+    # SOLD TO block (samples/bug_260703_0038.pdf, Alpha Integrated Systems). Both twins agree
+    # confidently on the office, so no twin-resolution rule can help -- the Bill To replaces it.
+    OFFICE = "Unit 155 - 13988 Maycrest Way\nRichmond, BC V6V 3C3"
+    SITE = "8631 Alexandra Road\nRichmond, BC V6X 1C3"
+
+    r = ev(commercial_fields(
+        service_address_extract=fstr(OFFICE, 0.83),
+        service_address_generate=fstr(OFFICE, 0.90),
+        bill_to_address_extract=fstr(SITE, 0.90),
+    ))
+    check("office service_address + non-office Bill To -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("office service_address is replaced by the Bill To block",
+          r["writeValues"]["service_address"] == SITE,
+          str(r["writeValues"].get("service_address")))
+    check("service_address source = bill_to_fallback",
+          r["resolutions"]["service_address"]["source"] == "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("replacement advisory names the office",
+          any("replaced from the Bill To block" in a and "Noble's own office" in a
+              for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Both blocks are the office -> nothing on the page names a serviced property. The office
+    # must not be written, so the field is cleared and the critical-field gate takes over.
+    r = ev(commercial_fields(
+        service_address_extract=fstr(OFFICE, 0.83),
+        service_address_generate=fstr(OFFICE, 0.90),
+        bill_to_address_extract=fstr("13988 Maycrest Way, Unit 155, Richmond BC V6V 3C3", 0.95),
+    ))
+    check("office service_address + office Bill To -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("office service_address is discarded, not written",
+          r["writeValues"]["service_address"] is None,
+          str(r["writeValues"].get("service_address")))
+    check("service_address source = noble_office_rejected",
+          r["resolutions"]["service_address"]["source"] == "noble_office_rejected",
+          str(r["resolutions"].get("service_address")))
+    check("discard advisory raised",
+          any("service_address discarded" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Same, with no Bill To block at all.
+    r = ev(commercial_fields(
+        service_address_extract=fstr(OFFICE, 0.83),
+        service_address_generate=fstr(OFFICE, 0.90),
+    ))
+    check("office service_address + no Bill To -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("office service_address with no Bill To is discarded",
+          r["writeValues"]["service_address"] is None,
+          str(r["writeValues"].get("service_address")))
+
+    # Over-match guard. Token overlap alone scores 0.714 against the office for a DIFFERENT
+    # unit of the same building, which would discard a real serviced property; the unit and
+    # street numbers are what identify the office (field_policy.is_noble_office_address).
+    r = ev(commercial_fields(
+        service_address_extract=fstr("Unit 200 - 13988 Maycrest Way\nRichmond, BC V6V 3C3", 0.95),
+        bill_to_address_extract=fstr(SITE, 0.90),
+    ))
+    check("a different unit of the same building is not Noble's office -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("a different unit is written as read, not replaced",
+          r["writeValues"]["service_address"] == "Unit 200 - 13988 Maycrest Way\nRichmond, BC V6V 3C3",
+          str(r["writeValues"].get("service_address")))
+    check("short/generic addresses are not Noble's office either",
+          not field_policy.is_noble_office_address("Richmond, BC"))
+    check("every corpus spelling of the office still matches",
+          all(field_policy.is_noble_office_address(v) for v in (
+              "155-13988 Maycrest Way\nRichmond, BC",
+              "13988 MAYCREST WAY # 155\nRICHMOND, BC V6V3C3",
+              "13988 Maycrest Way, Unit 155\nRichmond, BC, V6V 3C3",
+              "13988 MAYCREST WAY UNIT 155\nRICHMOND, BC CANADA V6V 3C3",
+              "155 13988 MAYCREST WAY\nRICHMOND BC V6V 3C3",
+              OFFICE,
+          )))
+
+    # An ordinary document with a confident Bill To is untouched by any of this.
+    r = ev(commercial_fields(bill_to_address_extract=fstr(SITE, 0.95)))
+    check("ordinary service_address is not touched when a Bill To is present",
+          r["writeValues"]["service_address"] == "123 Main St, Vancouver BC",
+          str(r["writeValues"].get("service_address")))
+    check("ordinary service_address keeps source extract",
+          r["resolutions"]["service_address"]["source"] == "extract",
+          str(r["resolutions"].get("service_address")))
+    check("no Bill To advisory on an ordinary document",
+          not any("Bill To block" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+
 def test_amount_and_po_twins():
     print("\n[gates: total / gst / po twins (numeric + digit agreement)]")
 
@@ -2096,6 +2190,7 @@ def main():
     test_response_shape()
     test_vendor_extract_generate_twin()
     test_service_address_extract_generate_twin()
+    test_noble_office_service_address_is_never_written()
     test_amount_and_po_twins()
     test_account_number_twin()
     test_invoice_number_twin()

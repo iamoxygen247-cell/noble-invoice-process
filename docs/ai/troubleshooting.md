@@ -1318,13 +1318,18 @@ but **not** in `WRITE_FIELDS` (no Dynamics/Dataverse column). A code rescue in
 billing-start rescues), promotes `bill_to_address` to `service_address` **only when the
 resolved `service_address` is empty** AND the Bill To clears the confidence bar (threshold or
 twin agreement) AND it is **not** Noble's own head office
-(`field_policy.is_noble_office_address`, a normalized-token match via `_address_tokens_agree`
-against `NOBLE_OFFICE_ADDRESSES = ("155-13988 Maycrest Way, Richmond BC  V6V3C3",)`). A
+(`field_policy.is_noble_office_address`, matched against
+`NOBLE_OFFICE_ADDRESSES = ("155-13988 Maycrest Way, Richmond BC  V6V3C3",)`). A
 present-but-low `service_address` is never overwritten (it found a real address and still
 routes to review, mirroring the billing-start rule). The `service_address` prompt itself is
 untouched, so the existing Bill-To *exclusion* corpus cannot regress. Scratch CU regression:
 JMEC → `#307-7480 Gilbert Road\nRichmond, BC`, `HAPPY_PATH_CANDIDATE`, stable 3/3 across two
 independent live runs.
+
+> **Superseded in part, 2026-07-31.** The rescue now fires when the resolved
+> `service_address` is empty **or is itself Noble's head office**, and
+> `is_noble_office_address` is no longer a bare `_address_tokens_agree` call. See
+> "`service_address` took Noble's own office from the SHIP TO block" below.
 
 **Verification trap worth remembering (the control-run discipline).** Right after the change,
 the full corpus CU regression showed **12** `UNSTABLE` (doc, field) checks — none `WRONG`, and
@@ -1350,6 +1355,106 @@ proves nothing. Do not weaken the other docs' sidecars over inherent noise.
 **Rollout order:** push the analyzer to prod **before** the function deploy. The rescue is
 inert (never harmful) if the deployed analyzer lacks `bill_to_address` — it just leaves
 `service_address` empty as before — but the fix only takes effect once the field is live.
+
+---
+
+## `service_address` took Noble's own office from the SHIP TO block
+
+**Symptoms (verified 2026-07-31, `samples/bug_260703_0038.pdf`, Alpha Integrated Systems):** the
+invoice carries two customer blocks naming the same customer — **Sold to** `8631 Alexandra Road,
+Richmond BC V6X 1C3` (the serviced property) and **Ship to** `Unit 155 - 13988 Maycrest Way`
+(**Noble's own head office** — the manager receives the paperwork). `service_address` was written
+as the Maycrest Way office. Both twins returned it confidently and identically on every replicate
+(extract 0.744 / 0.829 / 0.781, generate 0.902 / 0.896 / 0.886), so **no twin-resolution rule can
+help**: the twins agree, just on the wrong block.
+
+**Cause — an invariant enforced on only one of two paths.** The rule *"Noble's own office is never
+a service address"* already existed: `field_policy.NOBLE_OFFICE_ADDRESSES` +
+`is_noble_office_address`, whose docstring says exactly that. But `gates.evaluate` only consulted it
+when *promoting* a Bill To block into `service_address`. A `service_address` read straight off the
+page was never checked against it. The guard fired on the value rescued **in** and never on the
+value read **out**. The prompt's SHIP-TO-over-SOLD-TO priority is right everywhere else and was not
+the thing to weaken.
+
+**Fix — code + prompt, converging on the same value.**
+
+1. **`gates.evaluate`** — the Bill To rescue now triggers on `empty OR Noble's own office`, not just
+   `empty`. On a match it promotes `bill_to_address` (source `bill_to_fallback`); if the Bill To is
+   itself the office or below the bar, `service_address` is **cleared** (`None`, `passed=False`,
+   source `noble_office_rejected`, confidence 0.0 so the B4 reason does not quote the office read's
+   own high confidence) and B4 routes the doc to review. Writing the paying party's address into
+   Dynamics is worse than sending the doc to a human.
+2. **`is_noble_office_address` tightened.** Bare `_address_tokens_agree` scores over the *smaller*
+   token set, so `'Richmond, BC'` (1.000) and `'Unit 200 - 13988 Maycrest Way'` (0.714) both matched
+   the office. Harmless while a match only *blocks* a promotion — destructive now that a match
+   *discards* an address. It now also requires the office's purely-numeric tokens (`155`, `13988`;
+   postal-code tokens are alphanumeric and excluded, since `V6V 3C3` / `V6V3C3` tokenize
+   differently). Validated by replaying the cached corpus: **all nine** spellings of the office that
+   actually occur in `bill_to_address` still match; the three false positives no longer do.
+3. **The analyzer prompt is UNTOUCHED — a blacklist sentence was written, measured, and reverted.**
+   See "the prompt attempt" below. No prod analyzer push is needed for this fix.
+
+**Verification — the code half A/B's for free.** Because `regress.py` caches on
+`(analyzer hash, pdf hash, replicate)`, a **code-only** change re-scores every cached CU result
+with zero CU calls. The model output is byte-identical, so the comparison has *no* noise at all
+and needs no live-control argument — unlike a prompt change. Sequence the work to exploit that:
+land and verify the code half *before* touching the analyzer JSON.
+
+| stage | CU calls | result |
+|---|---|---|
+| code only, cached corpus | **0** (69 cache hits) | 403/403 OK across 23 docs. The code change moved **exactly one** (doc, field) value in the whole corpus — the target. |
+| live forced HEAD control (prod prompt) + new code | 69 | `bug_260703_0038` **3/3** correct: the twins still return the office, the guard rejects it, `bill_to_fallback` writes `8631 Alexandra Road`. This is the proof the fix needs no prompt change. |
+
+### The prompt attempt: measured harmful, reverted (2026-07-31)
+
+A one-sentence blacklist was added to **both** `service_address` twins — *that address is the
+property manager's own office and is never a serviced property; a SHIP TO block holding it names no
+service address, so return an empty string.* Deliberately a blacklist and not a redirect to SOLD TO,
+since the prompt forbids returning SOLD TO in six other clauses. It **worked on the target doc**
+(10/10, both twins empty → the Bill To rescue) and the full-corpus run was **0 WRONG, 2 UNSTABLE vs
+the live control's 2** — by aggregate count, indistinguishable.
+
+**The aggregate count hid the regression.** The *identity* of the unstable key was the signal: the
+new prompt destabilised `service_address` on `260629_0010`, a doc that carries the blacklisted
+Maycrest address **in its Bill To** while its real service address hides in a line-item job block.
+A targeted A/B on that one doc:
+
+| prompt | runs writing `service_address = None` |
+|---|---|
+| blacklist | **3 / 15 (20 %)** |
+| HEAD | **0 / 13 (0 %)** |
+
+(one-tailed Fisher p = 0.139 — not significant on its own, but the mechanism is specific and the
+direction is the exact field edited). The pre-existing flake on that doc is the *extract* twin's
+confident null (0.782, ~5/10 runs); the **generate** twin always covered it. The blacklist made the
+generate twin null out **too** — its closing "return an empty string" is a salient new exit, and
+this doc is precisely where the address is hardest to find.
+
+**Cost/benefit decided it, not the p-value.** The benefit was *zero*: the code guard alone already
+writes the correct address under the unmodified prompt (3/3, table above), because both paths end in
+the same Bill To rescue. The cost was a base-critical field going blank on ~1 in 5 runs of a
+real invoice, plus a prod analyzer push dragging the whole pending prompt backlog with it. Reverted.
+**Lesson:** when a code path and a prompt change converge on the same value, the prompt half must
+justify itself on its own — and "no measurable regression in aggregate" is not the same as "no
+regression," because a targeted hypothesis deserves a targeted A/B on the doc that motivates it.
+This is the second field (after `vendor_name` dba) where the prompt attempt lost to the code fix.
+
+**A forced control run overwrites cache and can un-hide old flakes.** `--force` on the HEAD control
+replaced `bug_260528_0016`'s cached draws, after which the corpus went red on `payment_due_date` and
+`invoice_description` — neither related to the change. `payment_due_date` is the instructive one: CU
+returns the correct `2026-06-16` on 5/5 runs, but its confidence straddles the 0.73 bar
+(0.721 / 0.813 / 0.803 / 0.946 / 0.973) and the sub-bar run substitutes the today+30 default. Both
+keys were unasserted per the corpus's own rule. **A green corpus can be a lucky draw**; a forced
+re-run is what tells you which assertions were real. That a correct, stable, printed date is
+discarded over a 0.009 confidence dip is a standing open item.
+
+**Do not find the repo root by walking up from `__file__` in a scratchpad script.** A helper written to
+`…/Temp/claude/…/scratchpad/` used `while not (p / "scripts").is_file(): p = p.parent` to find the
+repo root. Outside the repo that loop cannot terminate — `Path.parent` of a drive root returns
+itself — so it spun at 100% CPU for 24 minutes and made zero CU calls, and piping it through
+`tail` hid the fact that not even the first `print` had run. Take the repo root from `cwd` with an
+explicit failure if it is wrong, and run live scripts unbuffered (`python -u`) without a pipe so
+progress is visible.
 
 ---
 

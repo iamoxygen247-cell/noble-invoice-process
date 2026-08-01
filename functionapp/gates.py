@@ -578,17 +578,30 @@ def evaluate(
                 "is printed in the document text"
             )
 
-    # Bill-To fallback for service_address: some small trade/contractor invoices carry no
-    # SHIP TO / Service Address / Attention block at all and address the invoice only to the
-    # property manager's Bill To block, so both service_address twins come back empty. When
-    # that happens, promote the resolved bill_to_address -- but only when it clears the
-    # confidence bar (bt_passed, threshold or twin agreement) and is not Noble's own head
-    # office (the generic paying-party address, which names no serviced location). A present
-    # (even sub-threshold) service_address is never overwritten -- that read found a real
-    # address and still routes to review. Runs before B4 so a rescued address prevents the
-    # critical-field review route.
+    # Bill-To fallback for service_address, on two shapes that both leave the field without a
+    # serviced property:
+    #
+    #   empty  -- some small trade/contractor invoices carry no SHIP TO / Service Address /
+    #             Attention block at all and address the invoice only to the property
+    #             manager's Bill To block, so both service_address twins come back empty.
+    #   office -- others print Noble's OWN head office in the SHIP TO block (the manager
+    #             receives the paperwork) while the serviced property sits in the SOLD TO
+    #             block. The twins then agree confidently on an address that names no
+    #             serviced location (samples/bug_260703_0038.pdf: both twins return
+    #             'Unit 155 - 13988 Maycrest Way' at 0.74-0.90 on every replicate). The prompt
+    #             ranks SHIP TO above SOLD TO, which is right everywhere else, so this is
+    #             corrected here rather than by weakening that priority.
+    #
+    # Either way promote the resolved bill_to_address -- but only when it clears the confidence
+    # bar (bt_passed, threshold or twin agreement) and is not itself Noble's head office. A
+    # present, non-office service_address is never overwritten, even below threshold: that read
+    # found a real address and still routes to review. An office address with no usable Bill To
+    # is cleared rather than written, so the doc goes to a human instead of to Dynamics with
+    # the paying party's address in it. Runs before B4 so a rescued address prevents the
+    # critical-field review route and a cleared one causes it.
     sa_val = resolutions[field_policy.SERVICE_ADDRESS_FINAL][0]
-    if is_empty_value(sa_val):
+    sa_is_office = field_policy.is_noble_office_address(sa_val)
+    if is_empty_value(sa_val) or sa_is_office:
         bt_val, bt_conf, bt_passed, _bt_note, _bt_source = (
             resolutions[field_policy.BILL_TO_ADDRESS_FINAL]
         )
@@ -597,9 +610,27 @@ def evaluate(
                 bt_val, bt_conf, True, None, "bill_to_fallback",
             )
             write_values[field_policy.SERVICE_ADDRESS_FINAL] = bt_val
+            if sa_is_office:
+                advisory.append(
+                    f"service_address replaced from the Bill To block: {bt_val!r} "
+                    f"(the SHIP TO block is Noble's own office {sa_val!r}, not a "
+                    "serviced property)"
+                )
+            else:
+                advisory.append(
+                    f"service_address backfilled from the Bill To block: {bt_val!r} "
+                    "(no SHIP TO / Service Address block on the document)"
+                )
+        elif sa_is_office:
+            # Confidence 0.0 so the B4 reason does not report the office read's own high
+            # confidence; the advisory carries the real explanation.
+            resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+                None, 0.0, False, None, "noble_office_rejected",
+            )
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = None
             advisory.append(
-                f"service_address backfilled from the Bill To block: {bt_val!r} "
-                "(no SHIP TO / Service Address block on the document)"
+                f"service_address discarded: {sa_val!r} is Noble's own office, not a "
+                "serviced property, and no Bill To address could replace it"
             )
 
     # Sectioned-bill GST. A utility bill that splits its charges into sections prints a
