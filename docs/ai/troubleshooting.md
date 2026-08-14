@@ -1745,3 +1745,70 @@ The written `service_address` is byte-identical on every run; only the routing m
 note; every value assertion kept. This is *not* corpus-loosening in the forbidden sense — the
 corpus's own rule is that an unstable key is never asserted, and asserting a coin-flip
 guarantees a future red run. The intermittent-null extract remains a standing open item.
+
+---
+
+## A Python update kills a venv whose base **install layout** moved (not the patch bump)
+
+**Symptoms (verified 2026-08-14, after 3.13.14 -> 3.13.15):** `functionapp\.venv` will not
+run at all:
+
+```
+did not find executable at '...\Programs\Python\Python313\python.exe':
+The system cannot find the path specified.
+```
+
+The root `.venv` was healthy on 3.13.15 at the same moment. Nothing loud failed — `pytest`,
+the pre-commit hook and deploys all use the root venv or an absolute path — so the dead venv
+sits unnoticed until VS Code offers it as an interpreter for the `functionapp` subpath
+(`azureFunctions.projectSubpath` points there).
+
+**Cause:** *not* the patch bump. The update also migrated the interpreter from the
+python.org-style layout (`%LOCALAPPDATA%\Programs\Python\Python313`) to the Python Install
+Manager layout (`%LOCALAPPDATA%\Python\pythoncore-3.13-64`) and deleted the old directory. A
+venv hard-codes its base interpreter as an absolute path in `pyvenv.cfg`, and on Windows the
+venv's `python.exe` is a copy that loads `python313.dll` and the stdlib from that `home`. When
+the directory disappears, the venv is dead. The root `.venv` survived only because it had
+already been recreated against the new layout.
+
+**Diagnosis — `pyvenv.cfg` names the base; check every venv in the repo, not just the root:**
+
+```powershell
+Get-Content .\.venv\pyvenv.cfg
+Get-Content .\functionapp\.venv\pyvenv.cfg
+```
+
+If `home` names a directory that no longer exists, the venv is unrecoverable. Recreate it —
+there is nothing to repair in place, and `--upgrade` cannot help.
+
+**Fix:**
+
+```powershell
+Remove-Item -Recurse -Force ".\functionapp\.venv"
+& "$env:LOCALAPPDATA\Python\pythoncore-3.13-64\python.exe" -m venv ".\functionapp\.venv"
+.\functionapp\.venv\Scripts\python.exe -m pip install -r .\functionapp\requirements.txt
+.\functionapp\.venv\Scripts\python.exe -m pip install truststore   # local dev only
+```
+
+`truststore` is deliberately **not** in `functionapp\requirements.txt` — it is the
+TLS-inspection workaround for this machine and is unwanted on the Azure Linux host — but a
+`func start` driven from this venv needs it for the outbound CU call (see the
+`sitecustomize.py` shim entries above).
+
+**Why it should not recur:** the Install Manager directory is keyed to the *minor* version
+(`pythoncore-3.13-64`), not the patch, so 3.13.x updates land in place and leave `home` valid.
+Only another layout migration, or dropping 3.13, breaks it again.
+
+**Worth running after any Python update** (each venv, then the two test tiers):
+
+```powershell
+.\.venv\Scripts\python.exe --version ; .\.venv\Scripts\python.exe -m pip check
+.\functionapp\.venv\Scripts\python.exe --version ; .\functionapp\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts\regress.py --load-local-settings   # cache hit, 0 CU calls
+```
+
+**Unrelated but adjacent:** bare `python` on PATH is 3.14 here and `py -0p` marks 3.14 the
+default. That is fine and intentional — the pre-commit hook calls the venv python by absolute
+path and `.vscode\settings.json` pins the root `.venv`. It matters only for `func start`,
+which needs `VIRTUAL_ENV` set; see the `ZoneInfoNotFoundError` entry above.
