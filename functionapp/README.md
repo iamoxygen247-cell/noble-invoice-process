@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "twin-resolution-v8",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v9",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -82,10 +82,23 @@ Response (HTTP 200 on a normal decision):
                    "account_number": "123456789012", "sub_bill_type": "repair",
                    "billing_period_start_date": "2026-01-01",
                    "billing_period_end_date": "2026-03-31", "number_of_days": 83,
+                   "diagnosis_solution": "Traced the leak to a hole in the membrane and made a temporary repair.",
+                   "diagnosis_solution_zh_hant": "調查漏水，確認源頭為防水膜破洞，已完成臨時修補。",
+                   "recommendation": "Carry out a permanent repair with an EPDM kit.",
+                   "recommendation_zh_hant": "建議使用 EPDM 套件進行永久修復。",
+                   "warranty": "Repairs are not guaranteed; further service calls are chargeable.",
                    "...": null },
   "defaultedFields": [], "anomalyFlag": ""
 }
 ```
+
+The five narrative fields — `diagnosis_solution`, `recommendation`, `warranty` and the
+Traditional Chinese twins `*_zh_hant` — summarise what the vendor found, did, recommends
+next, and warrants. They are **always strings, never null**, and are **blank on the
+municipal bucket**: a water or hydro bill diagnoses nothing, so `build_write_values`
+forces all five to `""` there rather than trusting the prompts to decline. Their length
+limits (800 / 800 / 400 characters) live in the analyzer prompts only — nothing truncates
+them in code, so size the Dataverse columns with headroom (see the Phase-4 note below).
 
 `routingDecision` is one of: `HAPPY_PATH_CANDIDATE`, `REVIEW_B4_CRITICAL_FIELD`,
 `REJECT_B2_OTHER_CATEGORY`, `REVIEW_NO_CHILD_EXTRACTION`. (`REVIEW_B3_HANDWRITTEN_OR_UNKNOWN`
@@ -181,6 +194,19 @@ and the value CU resolved does not, with `resolutions.gst_amount.source` =
 candidate and arithmetic confirms it; neither is trusted alone, so a bill carrying
 an untaxed charge (a security deposit, a levy) fails the check and is left alone.
 `amount_excluding_gst` is recomputed from the corrected value.
+
+`vendor_name` has one further rescue, for letterheads where the vendor's name is
+printed **only as a stylized logo**. The extract prompt is told to prefer clearly
+printed text over a graphic wordmark, so on such a page it takes whatever plain
+text sits nearby — on one corpus invoice, the dispatch service in the top-right
+contact block — and the twins then disagree with both below the bar. The vendor's
+own web or e-mail domain is printed on the same letterhead and *is* machine
+readable, so when the twins name genuinely different vendors and exactly one of
+them matches a printed domain label, that one is written, with
+`resolutions.vendor_name.source` = `"domain_corroborated"` and an advisory flag.
+Deliberately inert otherwise: twins that name the same vendor in two spellings
+("District of West Vancouver" vs "West Vancouver") are left to the ordinary twin
+resolution, since a city's domain always matches the shorter form.
 
 When gate A1 short-circuits (another invocation is processing the same item), the
 response has `alreadyProcessed: true`, `skippedCU: true`, and `routingDecision`
@@ -302,6 +328,12 @@ connection (encrypted at rest, never in run history) rather than in the flow.
      `billing_period_start_date` / `billing_period_end_date` (`YYYY-MM-DD` or
      `""`) and `number_of_days` (integer or `""`) for the tenant
      utility-sharing calculation — map each to the matching Dataverse column.
+     Since `commercial-narrative-v9` it also includes the five narrative fields
+     `diagnosis_solution` / `recommendation` / `warranty` and the Traditional
+     Chinese `diagnosis_solution_zh_hant` / `recommendation_zh_hant` (always a
+     string, `""` on municipal bills) — map each to a **Multiple Lines of Text**
+     column sized **1000 / 1000 / 500** so an occasional over-length summary
+     cannot fail the row write.
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.

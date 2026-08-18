@@ -1,5 +1,5 @@
 {
-  "note": "Municipal baseline; Previous bill 627.90 but BALANCE FORWARD 0.00 -> total is this bill's 462.49. Full municipal critical set. || NOT asserted here: invoice_description.",
+  "note": "Municipal baseline; Previous bill 627.90 but BALANCE FORWARD 0.00 -> total is this bill's 462.49. Full municipal critical set. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -18,7 +18,12 @@
       "billing_period_start_date": "2026-05-07",
       "billing_period_end_date": "2026-06-05",
       "number_of_days": 30,
-      "amount_excluding_gst": 440.47
+      "amount_excluding_gst": 440.47,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 462.49,

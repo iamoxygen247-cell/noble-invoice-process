@@ -1,5 +1,5 @@
 {
-  "note": "BC Hydro security deposit; BALANCE FORWARD 0.00 -> Total Due 198.14, not the 21.14 current charges. invoice_date 2026-06-17 is printed in the header table; carried by the printed-text corroboration on runs where the extract twin returns null, so the invoice_date twins are NOT asserted. || NOT asserted here: invoice_description.",
+  "note": "BC Hydro security deposit; BALANCE FORWARD 0.00 -> Total Due 198.14, not the 21.14 current charges. invoice_date 2026-06-17 is printed in the header table; carried by the printed-text corroboration on runs where the extract twin returns null, so the invoice_date twins are NOT asserted. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -18,7 +18,12 @@
       "billing_period_start_date": "2026-06-01",
       "billing_period_end_date": "2026-06-15",
       "number_of_days": 15,
-      "amount_excluding_gst": 197.13
+      "amount_excluding_gst": 197.13,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 198.14,

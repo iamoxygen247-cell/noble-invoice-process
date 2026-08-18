@@ -50,6 +50,16 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+# The narrative fields carry Traditional Chinese, and this script prints observed
+# field values (mismatch rows, the --add scaffold's unstable list). On Windows a
+# *redirected* stdout defaults to cp1252, so printing one would raise
+# UnicodeEncodeError and bury a real FAIL under an encoding traceback -- and the
+# pre-commit hook runs exactly that way. Console stdout is already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):  # pragma: no cover - non-reconfigurable stream
+    pass
+
 # --- TLS: verify against the Windows store, like func/.NET (troubleshooting.md).
 os.environ.pop("REQUESTS_CA_BUNDLE", None)
 try:

@@ -1,5 +1,5 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the filename stem. The '11802' in '# UTILITY BILL 11802' is a notice/form number, not an invoice number. || NOT asserted here: billing_period_end_date, billing_period_start_date, invoice_description.",
+  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the filename stem. The '11802' in '# UTILITY BILL 11802' is a notice/form number, not an invoice number. || NOT asserted here: billing_period_end_date, billing_period_start_date, invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -16,7 +16,12 @@
       "bill_type": "municipal",
       "sub_bill_type": "water",
       "number_of_days": 117,
-      "amount_excluding_gst": null
+      "amount_excluding_gst": null,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 823.11,

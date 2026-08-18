@@ -1812,3 +1812,128 @@ Only another layout migration, or dropping 3.13, breaks it again.
 default. That is fine and intentional — the pre-commit hook calls the venv python by absolute
 path and `.vscode\settings.json` pins the root `.venv`. It matters only for `func start`,
 which needs `VIRTUAL_ENV` set; see the `ZoneInfoNotFoundError` entry above.
+
+## Adding the narrative fields: four prompt failures a single run each would have missed
+
+**Context (2026-08-17, `commercial-narrative-v9`):** added five lone `generate` fields —
+`diagnosis_solution`, `recommendation`, `warranty` and the Traditional Chinese
+`diagnosis_solution_zh_hant` / `recommendation_zh_hant`. Largest analyzer edit made so far.
+Every one of the failures below was found by scaffolding **one document at a time** before the
+full corpus run, and every one was invisible in the first replicate.
+
+**1. A capability stated last reads as an exception.** `diagnosis_solution` was written as a
+diagnosis procedure with "for a pure goods sale, describe what was supplied" tacked onto the
+end of step 4. On the appliance-purchase invoice it returned `''` on **1 run in 3** — the model
+weighed the fault-finding framing of steps 1-3 over the trailing clause. Fix: name both cases
+in the opening sentence, give the branch its own step ("decide which kind of invoice this is"),
+and add an explicit anti-rule — *"Never answer with an empty string merely because no problem
+was diagnosed."* Verified 5/5 non-empty. Same shape as the `service_address` lesson at line 754:
+**in a generate prompt, order is priority — a case stated last is read as a footnote.**
+
+**2. A language instruction leaks into the neighbouring field.** After that fix, `warranty`
+(English-only, no language instruction of its own) came back in **Traditional Chinese on 5/5
+replicates**. The `_zh_hant` fields' "Do not answer in English" was steering a field that never
+asked for a translation. Two mitigations, applied together: state the language **positively and
+explicitly on every field in the group** ("Write the summary in ENGLISH. Other fields in this
+schema ask for Traditional Chinese; this one does not."), and **group the schema by language**
+so an English field is not adjacent to a Chinese one. Verified English 5/5 afterwards.
+**A field with no instruction on some axis inherits its neighbours' — silence is not a default.**
+
+**3. "Keep X in the printed form" is read as "include X".** The `_zh_hant` prompts said *"Keep
+brand names, model numbers, serial numbers and dates in the form printed on the invoice; do not
+translate them"* — meant as a transliteration rule. The Chinese summaries promptly grew model
+numbers, serial numbers, warranty terms and a recycling fee that the English twin correctly
+omitted, so the two languages described different things. Fix: anchor the Chinese to the English
+scope first (*"Report the same facts, at the same level of detail, that a plain-language English
+summary would report"*), list what not to add, and only then make the transliteration rule
+conditional (*"Where you do mention a brand name or a date, keep it..."*).
+
+**4. The character limit still is not a limit.** Same lesson as `invoice_description` (line 422),
+now measured on a longer field: `warranty` produced **403 characters against a 400-character
+budget** on 1 run in 3, by enumerating an exclusion list. Asking for fewer characters does not
+work; **removing the thing that makes it long does** — "at most two short sentences… never
+enumerate the individually excluded items; write 'with exclusions' instead of listing them."
+Because enforcement is prompt-only by decision, the Dataverse columns are sized 1000/1000/500
+against 800/800/400 limits so an overshoot cannot fail the row write.
+
+**Two side-effects worth knowing:**
+
+- **Non-ASCII output breaks the CLI scripts on a redirected stdout.** `regress.py`, `test.py`
+  and `diag.py` print observed field values; on Windows a *piped* stdout defaults to cp1252, so
+  the first Chinese value raises `UnicodeEncodeError` — and the pre-commit hook runs exactly that
+  way, so a real FAIL would surface as an encoding traceback. All three now call
+  `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`. A console stdout was already
+  UTF-8, which is why this is invisible when you run them by hand.
+- **The municipal blanking is a code gate, not a prompt promise.** The prompts do say "return an
+  empty string for a municipal utility bill", but `build_write_values` forces all five to `""`
+  for the municipal bucket regardless. That makes them deterministic and therefore *assertable*
+  on all 15 municipal corpus docs — free-text fields are normally unassertable (line 1330), so
+  the gate is what buys the regression coverage back.
+
+**Reusable lesson:** when adding a *group* of related generate fields, scaffold them one
+document at a time and read the values before running the corpus. Three of these four failures
+produced a plausible-looking value on the first replicate and would have shipped.
+
+## `vendor_name` on a stylized-logo letterhead — fixed in code by domain corroboration
+
+**Symptom (2026-08-17, `260629_0024` PRIORITY appliance service):** the written vendor was
+`Vancouver Central Dispatch` — a different company, printed in the top-right contact block.
+Routing flipped to `REVIEW_B4_CRITICAL_FIELD` because the two vendor twins disagreed and both
+sat far below the 0.73 bar (extract 0.319, generate 0.418).
+
+**Cause:** the real vendor name on this letterhead exists *only* as a stylized graphic
+wordmark. `vendor_name_extract`'s own prompt says to read "clearly printed text … **rather
+than a stylized logo or graphic wordmark**", and offers "the vendor contact block" as a
+source — so the dispatch service's plain-text block is arguably the *prompt-compliant*
+answer. No prompt wording fixes this without breaking the logo rule everywhere else.
+
+**Fix:** `field_policy.vendor_domain_tiebreak` + a rescue in `gates.evaluate`. The vendor's own
+web/e-mail domain is printed on the same letterhead, is machine readable where the logo is
+not, and no field prompt competes over it. When the twins name genuinely different vendors and
+exactly one matches a printed domain label, that one wins (`source = "domain_corroborated"`).
+
+**Two guards that the corpus proved are load-bearing — both were added after a first version
+regressed other documents:**
+
+1. **Skip when the twins are *consistent*.** Without this the rule fired on `delta_water`
+   ("The Corporation of Delta" vs "Delta"), `west_van_water` ("District of West Vancouver" vs
+   "West Vancouver") and `recommend_240124_0001` ("CAMBIE ROOFING CONTRACTORS LTD." vs "Cambie
+   Roofing") — a city's own domain always matches the SHORT form, so it stripped "District of"
+   from correct names. Those are one vendor in two spellings; there is no tie to break.
+2. **A prefix match needs 60% overlap.** `'vancouver'` prefixes `'Vancouver Water Works'`,
+   which let `www.vancouver.ca` promote a wrong municipal vendor. Caught by a unit test before
+   it ever reached the corpus.
+
+After both guards the rescue fires on **1 of 29 corpus documents** — the one it was written
+for. Measured at n=12 on the analyzer with and without it: `260629_0024` routing goes from
+**2/12** `HAPPY_PATH_CANDIDATE` to **12/12** on both.
+
+**Reusable lesson:** when a field's correct answer is only available as an image, look for a
+*different* machine-readable carrier of the same fact rather than rewriting the prompt. A
+domain, an account number, a GST number — evidence no prompt is fighting over.
+
+## A cached-green corpus hid three coin-flip assertions for weeks
+
+**What happened (2026-08-17):** editing the analyzer JSON changed its hash, which invalidated
+the whole content-addressed cache and re-rolled all 29 documents. Six (doc, field) rows went
+red. The first read was "the new fields broke existing extraction", and a second CU analyzer
+was nearly built to isolate them. A live HEAD control at **n=12** showed the opposite:
+
+| row | HEAD (unmodified prod prompt) | verdict |
+|---|---|---|
+| `260629_0024` vendor / routing | correct **2/12** | assertion was a ~17% outcome |
+| `fortisbc` `vendor_name_extract` | `FortisBC Energy Inc.` **7/12** | coin flip, and a raw twin |
+| `fortisbc` `invoice_date_extract` | dated **8/12** | inherently unstable; shipped value fine 12/12 |
+| `260521_0024` `number_of_days` | unstable on both arms | pre-existing |
+| `west_van_water` vendor casing | identical on both arms | pre-existing |
+
+**None of the six was caused by the change.** Every one was a long-standing instability whose
+sidecar had frozen one lucky roll.
+
+**Two process lessons, both already half-written in this file and both re-learned the hard way:**
+
+- **n=5 cannot separate 4/5 from 3/5, and a 5/5 sample of a 67%-true field is common.** A
+  regression was claimed twice on n=5 evidence and withdrawn both times. For any (doc, field)
+  comparison that will drive a decision, use n≥12 per arm.
+- **Only a `--force` re-roll tells you which assertions are real.** A green run off the cache
+  proves nothing about stability; it proves the cache still holds the roll it was written from.

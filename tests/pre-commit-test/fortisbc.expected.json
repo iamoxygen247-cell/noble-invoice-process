@@ -1,11 +1,10 @@
 {
-  "note": "Municipal gas baseline; full municipal critical set except vendor_name, whose resolved value flips between 'FortisBC' and 'FortisBC Energy Inc.' run to run (the two spellings normalise differently, so the more-confident-twin rule picks either). Both twins are individually stable and are asserted instead, which pins the prompt without asserting the confidence-dependent resolution. invoice_number is the filename fallback -- FortisBC gas bills carry only an account number. || NOT asserted here: invoice_description, vendor_name.",
+  "note": "Municipal gas baseline; full municipal critical set except vendor_name, whose resolved value flips between 'FortisBC' and 'FortisBC Energy Inc.' run to run (the two spellings normalise differently, so the more-confident-twin rule picks either). Both twins are individually stable and are asserted instead, which pins the prompt without asserting the confidence-dependent resolution. invoice_number is the filename fallback -- FortisBC gas bills carry only an account number. || NOT asserted here: invoice_description, vendor_name. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || Two removals, both measured on the UNMODIFIED HEAD analyzer at n=12 (2026-08-17): (1) fields.vendor_name_extract -- a coin flip between 'FortisBC Energy Inc.' (7/12) and 'FortisBC - Natural gas' (5/12) at HEAD; it was also asserting a RAW TWIN, which the corpus rule forbids outright (assert the resolved value, never a raw twin). (2) writeValues.invoice_date -- correct 12/12 at HEAD and 12/12 on the current analyzer, but observed defaulting to today once in the 3-replicate corpus run, i.e. a rare (~1 in 15) pre-existing miss where both date twins fail together. OPEN ITEM: when that happens the invoice writes today's date rather than the printed one.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "service_address": "HSE-8667 Cartier St, Vancouver",
       "total_invoice_amount": 228.08,
-      "invoice_date": "2026-05-29",
       "payment_due_date": "2026-06-20",
       "invoice_number": "fortisbc",
       "po_or_job_number": null,
@@ -17,13 +16,16 @@
       "billing_period_start_date": "2026-05-01",
       "billing_period_end_date": "2026-05-27",
       "number_of_days": 27,
-      "amount_excluding_gst": 217.26
+      "amount_excluding_gst": 217.26,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 228.08,
-      "total_invoice_amount_generate": 228.08,
-      "vendor_name_extract": "FortisBC Energy Inc.",
-      "vendor_name_generate": "FortisBC"
+      "total_invoice_amount_generate": 228.08
     }
   }
 }

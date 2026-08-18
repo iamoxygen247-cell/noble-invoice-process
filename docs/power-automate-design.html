@@ -330,6 +330,16 @@
             <code>end &minus; (number_of_days &minus; 1)</code> (advisory flag +
             <code>resolutions.billing_period_start_date.source = "derived"</code>). Blank means
             unknown &mdash; never substitute a default date.</td></tr>
+    <tr><td><code>writeValues</code> narrative keys</td>
+        <td><code>diagnosis_solution</code> / <code>recommendation</code> / <code>warranty</code> plus the
+            Traditional Chinese <code>diagnosis_solution_zh_hant</code> / <code>recommendation_zh_hant</code>
+            (since <code>commercial-narrative-v9</code>) &mdash; what the vendor found and did, what they
+            recommend next, and what they warrant. <strong>Always a string, never null</strong>, and always
+            <code>""</code> on a municipal bill (a water or hydro bill diagnoses nothing, so the Function blanks
+            all five for that bucket). Purely informational: they never affect
+            <code>routingDecision</code>. Their 800 / 800 / 400-character limits are enforced in the analyzer
+            prompt only &mdash; nothing truncates in code &mdash; so give the Dataverse columns headroom
+            (see the Phase&nbsp;4 prep below).</td></tr>
   </table>
 
   <h2><span class="num">4</span>What I need from you before building</h2>
@@ -665,6 +675,43 @@ az functionapp keys list -g rg-content-understanding-dev -n func-invoiceprocess-
     prints no period (Surrey shape): the row should carry the <em>derived</em> start (source
     <code>"derived"</code> in <code>resolutions</code>), e.g. start 2026-01-08 / end 2026-04-29 / days 112; a
     commercial invoice writes with all three columns blank.
+  </div>
+
+  <h3>Phase 4 prep &mdash; Dataverse columns for the narrative fields</h3>
+  <p>The Function emits five narrative keys (since <code>commercial-narrative-v9</code>):
+    <code>writeValues.diagnosis_solution</code> (what the vendor found and did),
+    <code>.recommendation</code> (work suggested but not performed), <code>.warranty</code> (any warranty,
+    guarantee or coverage statement &mdash; <em>including</em> disclaimers such as "repairs cannot be
+    guaranteed"), and the Traditional Chinese <code>.diagnosis_solution_zh_hant</code> /
+    <code>.recommendation_zh_hant</code>. All five are always strings and are <code>""</code> on municipal
+    bills. Same caveat as the billing-period trio: nothing errors while unmapped, but the values are discarded
+    at the flow boundary and there is no backfill.</p>
+  <ol class="steps">
+    <li>make.powerapps.com &rarr; the flow's environment &rarr; <strong>Tables</strong> &rarr; the invoice table
+        (inside the solution, so the columns get the right publisher prefix).</li>
+    <li>Add five columns, all <strong>not required</strong>, type <strong>Multiple Lines of Text</strong>:
+        <strong>Diagnosis Solution</strong> and <strong>Diagnosis Solution (Chinese)</strong> &mdash; MaxLength
+        <code>1000</code>; <strong>Recommendation</strong> and <strong>Recommendation (Chinese)</strong> &mdash;
+        MaxLength <code>1000</code>; <strong>Warranty</strong> &mdash; MaxLength <code>500</code>.
+        Note the generated schema names.</li>
+    <li>Save / publish customizations.</li>
+  </ol>
+  <div class="warn">
+    <strong>Why the columns are larger than the limits.</strong> The character limits (800 / 800 / 400) live in
+    the analyzer prompt, and a language model cannot count characters &mdash; a measured run of the Handy
+    Appliances invoice produced a <strong>403-character</strong> <code>warranty</code> against its 400-character
+    budget. Nothing truncates in code, so a Dataverse column sized to exactly 400 would <em>reject the whole
+    row</em> on an overshoot and lose the invoice. Sizing at 1000 / 1000 / 500 makes the limit a target rather
+    than a cliff. If you would rather have a hard guarantee, the alternative is code-side truncation in
+    <code>build_write_values</code> &mdash; deliberately not done, so that no summary is ever silently cut.
+  </div>
+  <div class="note">
+    <strong>Mapping in the Phase&nbsp;4 "Add a new row" action.</strong> Same expression pattern as the
+    billing-period keys, but <em>without</em> the empty-string guard &mdash; a text column accepts
+    <code>""</code> happily, and blank is meaningful (municipal bill, or nothing of that kind on the invoice):
+    <pre><code>body('Process_invoice')?['writeValues']?['diagnosis_solution']</code></pre>
+    Repeat for the other four keys. Verify with a commercial repair invoice (all five populated, the two
+    <code>_zh_hant</code> columns rendering Traditional Chinese) and any water bill (all five blank).
   </div>
 
   <div class="ok">

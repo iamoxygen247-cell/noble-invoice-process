@@ -1,9 +1,8 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description.",
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || vendor_name is NOT asserted: the resolved value alternates between 'DISTRICT OF WEST VANCOUVER' and 'District of West Vancouver' -- the same correct vendor in two casings, observed on the UNMODIFIED HEAD analyzer as well (live control 2026-08-17). Casing-only variance is not assertable under exact string comparison.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
-      "vendor_name": "District of West Vancouver",
       "service_address": "2487 WESTHILL COURT",
       "total_invoice_amount": 598.82,
       "invoice_date": "2026-03-31",
@@ -18,7 +17,12 @@
       "billing_period_start_date": "2026-01-01",
       "billing_period_end_date": "2026-03-31",
       "number_of_days": 86,
-      "amount_excluding_gst": null
+      "amount_excluding_gst": null,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 598.82,

@@ -56,6 +56,14 @@ import urllib.request
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+# The response dump printed below carries the Traditional Chinese narrative fields.
+# A redirected stdout on Windows defaults to cp1252 and would raise
+# UnicodeEncodeError mid-run; console stdout is already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):  # pragma: no cover - non-reconfigurable stream
+    pass
+
 # --- make scorecard.py (sibling) and gates.py (functionapp) importable -------
 _HERE = pathlib.Path(__file__).resolve().parent          # ...\scripts
 _REPO = _HERE.parent                                     # repo root
@@ -154,6 +162,11 @@ except Exception:  # ImportError or attribute drift
         "sub_bill_type_generate",
         "is_handwritten",
         "invoice_description",
+        "diagnosis_solution",
+        "diagnosis_solution_zh_hant",
+        "recommendation",
+        "recommendation_zh_hant",
+        "warranty",
         "anomaly_flag",
     ]
 
@@ -379,6 +392,14 @@ def build_scorecard_pairs(
         "total_invoice_amount_generate",
         "is_handwritten",
         "invoice_description",
+        # The narrative fields carry no assertable value (free text), so the
+        # scorecard is where they actually get reviewed -- keep them next to
+        # invoice_description rather than trailing at the end of the report.
+        "diagnosis_solution",
+        "diagnosis_solution_zh_hant",
+        "recommendation",
+        "recommendation_zh_hant",
+        "warranty",
     ]
     ordered_field_names = (
         lead_fields

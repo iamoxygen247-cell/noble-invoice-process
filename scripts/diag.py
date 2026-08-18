@@ -40,6 +40,14 @@ import json
 import pathlib
 import sys
 
+# The decision JSON now carries Traditional Chinese narrative fields and is dumped
+# to stdout; a redirected stdout on Windows defaults to cp1252 and would raise
+# UnicodeEncodeError. Console stdout is already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):  # pragma: no cover - non-reconfigurable stream
+    pass
+
 # --- make the functionapp modules importable ---------------------------------
 _HERE = pathlib.Path(__file__).resolve().parent          # ...\scripts
 _REPO = _HERE.parent                                     # repo root

@@ -5,7 +5,13 @@
       "PowerShell(az functionapp config appsettings list -g $RG -n $APP --query \"[?contains\\(name,'AZURE_'\\) || name=='FIELD_CONFIDENCE_THRESHOLD' || name=='FUNCTIONS_WORKER_RUNTIME'].{name:name, value:value}\" -o table)",
       "PowerShell($RG  = \"rg-content-understanding-dev\")",
       "PowerShell($APP = \"func-invoiceprocess-westus\")",
-      "Read(//c/Users/georg/AppData/Local/az-truststore/**)"
+      "Read(//c/Users/georg/AppData/Local/az-truststore/**)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\georg\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-georg-dev-Noble-Homes-Invoice-Extractor-noble-invoice-process\\\\audit_phase2.py\" 2>&1)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe scripts\\\\regress.py --force --replicates 3 --load-local-settings 2>&1)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\georg\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-georg-dev-Noble-Homes-Invoice-Extractor-noble-invoice-process\\\\c14171d3-6562-4e1c-a7ef-5d856ebf5e0a\\\\audit_phase1.py\" 2>&1)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\georg\\AppData\\Local\\Temp\\claude\\c--Users-georg-dev-Noble-Homes-Invoice-Extractor-noble-invoice-process"
     ]
   }
 }

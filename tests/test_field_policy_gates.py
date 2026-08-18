@@ -2233,6 +2233,169 @@ def test_b4_review_summary():
     check("summary of none", gates.b4_summary([]) == "")
 
 
+def test_vendor_domain_corroboration():
+    print("\n[gates: vendor rescued by the printed web/e-mail domain]")
+
+    def ev_md(fields, **kw):
+        return gates.evaluate(cu_result(fields, **kw), THRESHOLD)
+
+    # --- the label extractor -------------------------------------------------
+    labels = field_policy.vendor_domain_labels(
+        "BOOK SERVICE ONLINE AT.... www.priorityappliance.com\n"
+        "dispatch@priorityappliance.com  Toll Free 800.219.0105"
+    )
+    check("domain label from url + email", labels == {"priorityappliance"}, str(labels))
+    check("scheme form parsed",
+          "romaheating" in field_policy.vendor_domain_labels("https://romaheating.ca/"))
+    check("generic mail hosts excluded",
+          field_policy.vendor_domain_labels("bon2k1@hotmail.com") == set())
+    check("Noble's own domain never corroborates -- it names the CUSTOMER",
+          field_policy.vendor_domain_labels("Billing@NobleHomes.ca") == set())
+    check("bare sentence with a dot is not a domain",
+          field_policy.vendor_domain_labels("Repairs done. Total due now.") == set())
+
+    # --- the matcher ---------------------------------------------------------
+    lbl = {"priorityappliance"}
+    check("exact match", field_policy.vendor_corroborated_by_domain("Priority Appliance", lbl))
+    check("name longer than domain still matches",
+          field_policy.vendor_corroborated_by_domain("PRIORITY appliance service", lbl))
+    check("unrelated name does not match",
+          not field_policy.vendor_corroborated_by_domain("Vancouver Central Dispatch", lbl))
+    check("short/empty names never match",
+          not field_policy.vendor_corroborated_by_domain("ABC", lbl)
+          and not field_policy.vendor_corroborated_by_domain(None, lbl))
+    # A short generic label must not corroborate a longer unrelated name by prefix alone:
+    # 'vancouver' prefixes 'Vancouver Water Works' but is only 9 of its 19 characters.
+    check("short label does not corroborate a much longer name",
+          not field_policy.vendor_corroborated_by_domain("Vancouver Water Works", {"vancouver"}))
+    check("but a domain that is most of the name does",
+          field_policy.vendor_corroborated_by_domain("Roma Heating", {"romaheating"}))
+
+    # --- the rescue ----------------------------------------------------------
+    # 260629_0024 in miniature: the real vendor is a stylized logo, so the extract twin
+    # takes the dispatch service printed in the contact block; both twins sit under the
+    # bar and disagree, so vendor_name fails B4 and the wrong name is written.
+    letterhead = ("www.priorityappliance.com\nVancouver Central Dispatch 604.736.9897\n"
+                  "dispatch@priorityappliance.com\n")
+    disagreeing = commercial_fields(
+        vendor_name_extract=fstr("Vancouver Central Dispatch", 0.32),
+        vendor_name_generate=fstr("Priority Appliance", 0.42),
+    )
+    r = ev_md(disagreeing, markdown=letterhead)
+    check("domain-corroborated twin is written",
+          r["writeValues"]["vendor_name"] == "Priority Appliance", r["writeValues"]["vendor_name"])
+    check("resolution source = domain_corroborated",
+          r["resolutions"]["vendor_name"]["source"] == "domain_corroborated",
+          str(r["resolutions"]["vendor_name"]))
+    check("rescued vendor clears B4 -> happy path",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("rescue advisory raised",
+          any("web or e-mail domain" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # No domain printed -> nothing to corroborate with, original behaviour preserved.
+    r = ev_md(disagreeing, markdown="Vancouver Central Dispatch 604.736.9897\n")
+    check("no domain on the page -> no rescue, vendor still fails",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # Both twins corroborate (the ordinary case where they differ only in form) -> the
+    # existing agreement resolution stands, the rescue must not second-guess it.
+    r = ev_md(commercial_fields(
+        vendor_name_extract=fstr("Priority Appliance Service", 0.80),
+        vendor_name_generate=fstr("Priority Appliance", 0.80)), markdown=letterhead)
+    check("agreeing twins are left alone",
+          r["resolutions"]["vendor_name"]["source"] != "domain_corroborated",
+          str(r["resolutions"]["vendor_name"]))
+
+    # Municipal: 'City of Vancouver' never matches the label 'vancouver', so the rescue
+    # is inert on city bills rather than mangling them.
+    r = ev_md(municipal_fields(
+        vendor_name_extract=fstr("City of Vancouver", 0.40),
+        vendor_name_generate=fstr("Vancouver Water Works", 0.45)),
+        markdown="pay online at www.vancouver.ca")
+    check("municipal city bill untouched by the rescue",
+          r["resolutions"]["vendor_name"]["source"] != "domain_corroborated",
+          str(r["resolutions"]["vendor_name"]))
+
+    # The customer's own domain on a vendor invoice must never promote the customer.
+    r = ev_md(commercial_fields(
+        vendor_name_extract=fstr("Noble Homes", 0.40),
+        vendor_name_generate=fstr("ROMA Heating & Cooling", 0.45)),
+        markdown="Billing@NobleHomes.ca\ninfo@Romaheating.ca\nhttps://romaheating.ca/")
+    check("customer domain ignored; vendor domain wins",
+          r["writeValues"]["vendor_name"] == "ROMA Heating & Cooling",
+          r["writeValues"]["vendor_name"])
+
+
+def test_commercial_narrative_fields():
+    print("\n[narrative fields: diagnosis_solution / recommendation / warranty]")
+    narrative = {
+        "diagnosis_solution": fstr("Investigated a roof leak and traced it to a hole in the membrane; a temporary repair was carried out.", 0.61),
+        "diagnosis_solution_zh_hant": fstr("調查屋頂漏水，發現防水膜有破洞，已進行臨時修補。", 0.58),
+        "recommendation": fstr("Carry out a permanent repair with an EPDM kit.", 0.55),
+        "recommendation_zh_hant": fstr("建議使用 EPDM 套件進行永久修復。", 0.52),
+        "warranty": fstr("Repairs are not guaranteed; further service calls are chargeable.", 0.50),
+    }
+
+    # Commercial: passed through verbatim. These are lone generate fields with no
+    # twin and no confidence bar, so a sub-threshold value is still written -- the
+    # same passthrough invoice_description gets.
+    parsed = gates.parse_fields(commercial_fields(**narrative))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    for name in field_policy.COMMERCIAL_ONLY_FIELDS:
+        check(f"commercial keeps {name}", wv[name] == narrative[name]["valueString"], repr(wv[name]))
+    check("sub-threshold narrative is still written (no confidence bar)",
+          wv["warranty"].startswith("Repairs are not guaranteed"), repr(wv["warranty"]))
+    check("traditional chinese survives the write path",
+          wv["diagnosis_solution_zh_hant"] == "調查屋頂漏水，發現防水膜有破洞，已進行臨時修補。",
+          repr(wv["diagnosis_solution_zh_hant"]))
+
+    # Municipal: blanked even when CU answered confidently. A water bill has nothing
+    # diagnosed, recommended or warranted, and a lone generate field answers anyway.
+    confident = {k: fstr(v["valueString"], 0.95) for k, v in narrative.items()}
+    parsed = gates.parse_fields(municipal_fields(**confident))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    for name in field_policy.COMMERCIAL_ONLY_FIELDS:
+        check(f"municipal blanks {name} despite 0.95 confidence", wv[name] == "", repr(wv[name]))
+
+    # An unreadable/absent bill_type falls to the commercial bucket (resolve_bucket
+    # fail-safe), so the narrative is kept rather than silently dropped.
+    parsed = gates.parse_fields(commercial_fields(bill_type=fstr("", None), **narrative))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("unreadable bill_type -> commercial bucket keeps the narrative",
+          wv["diagnosis_solution"].startswith("Investigated a roof leak"), repr(wv["diagnosis_solution"]))
+
+    # Absent from CU entirely (analyzer not yet pushed) -> "" not None, so the
+    # Dataverse text columns never receive a null.
+    parsed = gates.parse_fields(commercial_fields())
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    for name in field_policy.COMMERCIAL_ONLY_FIELDS:
+        check(f"absent {name} -> empty string, never None", wv[name] == "", repr(wv[name]))
+
+    # Length limits are prompt-only by decision: an over-length value is written
+    # untouched. This pins that accepted risk so a future truncation is a conscious
+    # change, not an accident. See the plan's Risks section.
+    long_value = "x" * 1200
+    parsed = gates.parse_fields(commercial_fields(diagnosis_solution=fstr(long_value, 0.8)))
+    wv, _ = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("over-length narrative is NOT truncated (prompt-only limit)",
+          wv["diagnosis_solution"] == long_value, f"len={len(wv['diagnosis_solution'])}")
+
+    # The narrative never influences routing: a commercial bill with every narrative
+    # field empty is still a happy-path candidate.
+    r = ev(commercial_fields())
+    check("empty narrative does not block the happy path",
+          r["routingDecision"] == "HAPPY_PATH_CANDIDATE", r["routingDecision"])
+    check("narrative fields are not critical",
+          not (set(field_policy.COMMERCIAL_ONLY_FIELDS)
+               & set(field_policy.critical_fields(field_policy.COMMERCIAL))))
+
+    # All five reach writeValues and appear in the response field block.
+    r = ev(commercial_fields(**narrative))
+    for name in field_policy.COMMERCIAL_ONLY_FIELDS:
+        check(f"{name} is in writeValues", name in r["writeValues"])
+        check(f"{name} is in the fields block", name in r["fields"])
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
@@ -2255,6 +2418,8 @@ def main():
     test_po_ocr_rescue()
     test_billing_period_twins_and_derivation()
     test_payment_due_date_corroboration_rescue()
+    test_vendor_domain_corroboration()
+    test_commercial_narrative_fields()
 
     print("\n" + "=" * 60)
     print("ALL CHECKS PASSED")

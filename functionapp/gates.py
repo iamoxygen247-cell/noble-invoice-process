@@ -96,6 +96,11 @@ FIELD_PRINT_ORDER = [
     "is_handwritten",
     "is_handwritten_generate",
     "invoice_description",
+    "diagnosis_solution",
+    "diagnosis_solution_zh_hant",
+    "recommendation",
+    "recommendation_zh_hant",
+    "warranty",
     "anomaly_flag",
 ]
 
@@ -554,6 +559,38 @@ def evaluate(
             if not is_empty_value(start_val):
                 note += f" (replacing unverified {start_source} value {start_val!r})"
             advisory.append(note)
+
+    # Domain-corroborated vendor rescue. When a vendor's name is printed only as a stylized
+    # logo, vendor_name_extract is steered by its own prompt ("read clearly printed text ...
+    # rather than a stylized logo") toward whatever plain text sits in the letterhead -- on
+    # 260629_0024 that is the dispatch service in the top-right contact block, so the twins
+    # disagree and the wrong one is written. Measured at n=12 on the unmodified prod prompt:
+    # the correct vendor came out 2/12. The vendor's own web/e-mail domain is printed on the
+    # same letterhead, is machine readable where the logo is not, and no field prompt competes
+    # over it -- so it breaks the tie deterministically.
+    #
+    # Deliberately narrow: only when the twins DISAGREE (an agreement already resolved the
+    # field) and exactly ONE side matches a printed domain. Neither matching (municipal bills,
+    # where "City of Vancouver" never matches "vancouver") or both matching leaves the existing
+    # resolution untouched, so this can only ever fire where the field was already unreliable.
+    vendor_value, vendor_conf = resolutions[field_policy.VENDOR_FINAL][:2]
+    winner = field_policy.vendor_domain_tiebreak(
+        parsed.get(field_policy.VENDOR_EXTRACT, (None, None))[0],
+        parsed.get(field_policy.VENDOR_GENERATE, (None, None))[0],
+        collect_markdown(full),
+    )
+    if winner is not None:
+        flat = " ".join(str(winner).split())
+        if flat.lower() != " ".join(str(vendor_value).split()).lower():
+            resolutions[field_policy.VENDOR_FINAL] = (
+                winner, vendor_conf, True, None, "domain_corroborated",
+            )
+            write_values[field_policy.VENDOR_FINAL] = flat
+            advisory.append(
+                f"vendor_name {flat!r} accepted over {vendor_value!r}: the vendor's own "
+                "web or e-mail domain printed on the invoice corroborates it and not "
+                "the alternative"
+            )
 
     # Corroborated invoice-date rescue: the extract twin intermittently returns nothing
     # on bills that plainly print their date, and a generate-only value is refused by

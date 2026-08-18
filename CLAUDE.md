@@ -39,6 +39,7 @@ If the virtual environment does not exist, say so and propose creating it before
 Use these files for durable project knowledge:
 
 * `docs/ai/troubleshooting.md` — confirmed mistakes, failed commands, debugging lessons, environment issues, and verified fixes.
+* `docs/ai/open-defects.md` — running list of defects found but **not** fixed, with the measured rate for each. Add a row whenever you defer a defect; move it to *Resolved* with its sha when fixed.
 * `CLAUDE.local.md` — local machine-specific notes. This file should be gitignored.
 * `.claude/rules/*.md` — optional focused rule files for Python, testing, security, Windows, or project-specific workflows.
 

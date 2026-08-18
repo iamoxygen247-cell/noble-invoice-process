@@ -31,12 +31,12 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 from pathlib import PurePath
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "twin-resolution-v8"
+POLICY_VERSION = "commercial-narrative-v9"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -145,6 +145,30 @@ DAYS_EXTRACT = "number_of_days_extract"
 DAYS_GENERATE = "number_of_days_generate"
 DAYS_FINAL = "number_of_days"
 
+# The narrative fields: what the vendor found and did, what they suggest doing next,
+# and what they warrant. Lone generate fields -- a free-text summary has no single
+# span to extract, so there is no twin to agree with (same shape as
+# invoice_description). They are informational only: never critical, never routing,
+# never defaulted. Character limits live in the analyzer prompts, not here.
+DIAGNOSIS_FINAL = "diagnosis_solution"
+DIAGNOSIS_ZH_FINAL = "diagnosis_solution_zh_hant"
+RECOMMENDATION_FINAL = "recommendation"
+RECOMMENDATION_ZH_FINAL = "recommendation_zh_hant"
+WARRANTY_FINAL = "warranty"
+
+# The only bucket-conditioned write rule. A municipal utility bill has no diagnosis,
+# no recommended follow-up work and no warranty, so these are forced blank there
+# rather than trusting five generate prompts not to invent content on a water bill.
+# The prompts say the same thing, but a code gate is deterministic and testable
+# offline; the prompt alone is not. See build_write_values.
+COMMERCIAL_ONLY_FIELDS: Tuple[str, ...] = (
+    DIAGNOSIS_FINAL,
+    DIAGNOSIS_ZH_FINAL,
+    RECOMMENDATION_FINAL,
+    RECOMMENDATION_ZH_FINAL,
+    WARRANTY_FINAL,
+)
+
 # Values handed to Power Automate to write to Dynamics. Values only; per-field
 # confidence stays in the separate raw-fields block for the review UI and audit.
 WRITE_FIELDS: Tuple[str, ...] = (
@@ -164,6 +188,11 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "billing_period_start_date",
     "billing_period_end_date",
     "number_of_days",
+    DIAGNOSIS_FINAL,
+    DIAGNOSIS_ZH_FINAL,
+    RECOMMENDATION_FINAL,
+    RECOMMENDATION_ZH_FINAL,
+    WARRANTY_FINAL,
 )
 DATE_FIELDS: Tuple[str, ...] = ("invoice_date", "payment_due_date")
 
@@ -727,6 +756,99 @@ def _prefer_vendor_generate(
     return (g_conf or 0.0) >= (e_conf or 0.0)
 
 
+# Domain labels that never identify a vendor. A sole proprietor billing from
+# bon2k1@hotmail.com corroborates nothing, and "Billing@NobleHomes.ca" printed on a
+# vendor's invoice names the CUSTOMER -- corroborating against it would promote Noble
+# itself as the vendor. TLDs and hosting labels are here for the same reason.
+_NON_VENDOR_DOMAIN_LABELS = frozenset({
+    "gmail", "hotmail", "outlook", "yahoo", "live", "icloud", "aol", "msn", "protonmail",
+    "shaw", "telus", "rogers", "bell", "sympatico",
+    "com", "net", "org", "ca", "gov", "bc", "www", "site", "my", "co", "uk",
+    "noblehomes", "nobleassociates", "nobleandassociates",
+})
+
+# A URL or e-mail address in the OCR text: https://romaheating.ca/, www.priorityappliance.com,
+# dispatch@priorityappliance.com. Anchored on the scheme, the www. prefix, or the @ so a bare
+# sentence containing a dot cannot match.
+_VENDOR_DOMAIN_RE = re.compile(r"(?i)(?:https?://|www\.|@)([a-z0-9][a-z0-9.\-]*\.[a-z]{2,})")
+
+
+def vendor_domain_labels(text: str) -> Set[str]:
+    """
+    Domain labels from every URL and e-mail address printed in ``text``, minus the
+    generic ones. "www.priorityappliance.com" and "dispatch@priorityappliance.com" both
+    yield {"priorityappliance"}.
+
+    A vendor's own web or e-mail domain is printed on its letterhead and is machine
+    readable, unlike a stylized logo -- so it is independent evidence of who issued the
+    invoice, from a part of the page no field prompt competes over.
+    """
+    labels: Set[str] = set()
+    for host in _VENDOR_DOMAIN_RE.findall(text or ""):
+        for label in host.lower().split("."):
+            if len(label) >= 4 and label not in _NON_VENDOR_DOMAIN_LABELS:
+                labels.add(label)
+    return labels
+
+
+# How much of the longer string the shorter one must account for before a prefix match
+# counts as corroboration. A bare prefix test is far too loose: the label "vancouver"
+# (from www.vancouver.ca) prefixes "Vancouver Water Works", which would let a city's
+# domain promote the wrong municipal vendor. At 0.6 the domain has to be most of the
+# name -- "priorityappliance" is 17 of the 24 characters in "priorityapplianceservice"
+# (0.71, corroborates) while "vancouver" is 9 of 19 (0.47, does not).
+_VENDOR_DOMAIN_OVERLAP = 0.6
+
+
+def vendor_corroborated_by_domain(value: Any, labels: Set[str]) -> bool:
+    """True when a vendor name matches one of the printed domain labels once both are
+    reduced to bare alphanumerics -- "Priority Appliance" and the longer printed
+    "PRIORITY appliance service" both match the label "priorityappliance".
+
+    One must be a prefix of the other AND the shorter must account for at least
+    _VENDOR_DOMAIN_OVERLAP of the longer, so a short generic label cannot corroborate an
+    unrelated longer name. Deliberately conservative: a missed match leaves the existing
+    resolution alone, while a false match would overwrite a correctly extracted vendor."""
+    key = re.sub(r"[^a-z0-9]", "", str(value).lower()) if value is not None else ""
+    if len(key) < 4:
+        return False
+    for lbl in labels:
+        short, long = sorted((key, lbl), key=len)
+        if long.startswith(short) and len(short) >= _VENDOR_DOMAIN_OVERLAP * len(long):
+            return True
+    return False
+
+
+def vendor_domain_tiebreak(e_val: Any, g_val: Any, text: str) -> Optional[Any]:
+    """
+    The twin value corroborated by a web/e-mail domain printed in ``text``, when the twins
+    name genuinely DIFFERENT vendors and exactly one of them is corroborated. None in every
+    other case, meaning "no opinion -- keep the existing resolution".
+
+    The consistency guard is what keeps this safe, and it is not optional: on a municipal
+    bill the twins routinely differ only in form -- "The Corporation of Delta" vs "Delta",
+    "District of West Vancouver" vs "West Vancouver" -- and the city's own domain (delta.ca,
+    westvancouver.ca) always matches the SHORT form. Without the guard this would strip
+    "District of" from a correct name. Those two are the same vendor, so there is no tie to
+    break; the ordinary twin resolution already handles which spelling to write.
+
+    It fires only where the twins point at different companies, which on the corpus is the
+    stylized-logo case: the letterhead name is a graphic, the extract twin takes whatever
+    plain text sits nearby, and the domain is the only machine-readable evidence of who
+    actually issued the invoice.
+    """
+    if _vendor_values_consistent(e_val, g_val):
+        return None
+    labels = vendor_domain_labels(text)
+    if not labels:
+        return None
+    e_ok = vendor_corroborated_by_domain(e_val, labels)
+    g_ok = vendor_corroborated_by_domain(g_val, labels)
+    if e_ok == g_ok:
+        return None
+    return e_val if e_ok else g_val
+
+
 def _field_passes(value: Any, confidence: Optional[float], threshold: float) -> bool:
     """A non-empty value whose confidence clears the threshold. Field-agnostic;
     shared by the vendor and service-address resolvers."""
@@ -1029,9 +1151,12 @@ def build_write_values(
         * the billing-period dates are normalised but NEVER defaulted (blank
           when absent/unparseable) and ``number_of_days`` is a positive int or
           blank -- informational fields for the tenant utility-sharing math;
+        * the narrative fields (``COMMERCIAL_ONLY_FIELDS``) are blanked on the
+          municipal bucket and coerced to a string otherwise;
         * ``amount_excluding_gst`` is the derived total - gst (or None).
 
-    This is identical for both buckets -- defaulting is not bucket-dependent.
+    Defaulting is not bucket-dependent; the narrative blanking is the single
+    bucket-conditioned write rule.
     """
     now_pst = _now_pacific(now)
     default_for = {
@@ -1105,16 +1230,28 @@ def build_write_values(
         days if (days is not None and (write[BILLING_END_FINAL] or days_grounded)) else ""
     )
 
+    bucket = resolve_bucket(parsed.get("bill_type", (None, None))[0])
+
     # sub_bill_type is derived too: commercial from the resolved PO's prefix,
     # municipal from the classified label (confidence bar / generate-twin
     # agreement). gates.evaluate refreshes it after the OCR PO rescue, which can
     # change the PO the commercial rule depends on.
     sub_value, sub_confidence = parsed.get(SUB_BILL_TYPE, (None, None))
     write[SUB_BILL_TYPE] = resolve_sub_bill_type(
-        resolve_bucket(parsed.get("bill_type", (None, None))[0]),
-        sub_value, sub_confidence, write[PO_FINAL],
+        bucket, sub_value, sub_confidence, write[PO_FINAL],
         parsed.get(SUB_BILL_TYPE_GENERATE, (None, None))[0],
     )
+
+    # The narrative fields describe service/supply work, which a municipal utility
+    # bill does not report -- a water bill has nothing diagnosed, nothing recommended
+    # and nothing warranted. Blanked for that bucket rather than relying on five
+    # generate prompts to decline: a generate field answers even when the content is
+    # absent (the number_of_days "1" case above is the same failure), and here there
+    # is no twin and no confidence bar to catch it. Always a string, so the downstream
+    # Dataverse write never sees null for a text column.
+    for name in COMMERCIAL_ONLY_FIELDS:
+        value = write.get(name)
+        write[name] = "" if (bucket == MUNICIPAL or not isinstance(value, str)) else value
 
     # amount_excluding_gst is derived from the resolved total and gst, not the raw CU
     # fields (which are now the *_extract / *_generate twins).

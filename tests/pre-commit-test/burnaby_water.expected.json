@@ -1,5 +1,5 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the SharePoint filename stem via the municipal fallback. The '1243' in this bill's '# UTILITY NOTICE 1243' heading is a notice/form number and must never be returned -- the twins used to pick it up on roughly 1 run in 3. This assertion is the guard rail against that. || NOT asserted here: invoice_description.",
+  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the SharePoint filename stem via the municipal fallback. The '1243' in this bill's '# UTILITY NOTICE 1243' heading is a notice/form number and must never be returned -- the twins used to pick it up on roughly 1 run in 3. This assertion is the guard rail against that. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -18,7 +18,12 @@
       "billing_period_start_date": "2026-01-01",
       "billing_period_end_date": "2026-03-31",
       "number_of_days": 83,
-      "amount_excluding_gst": null
+      "amount_excluding_gst": null,
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
     },
     "fields": {
       "total_invoice_amount_extract": 163.08,

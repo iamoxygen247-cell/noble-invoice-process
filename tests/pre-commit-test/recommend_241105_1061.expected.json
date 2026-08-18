@@ -1,0 +1,26 @@
+{
+  "note": "ROMA Heating & Cooling boiler-maintenance invoice -> commercial, happy path. Narrative anchor: asserts warranty '' on a service invoice whose only footer reference is a 'See our Terms & Conditions' link with no warranty text -- a link is not a warranty statement. Also a scheduled-maintenance (not break/fix) document: the diagnosis is a list of inspections with no fault found, which is the case the diagnosis prompt's step 4 covers ('a finding of no fault is still a finding'). invoice_number keeps the printed '#' prefix ('#116412') because that is how the document prints it; asserted as-is so a future prompt change that starts stripping it is visible. payment_due_date 2024-11-05 is genuinely printed (DUE DATE Nov 05, 2024, terms 'Upon receipt'), not a default. service_address is the customer's 311 E 35th Ave, not ROMA's own 2800 Douglas Rd contact address. || NOT asserted here: diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant -- free-text summaries, reworded on every replicate (verified correct by eye across 3 runs: the diagnosis lists the boiler maintenance and the safety/gas-leak/CO/burner/venting/heat-exchanger/inducer inspections; the recommendation captures the printed line 'Both units are very old highly recommend to replace for safety' and does not restate the performed work); invoice_description (free text, excluded by standing rule). || service_address and routingDecision are NOT asserted: service_address_extract intermittently returns nothing on this invoice (observed None on 1 of 3 replicates in a --force re-roll), and because service_address is a base critical field the routing flips with it between HAPPY_PATH_CANDIDATE and REVIEW_B4_CRITICAL_FIELD while every other value stays identical. Same intermittent-null shape already documented on 260629_0010. The original 3-replicate scaffold agreed by luck; 3 runs is not evidence of stability for a field that straddles the bar.",
+  "expect": {
+    "writeValues": {
+      "vendor_name": "ROMA Heating & Cooling",
+      "total_invoice_amount": 367.5,
+      "invoice_date": "2024-11-05",
+      "payment_due_date": "2024-11-05",
+      "invoice_number": "#116412",
+      "po_or_job_number": "11020375",
+      "gst_amount": 17.5,
+      "pst_amount": 0,
+      "account_number": null,
+      "bill_type": "commercial",
+      "sub_bill_type": "repair",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": "",
+      "warranty": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 367.5,
+      "total_invoice_amount_generate": 367.5
+    }
+  }
+}
