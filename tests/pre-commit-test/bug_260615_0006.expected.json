@@ -1,8 +1,9 @@
 {
-  "note": "Sole-proprietor trade invoice. Anchors invoice_date (printed 'Date: June 11, 2026'; used to be replaced by today whenever the extract confidence dipped) and vendor_name (printed 'SIMON SIK FAI KAN' vs the generate twin's shortened 'SIMON KAN'). vendor_name_generate is NOT asserted: it flips between the short and full name. service_address and routingDecision are NOT asserted either -- the address extract returns null on roughly 1 run in 6, which sends routing to review. payment_due_date is never asserted anywhere: not printed, so it defaults to today+30. || NOT asserted here: invoice_description, payment_due_date, routingDecision, service_address. || Narrative fields NOT asserted here: diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty -- free-text summaries that reword themselves across replicates. The commercial narrative anchors are diag_260106_0008 (no-fault diagnosis, empty recommendation and warranty), warranty_260120_0062 (goods sale, empty recommendation) and recommend_240124_0001 (warranty disclaimer).",
+  "note": "Sole-proprietor trade invoice. Anchors invoice_date (printed 'Date: June 11, 2026'; used to be replaced by today whenever the extract confidence dipped) and vendor_name (printed 'SIMON SIK FAI KAN' vs the generate twin's shortened 'SIMON KAN'). vendor_name_generate is NOT asserted: it flips between the short and full name. service_address IS asserted: the address is printed under a bare 'Attention:' heading with no name, which the prompt reaches only through its last-resort rule, so the extract twin returns a confident null on roughly 1 run in 6 and the generate twin's value then sat below the 0.73 bar and sent routing to review. The span-corroboration rescue accepts it (the generate twin's own span quotes 'Attention: / 6240 Cooney Road, / Richmond, BC'), so value and routing are both 10/10 stable. payment_due_date is never asserted anywhere: not printed, so it defaults to today+30. || NOT asserted here: invoice_description, payment_due_date. || Narrative fields NOT asserted here: diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty -- free-text summaries that reword themselves across replicates. The commercial narrative anchors are diag_260106_0008 (no-fault diagnosis, empty recommendation and warranty), warranty_260120_0062 (goods sale, empty recommendation) and recommend_240124_0001 (warranty disclaimer).",
   "expect": {
     "writeValues": {
       "vendor_name": "SIMON SIK FAI KAN",
+      "service_address": "6240 Cooney Road, Richmond, BC",
       "total_invoice_amount": 493.5,
       "invoice_date": "2026-06-11",
       "invoice_number": "260135",
@@ -21,6 +22,7 @@
       "total_invoice_amount_extract": 493.5,
       "total_invoice_amount_generate": 493.5,
       "vendor_name_extract": "SIMON SIK FAI KAN"
-    }
+    },
+    "routingDecision": "HAPPY_PATH_CANDIDATE"
   }
 }

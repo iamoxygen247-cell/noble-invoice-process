@@ -4,7 +4,7 @@
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "vendor_name": "BC Hydro",
-      "service_address": "HSE-2985 GRANVILLE ST\nVANCOUVER BC V6H 3J6",
+      "service_address": "HSE-2985 GRANVILLE ST VANCOUVER BC V6H 3J6",
       "total_invoice_amount": 462.49,
       "invoice_date": "2026-06-09",
       "payment_due_date": "2026-07-02",

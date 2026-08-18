@@ -569,7 +569,6 @@ _GST_LABEL = re.compile(r"(?i)\bG\.?\s?S\.?\s?T\.?\b|\bgoods and services tax\b"
 _GST_MONEY = re.compile(r"\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?!\d)(?!\s*%)")
 _TABLE_ROW = re.compile(r"<tr>.*?</tr>", re.S)
 
-
 def find_gst_line_amounts(text: Optional[str]) -> List[float]:
     """
     Distinct GST amounts printed in the document text, in order of first appearance.
@@ -997,6 +996,96 @@ def is_noble_office_address(value: Any) -> bool:
     )
 
 
+# --- grounding an address in the printed page --------------------------------
+
+# A markdown table cell / row, and the header labels whose column names the serviced
+# property on a municipal licence or permit notice.
+_TABLE = re.compile(r"<table>.*?</table>", re.S)
+_CELL = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S)
+_LOCATION_HEADER = re.compile(r"(?i)^\s*locations?\s*$")
+# A cell holding an address: a street number followed by a street name ending in a street
+# type. Deliberately strict -- it is the only thing separating the address cell from the
+# fee and total cells sitting in the same column position on a colspan row ('$98').
+_STREET = re.compile(
+    r"(?i)^\s*#?\s*\d+[\w\-]*\s+.*\b(ave|avenue|blvd|boulevard|cres|crescent|court|ct|"
+    r"drive|dr|highway|hwy|lane|ln|place|pl|road|rd|st|street|terrace|way)\b\.?\s*$"
+)
+
+
+def normalize_written_text(value: Any) -> Any:
+    """One stable spelling for a written name or address: every run of whitespace becomes a
+    single space. Non-strings pass through untouched."""
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
+def address_corroborated_by_span(value: Any, field_data: Any, text: str) -> bool:
+    """
+    True when a CU address field's OWN spans point at printed text naming the same place
+    as its value.
+
+    Grounds an address the generate twin produced on its own. Stronger evidence than the
+    date_corroborated_in_text precedent, which can only ask whether the value appears
+    somewhere on the page: a span says *this is where CU read it*, so a value taken from
+    the letterhead or invented outright cannot be laundered by a page-wide hit. Agreement
+    uses the same token-overlap comparator as the twin resolution, because the span quotes
+    the surrounding line ('Job# 11024580 | key stuck: 8631 Alexandra Road, Richmond BC')
+    while the value is the cleaned address.
+    """
+    if not isinstance(field_data, dict) or not text:
+        return False
+    spans = field_data.get("spans")
+    if not isinstance(spans, list) or not spans:
+        return False
+    quoted = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        offset, length = span.get("offset"), span.get("length")
+        if isinstance(offset, int) and isinstance(length, int) and length > 0:
+            quoted.append(text[offset:offset + length])
+    return bool(quoted) and _address_tokens_agree(value, " ".join(quoted))
+
+
+def licence_location_address(text: str) -> Optional[str]:
+    """
+    The serviced property read from the 'Locations' column of a municipal licence or
+    permit notice, or None when the document has no such column.
+
+    A City of Vancouver business-licence renewal prints the licensed premises ONLY as a
+    table cell under a 'Locations' header -- no SHIP TO, Service Address or Attention
+    block anywhere on the page. Both CU twins are steered by a list of address-block
+    labels, so neither claims a bare table cell reliably: on business_license.pdf the
+    extract twin returns nothing on every replicate and the generate twin abstains
+    entirely on 1 run in 10, which leaves a base-critical field empty on a document that
+    plainly names the property.
+
+    Same shape as resolve_sectioned_gst: the printed text proposes a candidate and an
+    independent check confirms it. Here the check is the address shape (_STREET), which
+    is what separates the premises cell from the fee cell that a colspan row leaves in
+    the same column position. Declines unless exactly one distinct address-shaped value
+    is found, so a multi-site licence goes to a human rather than having one of its sites
+    picked arbitrarily.
+    """
+    if not text:
+        return None
+    found: List[str] = []
+    for table in _TABLE.findall(text):
+        rows = [
+            [re.sub(r"<[^>]+>", " ", cell).strip() for cell in _CELL.findall(row)]
+            for row in _TABLE_ROW.findall(table)
+        ]
+        if not rows:
+            continue
+        columns = [i for i, head in enumerate(rows[0]) if _LOCATION_HEADER.match(head)]
+        for index in columns:
+            for row in rows[1:]:
+                if index < len(row) and _STREET.match(row[index]):
+                    value = " ".join(row[index].split())
+                    if value not in found:
+                        found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
 def _amounts_agree(a: Any, b: Any) -> bool:
     """True when two amounts are the same money value (equal to the cent). False when
     either is missing or non-numeric."""
@@ -1187,13 +1276,13 @@ def build_write_values(
         else:
             write[name] = value
 
-    # A line break inside a company name is an OCR artifact, not part of the name, and it
-    # flips run to run on the same document ("WASTE MANAGEMENT\nOF CANADA CORPORATION" vs
-    # the spaced form). Collapse it so Dynamics gets one stable spelling. Vendor only --
-    # service_address is legitimately multi-line.
-    vendor = write[VENDOR_FINAL]
-    if isinstance(vendor, str):
-        write[VENDOR_FINAL] = " ".join(vendor.split())
+    # A line break inside a company name or an address is an OCR artifact, not part of the
+    # value, and it flips run to run on the same document ("WASTE MANAGEMENT\nOF CANADA
+    # CORPORATION" vs the spaced form; "4338 Pandora St\nBurnaby , BC" 2 runs in 10 against
+    # the spaced form the other 8). Collapse it so Dynamics gets one stable spelling and the
+    # same property groups together across invoices.
+    for name in (VENDOR_FINAL, SERVICE_ADDRESS_FINAL):
+        write[name] = normalize_written_text(write[name])
 
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.

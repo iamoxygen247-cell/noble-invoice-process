@@ -1937,3 +1937,61 @@ sidecar had frozen one lucky roll.
   comparison that will drive a decision, use n≥12 per arm.
 - **Only a `--force` re-roll tells you which assertions are real.** A green run off the cache
   proves nothing about stability; it proves the cache still holds the roll it was written from.
+
+## `service_address` was two bugs, and neither showed up in the sidecars
+
+**2026-08-18.** `B1` in `open-defects.md` described one defect on two documents at "roughly 1
+run in 3". Re-scoring **all 1,633 cached `service_address` resolutions** (24 docs × 12 analyzer
+versions) through `gates.evaluate` found something else: 41 failures, **five** documents, and
+**two** mechanisms that need different fixes.
+
+| Shape | n | What CU did | Fix |
+|---|---|---|---|
+| generate-only, below bar | 28 | `service_address_extract` returned a **confident null** — value absent, confidence 0.782/0.837. The generate twin read the address correctly but at 0.41–0.87, straddling the 0.73 bar | `address_corroborated_by_span` |
+| both twins null | 13 | nothing read at all | correct review, except on `business_license` |
+
+**A confident null is not a weak read.** 0.782 is CU's confidence that there is *nothing to
+extract*. The extract method is span-grounded and label-steered, so when the address sits
+outside every labelled block its prompt lists — a line-item job note (`Job# 11024580 | key
+stuck: 8631 Alexandra Road`), a bare `Attention:` heading, a `Locations` table column — it
+declines, correctly by its own rule. The generate twin reasons over the page and *does* answer,
+reporting the weak label evidence as a low confidence. So "the address is clearly printed" and
+"the extract twin returns nothing" are not in contradiction, and **the pipeline was writing the
+value while simultaneously sending the document to review.**
+
+**Grounding by span beats grounding by page text.** The generate twin carries `spans` into the
+OCR markdown. `date_corroborated_in_text` (the earlier precedent) can only ask whether a value
+appears *somewhere* on the page — too weak for an address, since the vendor's own address is
+printed too. A span says *where CU read it*, so a letterhead address cannot be laundered by a
+page-wide hit. All 28 cases were span-grounded and none was Noble's office.
+
+**When no label exists at all, read the layout in code.** `business_license` (City of Vancouver
+renewal) prints the licensed premises only in a `Locations` table column; the one address block
+on the page is the c/o mailing block, which is Noble's own office and which both twins correctly
+refuse. A prompt change was considered and rejected: it cannot guarantee the both-null run, it
+risks the cross-field damage that prompt edits have caused before, and it needs a prod push.
+`licence_location_address` reads the column deterministically instead — 10/10 stable, including
+the run where CU returned nothing. **Blast radius was measured before writing it: exactly one
+document in the corpus has such a column.**
+
+**Process:** the two documents' sidecars had `service_address` and `routingDecision` deleted to
+keep the corpus green. That is backwards — `service_address` is base-critical, so dropping it
+removes the only guard on the field that decides routing. Standing rule now: an unstable
+critical field is a bug to fix, never an assertion to delete. All 29 sidecars assert it again.
+
+## Writing Python through a bash heredoc mangles backslashes — use `chr()` or a real file
+
+**2026-08-18, twice in one session.**
+
+1. A regex written as `r"...\b(ave|...)"` inside a `<<'PY'` heredoc reached Python as `\b`,
+   which is a **valid escape** (backspace, 0x08), so the file was written containing literal
+   control characters instead of word boundaries. `\s` and `\d` survived only because they are
+   *invalid* escapes (they emit a `SyntaxWarning` and pass through). The fix that worked:
+   `s.replace(chr(8), chr(92) + "b")` — build the backslash by code point and never re-escape.
+2. `s.replace('_ROW = re.compile(r"<tr>.*?</tr>", re.S)\n', '')` also matched the tail of
+   `_TABLE_ROW = re.compile(r"<tr>.*?</tr>", re.S)`, silently truncating an unrelated constant
+   to `_TABLE`. Collection then failed with `NameError`.
+
+**Rule:** for anything containing backslashes or short identifiers, use the `Write`/`Edit`
+tools, not a heredoc-fed `str.replace`. If a script must do it, anchor the match on a unique
+surrounding line and assert the occurrence count before writing.

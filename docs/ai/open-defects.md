@@ -12,7 +12,7 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-17.
+Last updated: 2026-08-18.
 
 ---
 
@@ -28,6 +28,10 @@ Of the 16 defects: **11 affect Dataverse only** (7 write a silently wrong value,
 inconsistent one, 1 could fail the row write) and **5 have impact today** regardless of
 Dataverse. Work the P1 list.
 
+**2026-08-18: B1, B6b and B6c are fixed** (code-side, no analyzer push — see *Resolved*).
+That closes 2 of the 5 non-Dataverse defects and the address half of the D2 normalisation
+gap, and it let the corpus re-assert `service_address` on all 29 documents.
+
 ---
 
 ## P1 — Impact today, independent of Dataverse
@@ -36,12 +40,10 @@ Ordered by what it costs you now.
 
 | # | ID | Defect | Cost today | Fix shape |
 |---|---|---|---|---|
-| 1 | **B1** | `service_address` intermittently returns nothing, flipping routing | **Clean invoices land in the manual review queue at random** — on `recommend_241105_1061` roughly 1 run in 3. Someone reviews an invoice that needed no review | The extract twin returns a *confident null*; needs the same treatment as the other confident-null cases (a corroboration rescue, or a code-side fallback) |
-| 2 | **C1** | The corpus only passes because the cache freezes one roll | No cost per run, but **highest leverage on this list**: it is why the other 15 defects sat unnoticed. The pre-commit hook never passes `--force`, so marginal assertions only surface when someone edits the analyzer and busts the cache | Schedule a periodic `--force` run, or raise the pre-commit replicate count. Not a code fix |
-| 3 | **B6c** | `business_license` routing flips between runs | Same review-queue churn as B1, lower rate and one document | Investigate which critical field straddles the bar on that document |
-| 4 | **C2** | 73 stable-but-unverified keys are unasserted | Corpus coverage gap. Note the payoff is double-sided: verifying them against the PDFs is also how A3, A4 and A5 were found, so this task *surfaces* Dataverse bugs rather than just adding assertions | Per-document verification against each PDF; do not bulk-add (4 known-wrong, ~48 are raw twins) |
-| 5 | **C3** | `scripts/scorecard.py` `invoice_description_gate` is stale | The scorecard reports `invoice_description.length_gate` against a 15-**word** rule that was replaced by a 44-**character** rule in `b20104f`. Misleading output; nothing checks 44 chars anywhere | Small, self-contained |
-| 6 | **B4** | `total_invoice_amount_generate` disagrees 1 run in 10 | None operationally — a raw twin, already unasserted, and the resolved total stays correct | Lowest priority on this list; listed for completeness |
+| 1 | **C1** | The corpus only passes because the cache freezes one roll | No cost per run, but **highest leverage on this list**: it is why the other 15 defects sat unnoticed. The pre-commit hook never passes `--force`, so marginal assertions only surface when someone edits the analyzer and busts the cache | Schedule a periodic `--force` run, or raise the pre-commit replicate count. Not a code fix |
+| 2 | **C2** | 73 stable-but-unverified keys are unasserted | Corpus coverage gap. Note the payoff is double-sided: verifying them against the PDFs is also how A3, A4 and A5 were found, so this task *surfaces* Dataverse bugs rather than just adding assertions | Per-document verification against each PDF; do not bulk-add (4 known-wrong, ~48 are raw twins) |
+| 3 | **C3** | `scripts/scorecard.py` `invoice_description_gate` is stale | The scorecard reports `invoice_description.length_gate` against a 15-**word** rule that was replaced by a 44-**character** rule in `b20104f`. Misleading output; nothing checks 44 chars anywhere | Small, self-contained |
+| 4 | **B4** | `total_invoice_amount_generate` disagrees 1 run in 10 | None operationally — a raw twin, already unasserted, and the resolved total stays correct | Lowest priority on this list; listed for completeness |
 
 ## P2 — Deferred until Phase 4 (Dataverse only)
 
@@ -56,7 +58,7 @@ Fix **before** the Dataverse write goes live, not before that.
 | 11 | A5 | D1 | `account_number` returns the PO number |
 | 12 | B5 | D1 | `invoice_number` swallows the adjacent date (1/10) |
 | 13 | B3 | D1 | `number_of_days` invents a 1-day count (1/10) |
-| 14 | B2 + B6a + B6b + B7 | D2 | Vendor/address inconsistency — **one fix, four defects**: nothing normalises the written vendor name or address. Also unblocks re-asserting those keys in the corpus |
+| 14 | B2 + B6a + B7 | D2 | Vendor-name inconsistency — nothing normalises the *name* (legal suffix, case). The address half (B6b) was fixed on 2026-08-18: `build_write_values` now collapses whitespace in `service_address` as it already did for `vendor_name` |
 
 ## P3 — Already mitigated
 
@@ -137,9 +139,9 @@ they are currently unasserted only because exact string comparison cannot tolera
 
 | ID | Why not |
 |---|---|
-| B1 | `service_address` is critical, so an intermittent null routes to `REVIEW_B4_CRITICAL_FIELD` — a human sees it and no row is written. Costs review churn, not data integrity |
+| B1 | *(fixed 2026-08-18)* `service_address` is critical, so an intermittent null routed to `REVIEW_B4_CRITICAL_FIELD` — a human saw it and no row was written. Cost review churn, not data integrity |
 | B4 | `total_invoice_amount_generate` is a raw twin, not in `WRITE_FIELDS`; the resolved total stays correct |
-| B6c | `business_license` routing flip — affects which queue the invoice enters, not any stored value |
+| B6c | *(fixed 2026-08-18)* `business_license` routing flip — affected which queue the invoice entered, not any stored value |
 | C1, C2, C3 | Corpus and tooling health; no runtime effect |
 
 **Count:** D1 = 7, D2 = 3, D3 = 1 (**11 Dataverse-affecting**) and D4 = 5 (**impact today**).
@@ -223,15 +225,32 @@ These produce an incorrect value **and** route happy, so no human would see them
 
 Wrong or missing values that *do* route to review, or that flip without changing the outcome.
 
-### B1. `service_address` intermittently returns nothing, flipping routing
+### B1. `service_address` intermittently returns nothing, flipping routing — **FIXED 2026-08-18**
 
-**`D4` not Dataverse — routes to review, a human sees it**
+**`D4` not Dataverse — routed to review, a human saw it**
 
-| | |
-|---|---|
-| Documents | `recommend_241105_1061`, `260629_0010` (previously documented) |
-| Observed | `service_address_extract` returns a confident null on a minority of runs; because `service_address` is a base critical field, routing flips between `HAPPY_PATH_CANDIDATE` and `REVIEW_B4_CRITICAL_FIELD` while every other value stays identical |
-| Impact | A clean invoice lands in the manual review queue at random |
+Re-scoring all 1,633 cached `service_address` resolutions (24 docs × 12 analyzer versions)
+against the live decision path found **41 failures in two distinct shapes**, not one:
+
+| Shape | n | Mechanism |
+|---|---|---|
+| generate-only, below bar | 28 | `service_address_extract` returns a **confident null** (0.782/0.837 — a confidence in the *absence*, not a shaky read) because the address sits outside every labelled block the prompt lists. The generate twin reads it correctly but reports the weak label evidence as 0.41–0.87, straddling the 0.73 bar, so the identical correct address passed or failed by coin flip — and the losing runs still **wrote** it, then sent the doc to review |
+| both twins null | 13 | Nothing was read at all. Correct review, not a defect — except on `business_license`, see B6c |
+
+Five documents, not the two originally logged: `260629_0010`, `bug_260605_0017`,
+`bug_260615_0006`, `business_license`, `recommend_241105_1061`. The "1 run in 3 on
+`recommend_241105_1061`" figure in the old P1 row was already stale when written: that
+document's mechanism is different (CU assigns the *same* extraction — identical spans and
+confidences — to either `service_address` or `bill_to_address`, never both), and the Bill To
+fallback shipped 2026-07-24 had already absorbed it, 10/10 happy.
+
+**Fix:** `gates.evaluate` accepts a below-bar, generate-only address when CU's own spans for
+that value quote text naming the same place (`field_policy.address_corroborated_by_span`).
+Stronger than the `date_corroborated_in_text` precedent, which can only ask whether the value
+appears *somewhere* on the page — a span says where it was read, so a letterhead address or an
+invented one cannot be laundered by a page-wide hit. Narrow: only when the extract found
+nothing, never for Noble's own office, and a disagreeing twin pair keeps its review. All 28
+cases were span-grounded; the 13 empty ones are untouched.
 
 ### B2. FortisBC letterhead vendor coin flip
 
@@ -277,8 +296,8 @@ Wrong or missing values that *do* route to review, or that flip without changing
 
 | | |
 |---|---|
-| Documents | `west_van_water` (`DISTRICT OF WEST VANCOUVER` vs `District of West Vancouver`), `diag_260106_0008` (address line-breaking), `business_license` (routing flips per the n=10 audit) |
-| Note | Not wrong data. Listed because it is why those keys cannot be asserted, and a normalisation step would let the corpus assert them again |
+| Documents | `west_van_water` (`DISTRICT OF WEST VANCOUVER` vs `District of West Vancouver`) — B6a, still open |
+| Note | Not wrong data. B6b (address line-breaking on `diag_260106_0008`, `bug_260605_0017`, `warranty_260120_0062`) and B6c (`business_license` routing) were both fixed on 2026-08-18 — see *Resolved*. B6a remains: nothing normalises vendor-name case |
 
 ---
 
@@ -345,3 +364,7 @@ a target rather than a cliff; revisit only if an overshoot is ever seen in produ
 |---|---|
 | `vendor_name` took the dispatch service from a stylized-logo letterhead (`260629_0024`, correct only **2/12**) | `field_policy.vendor_domain_tiebreak` + rescue in `gates.evaluate`; routing now 12/12 on both the old and new analyzers. Code-side, no analyzer push needed |
 | `regress.py` / `test.py` / `diag.py` crashed with `UnicodeEncodeError` on a piped stdout once any field carried non-ASCII | `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` in all three entry points |
+| **B1** — a below-bar, generate-only `service_address` was written but routed to review, 28 times in 1,633 cached replicates across 5 documents | `field_policy.address_corroborated_by_span` + rescue in `gates.evaluate`: CU's own spans for the value must quote text naming the same place. Code-side, no analyzer push |
+| **B6c** — `business_license` routing flipped 4 runs in 10 | Same root cause as B1 (3 runs), plus a run where **both** twins returned nothing. The licensed premises is printed only in a `Locations` table column, which no address-block label covers, so `field_policy.licence_location_address` reads that column directly (municipal only, address-shaped cell, declines on more than one site). 10/10 stable |
+| **B6b** — the same address stored under two strings (`4338 Pandora St
+Burnaby , BC` vs the spaced form), which blocked asserting `service_address` on 3 documents | `build_write_values` collapses whitespace in `service_address`, as it already did for `vendor_name`. 12 existing sidecar values were normalised in the same change |

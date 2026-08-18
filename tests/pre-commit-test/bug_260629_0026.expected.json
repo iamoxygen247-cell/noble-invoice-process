@@ -4,7 +4,7 @@
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "vendor_name": "BC Hydro",
-      "service_address": "2502-2381 BETA AVE\nBURNABY BC V5C 0P7",
+      "service_address": "2502-2381 BETA AVE BURNABY BC V5C 0P7",
       "total_invoice_amount": 198.14,
       "invoice_date": "2026-06-17",
       "payment_due_date": "2026-07-09",

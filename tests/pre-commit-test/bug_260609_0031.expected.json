@@ -4,7 +4,7 @@
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "vendor_name": "BC Hydro",
-      "service_address": "202-3538 WINDSOR ST\nVANCOUVER BC V5V 4N2",
+      "service_address": "202-3538 WINDSOR ST VANCOUVER BC V5V 4N2",
       "total_invoice_amount": 11.37,
       "invoice_date": "2026-05-28",
       "invoice_number": "137000303570",

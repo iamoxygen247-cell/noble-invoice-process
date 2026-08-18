@@ -3,7 +3,7 @@
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
-      "service_address": "14795 108 Ave\nSurrey, BC",
+      "service_address": "14795 108 Ave Surrey, BC",
       "total_invoice_amount": 192.94,
       "invoice_date": "2026-05-01",
       "invoice_number": "37766",

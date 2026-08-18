@@ -3,7 +3,7 @@
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
-      "service_address": "5189 CAMBIE ST # 111\nVANCOUVER, BC V5Z0J4",
+      "service_address": "5189 CAMBIE ST # 111 VANCOUVER, BC V5Z0J4",
       "total_invoice_amount": 1016.93,
       "invoice_number": "429259",
       "po_or_job_number": "11022266",

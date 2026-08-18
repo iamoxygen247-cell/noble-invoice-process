@@ -673,7 +673,7 @@ def evaluate(
             resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
                 bt_val, bt_conf, True, None, "bill_to_fallback",
             )
-            write_values[field_policy.SERVICE_ADDRESS_FINAL] = bt_val
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = field_policy.normalize_written_text(bt_val)
             if sa_is_office:
                 advisory.append(
                     f"service_address replaced from the Bill To block: {bt_val!r} "
@@ -695,6 +695,58 @@ def evaluate(
             advisory.append(
                 f"service_address discarded: {sa_val!r} is Noble's own office, not a "
                 "serviced property, and no Bill To address could replace it"
+            )
+
+    # Span-corroborated service_address. The extract twin intermittently returns a *confident
+    # null* (0.78-0.84 -- a confidence in the ABSENCE, not a shaky read) on documents whose
+    # address sits outside every labelled block the prompt lists: a line-item job note
+    # ('Job# 11024580 | key stuck: 8631 Alexandra Road'), a bare 'Attention:' heading. The
+    # generate twin then reads it correctly but reports the weak label evidence as a
+    # confidence that straddles the bar (0.41-0.87 on the SAME document), so the identical
+    # correct address passes or fails by coin flip -- and the losing runs still WRITE it,
+    # then send the doc to review. Measured 28 times across 1,633 cached corpus replicates.
+    #
+    # Accept it when CU's own spans for that value point at text naming the same place: the
+    # span says where it was read, which the invoice_date precedent (date_corroborated_in_text)
+    # could not ask for. Narrow on purpose -- only when the extract found NOTHING (source
+    # 'generate'), so a disagreeing twin pair keeps its review, and never for Noble's own
+    # office. Runs after the Bill To fallback so a cleared office address stays cleared.
+    sa_val, sa_conf, sa_passed, _sa_note, sa_source = (
+        resolutions[field_policy.SERVICE_ADDRESS_FINAL]
+    )
+    if (not sa_passed and sa_source == "generate"
+            and not field_policy.is_noble_office_address(sa_val)
+            and field_policy.address_corroborated_by_span(
+                sa_val, fields.get(field_policy.SERVICE_ADDRESS_GENERATE), collect_markdown(full))):
+        resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+            sa_val, sa_conf, True, None, "span_corroborated",
+        )
+        advisory.append(
+            f"service_address {sa_val!r} accepted below the confidence bar: the field's own "
+            "span points at that address printed on the document"
+        )
+
+    # Licensed-premises fallback for a municipal licence or permit notice. A City of
+    # Vancouver business-licence renewal names the serviced property ONLY in a 'Locations'
+    # table column -- no SHIP TO, Service Address or Attention block anywhere -- so both
+    # twins, which are steered by a list of address-block labels, decline it: on
+    # business_license.pdf the extract twin returns nothing on all 10 replicates and the
+    # generate twin abstains outright on 1, leaving a base-critical field empty on a
+    # document that plainly prints the address. Read the column instead
+    # (field_policy.licence_location_address, which confirms the cell is address-shaped).
+    #
+    # Municipal only, and only once every twin-based path above has failed, so it can fire
+    # solely where the field was going to review empty-handed.
+    if bucket == field_policy.MUNICIPAL and not resolutions[field_policy.SERVICE_ADDRESS_FINAL][2]:
+        premises = field_policy.licence_location_address(collect_markdown(full))
+        if premises is not None and not field_policy.is_noble_office_address(premises):
+            resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+                premises, 1.0, True, None, "licence_location",
+            )
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = premises
+            advisory.append(
+                f"service_address {premises!r} read from the licence 'Locations' column: "
+                "the notice carries no service-address block"
             )
 
     # Sectioned-bill GST. A utility bill that splits its charges into sections prints a

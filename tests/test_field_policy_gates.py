@@ -679,10 +679,13 @@ def test_vendor_extract_generate_twin():
           r["writeValues"]["vendor_name"] == "WASTE MANAGEMENT OF CANADA CORPORATION",
           repr(r["writeValues"].get("vendor_name")))
 
-    check("service_address keeps its legitimate multi-line form",
-          "\n" in str(ev(commercial_fields(
+    # An address line-breaks two ways on the same document too (4338 Pandora St: the spaced
+    # form on 8 runs in 10, the broken one on 2), which is why it is collapsed as well --
+    # otherwise the same property is stored under two strings and cannot be grouped.
+    check("newline inside the service address is collapsed",
+          ev(commercial_fields(
               service_address_extract=fstr("2985 GRANVILLE ST\nVANCOUVER BC", 0.95),
-          ))["writeValues"]["service_address"]))
+          ))["writeValues"]["service_address"] == "2985 GRANVILLE ST VANCOUVER BC")
 
 
 def test_service_address_extract_generate_twin():
@@ -854,7 +857,7 @@ def test_noble_office_service_address_is_never_written():
     check("office service_address + non-office Bill To -> happy",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("office service_address is replaced by the Bill To block",
-          r["writeValues"]["service_address"] == SITE,
+          r["writeValues"]["service_address"] == field_policy.normalize_written_text(SITE),
           str(r["writeValues"].get("service_address")))
     check("service_address source = bill_to_fallback",
           r["resolutions"]["service_address"]["source"] == "bill_to_fallback",
@@ -904,7 +907,7 @@ def test_noble_office_service_address_is_never_written():
     check("a different unit of the same building is not Noble's office -> happy",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("a different unit is written as read, not replaced",
-          r["writeValues"]["service_address"] == "Unit 200 - 13988 Maycrest Way\nRichmond, BC V6V 3C3",
+          r["writeValues"]["service_address"] == "Unit 200 - 13988 Maycrest Way Richmond, BC V6V 3C3",
           str(r["writeValues"].get("service_address")))
     check("short/generic addresses are not Noble's office either",
           not field_policy.is_noble_office_address("Richmond, BC"))
@@ -929,6 +932,135 @@ def test_noble_office_service_address_is_never_written():
     check("no Bill To advisory on an ordinary document",
           not any("Bill To block" in a for a in r["advisoryFlags"]),
           str(r["advisoryFlags"]))
+
+
+def fspan(value, conf, markdown, quote):
+    """A CU string field carrying the span that quotes ``quote`` inside ``markdown`` --
+    the shape the generate twin actually returns (offset/length into the OCR text)."""
+    offset = markdown.index(quote)
+    return {"valueString": value, "confidence": conf,
+            "spans": [{"offset": offset, "length": len(quote)}]}
+
+
+def test_span_corroborated_service_address():
+    print("\n[gates: a generate-only service_address grounded by its own span]")
+
+    # 260629_0010 (Vangate): the address is printed inside a line-item job note, under no
+    # label at all, so service_address_extract returns a confident null and the generate
+    # twin's confidence straddles the bar. Its span quotes the job line.
+    MD = ("| Job# 11024580 | key stuck: 8631 Alexandra Road, Richmond BC | 189.00 |\n"
+          "Bill To: 155-13988 Maycrest Way, Richmond, BC")
+    SITE = "8631 Alexandra Road, Richmond BC"
+    QUOTE = "Job# 11024580 | key stuck: 8631 Alexandra Road, Richmond BC"
+
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("", None),
+        service_address_generate=fspan(SITE, 0.649, MD, QUOTE),
+    ), MD)
+    check("below-bar generate-only address grounded by its span -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("source = span_corroborated",
+          r["resolutions"]["service_address"]["source"] == "span_corroborated",
+          str(r["resolutions"].get("service_address")))
+    check("the rescue writes the address unchanged",
+          r["writeValues"]["service_address"] == SITE,
+          str(r["writeValues"].get("service_address")))
+    check("span advisory raised",
+          any("accepted below the confidence bar" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # No spans -> nothing grounds the value -> the review stands.
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("", None),
+        service_address_generate=fstr(SITE, 0.649),
+    ), MD)
+    check("generate-only address with no span -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # Spans that quote a DIFFERENT place than the value: the value is not what was read.
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("", None),
+        service_address_generate=fspan("500 Robson St, Burnaby BC", 0.649, MD,
+                                       "Bill To: 155-13988 Maycrest Way, Richmond, BC"),
+    ), MD)
+    check("span quoting a different address -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+    # A present-but-disagreeing extract is a real conflict, never rescued: the extract
+    # stays authoritative and the document still goes to a human.
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("500 Robson St, Burnaby BC", 0.55),
+        service_address_generate=fspan(SITE, 0.649, MD, QUOTE),
+    ), MD)
+    check("disagreeing twins are not rescued by a span",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("disagreeing twins keep source extract",
+          r["resolutions"]["service_address"]["source"] == "extract",
+          str(r["resolutions"].get("service_address")))
+
+    # Noble's own office is never rescued, however well grounded.
+    OFFICE_MD = "Bill To: Unit 155 - 13988 Maycrest Way, Richmond, BC V6V 3C3"
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("", None),
+        service_address_generate=fspan("Unit 155 - 13988 Maycrest Way, Richmond, BC V6V 3C3",
+                                       0.65, OFFICE_MD, OFFICE_MD),
+        bill_to_address_extract=fstr("", None),
+    ), OFFICE_MD)
+    check("a grounded Noble office address is still not written",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+
+def test_licence_location_service_address():
+    print("\n[gates: the licensed premises read from a 'Locations' column]")
+
+    # business_license.pdf: a City of Vancouver renewal notice names the licensed premises
+    # only in a table column. The only address block on the page is the c/o mailing block
+    # (Noble's office), which both twins correctly refuse, so both come back empty.
+    MD = ("HAO SING DANNY SUNG\nC/O NOBLE & ASSOCIATES\n13988 MAYCREST WAY UNIT 155\n"
+          "RICHMOND, BC CANADA V6V 3C3\n\n"
+          "<table>\n<tr>\n<th>Licence #</th>\n<th>Licence Type</th>\n<th>Locations</th>\n"
+          "<th>2026 Fee</th>\n<th>Total(s)</th>\n</tr>\n"
+          "<tr>\n<td>26-158696</td>\n<td>Long-term Rental</td>\n<td>3237 Matapan Crescent</td>\n"
+          "<td>98</td>\n<td>98</td>\n</tr>\n"
+          "<tr>\n<td colspan=\"3\"></td>\n<td>Due</td>\n<td>$98</td>\n</tr>\n</table>")
+
+    r = ev_md(municipal_fields(service_address_extract=fstr("", None)), MD)
+    check("empty twins + a Locations column -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("source = licence_location",
+          r["resolutions"]["service_address"]["source"] == "licence_location",
+          str(r["resolutions"].get("service_address")))
+    check("the licensed premises is written",
+          r["writeValues"]["service_address"] == "3237 Matapan Crescent",
+          str(r["writeValues"].get("service_address")))
+    check("licence-location advisory raised",
+          any("Locations' column" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # The fee cell that a colspan row leaves in the same column position is not an address.
+    check("a colspan fee cell is not read as an address",
+          field_policy.licence_location_address(MD) == "3237 Matapan Crescent")
+
+    # Commercial documents never consult the column.
+    r = ev_md(commercial_fields(service_address_extract=fstr("", None),
+                                bill_to_address_extract=fstr("", None)), MD)
+    check("commercial bucket does not read the Locations column",
+          r["resolutions"]["service_address"]["source"] != "licence_location",
+          str(r["resolutions"].get("service_address")))
+
+    # A twin that DID read an address is left alone -- the column is a last resort.
+    r = ev_md(municipal_fields(
+        service_address_extract=fstr("456 Oak Ave, Vancouver BC", 0.95)), MD)
+    check("a passing twin is not overwritten by the column",
+          r["writeValues"]["service_address"] == "456 Oak Ave, Vancouver BC",
+          str(r["writeValues"].get("service_address")))
+
+    # Two distinct sites -> ambiguous -> declines rather than picking one.
+    TWO = MD.replace("<td>98</td>\n<td>98</td>\n</tr>",
+                     "<td>98</td>\n<td>98</td>\n</tr>\n<tr>\n<td>26-158697</td>\n"
+                     "<td>Long-term Rental</td>\n<td>910 Cambie Street</td>\n"
+                     "<td>98</td>\n<td>98</td>\n</tr>")
+    check("two licensed premises -> no rescue", field_policy.licence_location_address(TWO) is None)
+    check("no Locations column -> None", field_policy.licence_location_address("no table here") is None)
 
 
 def test_amount_and_po_twins():

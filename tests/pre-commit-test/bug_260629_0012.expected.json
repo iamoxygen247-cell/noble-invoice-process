@@ -4,7 +4,7 @@
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
       "vendor_name": "JMEC Electric",
-      "service_address": "#307-7480 Gilbert Road\nRichmond, BC",
+      "service_address": "#307-7480 Gilbert Road Richmond, BC",
       "total_invoice_amount": 420,
       "invoice_date": "2026-06-25",
       "payment_due_date": "2026-06-25",
