@@ -12,7 +12,7 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-18.
+Last updated: 2026-08-18 (A3, A4, B5 fixed).
 
 ---
 
@@ -31,6 +31,14 @@ Dataverse. Work the P1 list.
 **2026-08-18: B1, B6b and B6c are fixed** (code-side, no analyzer push — see *Resolved*).
 That closes 2 of the 5 non-Dataverse defects and the address half of the D2 normalisation
 gap, and it let the corpus re-assert `service_address` on all 29 documents.
+
+**2026-08-18, second pass: A3 and A4 are fixed** — also code-side. And the premise above is
+now known to be **wrong**: the user confirmed a live Power Automate flow that consumes
+`writeValues` and updates Dynamics today. The D1 defects are therefore **not latent** —
+they are writing wrong values into real records right now. A4 and A5 were doing so on every
+run. The remaining D1 work (A1, A2, A5, B3, B5) should be re-prioritised as live data
+corruption, not Phase 4 preparation, and this file's "Where the data actually goes" section
+below is stale wherever it says the values stop at the response.
 
 ---
 
@@ -51,12 +59,9 @@ Fix **before** the Dataverse write goes live, not before that.
 
 | # | ID | Class | Defect |
 |---|---|---|---|
-| 7 | A3 | D1 | `gst_amount` reads one section's GST on a sectioned commercial invoice (27.50 vs 32.62) — also corrupts `amount_excluding_gst`. **Cheapest of the seven**: widen the existing arithmetic-guarded municipal rescue to commercial |
 | 8 | A1 | D1 | `invoice_date` silently becomes today when both date twins fail (**5/10** on one document) |
 | 9 | A2 | D1 | `number_of_days` returns 13 or 28 for the same bill — feeds tenant cost-sharing |
-| 10 | A4 | D1 | `billing_period_start_date` is 20 years off (`2006-01-26`), stable 10/10 |
 | 11 | A5 | D1 | `account_number` returns the PO number |
-| 12 | B5 | D1 | `invoice_number` swallows the adjacent date (1/10) |
 | 13 | B3 | D1 | `number_of_days` invents a 1-day count (1/10) |
 | 14 | B2 + B6a + B7 | D2 | Vendor-name inconsistency — nothing normalises the *name* (legal suffix, case). The address half (B6b) was fixed on 2026-08-18: `build_write_values` now collapses whitespace in `service_address` as it already did for `vendor_name` |
 
@@ -105,11 +110,8 @@ that actually corrupts records.
 |---|---|---|
 | A1 | Invoice Date | not a critical field |
 | A2 | Number of Days | not a critical field; feeds tenant cost-sharing |
-| A3 | GST Amount + Amount Excluding GST | critical on commercial, but agreeing twins on a wrong value clear B4 — exactly how the municipal version (`c24dad1`) shipped |
-| A4 | Billing Period Start Date | not a critical field |
 | A5 | Account Number | critical on *municipal* only; this document is commercial |
 | B3 | Number of Days | not a critical field |
-| B5 | Invoice Number | critical on *municipal* only; this document is commercial |
 
 ### D2 — Dataverse, inconsistent rather than wrong (data quality)
 
@@ -281,14 +283,16 @@ cases were span-grounded; the 13 empty ones are untouched.
 | Document | `abbotsford_water` |
 | Observed | `1855.11` x9, `1952.75` x1. The resolved `total_invoice_amount` stays correct |
 
-### B5. `invoice_number` swallows the adjacent date
+### B5. `invoice_number` swallows the adjacent date — **FIXED 2026-08-18**
 
 **`D1` silently wrong → Invoice Number**
 
 | | |
 |---|---|
 | Document | `recommend_260120_0036` |
-| Observed | `8001214179` x9, `8001214179 - 01/14/2026` x1. The invoice prints `Invoice # / Date: 8001214179 - 01/14/2026` on one line |
+| Observed | `8001214179` x13, `8001214179 - 01/14/2026` x1 at n=14. The invoice prints `Invoice # / Date: 8001214179 - 01/14/2026` on one line |
+| Why it was fixed now | Fixing **A3** removed the review that had been containing it. That document routed `REVIEW_B4_CRITICAL_FIELD` on every run *because of* the wrong GST; with the GST resolved it routes happy 13/14, so the malformed identifier would have auto-written to Dynamics roughly 1 invoice in 14 |
+| Fix | `field_policy.strip_trailing_date` trims a trailing date off the written identifier. It requires the date's own punctuation, so `26-158696`, `2353671-0602-0` and `7300-0002803156` are untouched, and a value that is *entirely* a date keeps its text rather than emptying. One value changed across 1,749 cached decisions |
 
 ### B6. Cosmetic instability that defeats exact-string assertions
 
@@ -366,5 +370,8 @@ a target rather than a cliff; revisit only if an overshoot is ever seen in produ
 | `regress.py` / `test.py` / `diag.py` crashed with `UnicodeEncodeError` on a piped stdout once any field carried non-ASCII | `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` in all three entry points |
 | **B1** — a below-bar, generate-only `service_address` was written but routed to review, 28 times in 1,633 cached replicates across 5 documents | `field_policy.address_corroborated_by_span` + rescue in `gates.evaluate`: CU's own spans for the value must quote text naming the same place. Code-side, no analyzer push |
 | **B6c** — `business_license` routing flipped 4 runs in 10 | Same root cause as B1 (3 runs), plus a run where **both** twins returned nothing. The licensed premises is printed only in a `Locations` table column, which no address-block label covers, so `field_policy.licence_location_address` reads that column directly (municipal only, address-shaped cell, declines on more than one site). 10/10 stable |
+| **A3** — `gst_amount` 27.50 where the bill's own arithmetic says 32.62, on a sectioned *commercial* invoice (`recommend_260120_0036`), plus the derived `amount_excluding_gst` | The sectioned-GST rescue in `gates.evaluate` now covers both buckets. Safety comes from the 5% identity it already checked, not from the bucket: a bill whose GST genuinely breaks the identity still declines. gst is now 32.62 on 14/14 |
+| **A4** — `billing_period_start_date` 20 years off (`2006-01-26`), stable, feeding the tenant utility-sharing calculation | The bill prints `Service Period: 06/01/26-06/30/26` in one format; CU forces the end correctly (30 is not a month) and reads the start as YY/MM/DD. `gates.evaluate` now rejects any period that is inverted or longer than a year, then re-reads the start from the printed range anchored on the trusted end date, falling back to `end − (days − 1)` and only then to blank. Also fixed the same misread on `bug_260601_0018` and two *range-collapse* replicates (`fortisbc`, `surrey_water`) where the start twin had returned the end date |
+| **B5** — `invoice_number` written as `8001214179 - 01/14/2026`, 1 run in 14, on a document that A3's fix had just moved from review to auto-write | `field_policy.strip_trailing_date` on the written identifier. Now `8001214179` on 14/14 |
 | **B6b** — the same address stored under two strings (`4338 Pandora St
 Burnaby , BC` vs the spaced form), which blocked asserting `service_address` on 3 documents | `build_write_values` collapses whitespace in `service_address`, as it already did for `vendor_name`. 12 existing sidecar values were normalised in the same change |

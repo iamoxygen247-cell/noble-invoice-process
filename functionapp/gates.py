@@ -560,6 +560,65 @@ def evaluate(
                 note += f" (replacing unverified {start_source} value {start_val!r})"
             advisory.append(note)
 
+    # Implausible billing period. The derivation above only runs on a start that is missing
+    # or unreliable, so a CONFIDENT wrong start survives it -- and the observed failure is
+    # exactly that: bug_260605_0017 prints 'Service Period: 06/01/26-06/30/26' and CU reads
+    # the end correctly (30 cannot be a month) while reading the same-format start as
+    # YY/MM/DD, giving 2006-01-26. A 20-year period, both twins agreeing at 0.989, on a
+    # document that routes happy -- so it is written unreviewed and feeds the tenant
+    # utility-sharing calculation.
+    #
+    # Judge the pair rather than the value: no bill covers more than a year, so a span that
+    # wide (or inverted) is a misread whatever produced it. Then prefer repair over erasure
+    # -- re-read the printed range anchored on the end date we already trust -- and blank the
+    # start only when nothing corroborates a repair, because a wrong period date corrupts
+    # the sharing calculation while a blank one merely leaves it unknown.
+    start_val = write_values[field_policy.BILLING_START_FINAL]
+    end_val = write_values[field_policy.BILLING_END_FINAL]
+    if field_policy.billing_period_span_implausible(start_val, end_val):
+        repaired = field_policy.repair_billing_period_start(collect_markdown(full), end_val)
+        if repaired is not None:
+            resolutions[field_policy.BILLING_START_FINAL] = (
+                repaired, 1.0, True, None, "range_repaired",
+            )
+            write_values[field_policy.BILLING_START_FINAL] = repaired
+            advisory.append(
+                f"billing_period_start_date {repaired} re-read from the printed date range: "
+                f"{start_val!r} would make the period {end_val}, which is not a billing period"
+            )
+        else:
+            # No printed range to anchor on. The other shape that lands here is range
+            # collapse -- the start twin returning the period END date (fortisbc 2026-05-27,
+            # surrey_water 2026-04-29), which the span guard catches as a zero-length
+            # period. The day count survives that failure, so the same arithmetic the empty
+            # case uses recovers the real start; only when that is unavailable too does the
+            # field go blank.
+            derived = field_policy.derive_billing_period_start(
+                *resolutions[field_policy.BILLING_END_FINAL][:2],
+                *resolutions[field_policy.DAYS_FINAL][:2],
+            )
+            if derived is not None and not field_policy.billing_period_span_implausible(
+                    derived[0], end_val):
+                resolutions[field_policy.BILLING_START_FINAL] = (
+                    derived[0], derived[1], True, None, "derived",
+                )
+                write_values[field_policy.BILLING_START_FINAL] = derived[0]
+                advisory.append(
+                    "billing_period_start_date derived from billing_period_end_date minus "
+                    f"number_of_days: {derived[0]} (replacing {start_val!r}, which would "
+                    "make the period longer than a year or run backwards)"
+                )
+            else:
+                resolutions[field_policy.BILLING_START_FINAL] = (
+                    "", 0.0, False, None, "span_rejected",
+                )
+                write_values[field_policy.BILLING_START_FINAL] = ""
+                advisory.append(
+                    f"billing_period_start_date {start_val!r} discarded: it would make the "
+                    f"period run to {end_val}, which is not a billing period, and neither a "
+                    "printed range nor a day count corroborates a correction"
+                )
+
     # Domain-corroborated vendor rescue. When a vendor's name is printed only as a stylized
     # logo, vendor_name_extract is steered by its own prompt ("read clearly printed text ...
     # rather than a stylized logo") toward whatever plain text sits in the letterhead -- on
@@ -758,16 +817,23 @@ def evaluate(
     # rule can help. Read the printed GST lines instead and let the bill's own arithmetic
     # confirm the total (field_policy.resolve_sectioned_gst).
     #
-    # Municipal only: sectioned GST is a utility-bill pattern, and confining it here keeps
-    # out the commercial shapes whose GST legitimately breaks the 5% identity (a trade
-    # invoice whose admin fee is quoted "incl. 5% GST", a multi-invoice statement).
+    # Both buckets since 2026-08-18. It shipped municipal-only on the theory that sectioned
+    # GST is a utility-bill pattern and that commercial shapes legitimately break the 5%
+    # identity (a trade invoice whose admin fee is quoted "incl. 5% GST", a multi-invoice
+    # statement). recommend_260120_0036 (CentiMark) disproved the first half: it prints a GST
+    # row per line item with no TAX SUMMARY recap, and both twins return the first row --
+    # 27.50 where 27.50 + 2.97 + 2.15 = 32.62 is the bill's own GST (5% of the 652.30
+    # subtotal, and 652.30 + 32.62 = the printed 684.92 total). The second half is handled by
+    # the guard, not the bucket: resolve_sectioned_gst only returns a candidate the bill's
+    # arithmetic confirms, so an invoice whose GST really does break the identity declines
+    # here exactly as it did before.
     #
     # NOT gated on the field being critical, unlike the PO rescue: gst_amount is critical
     # for the commercial bucket only, which is exactly why the observed failure shipped
     # HAPPY_PATH_CANDIDATE on a municipal bill -- with a silently wrong derived
     # amount_excluding_gst -- and never reached a reviewer.
     pst_resolution = resolutions[field_policy.PST_FINAL]
-    if (bucket == field_policy.MUNICIPAL
+    if (bucket in (field_policy.MUNICIPAL, field_policy.COMMERCIAL)
             # The identity divides by the total, so a total we do not trust could
             # corroborate a wrong candidate. Same for PST: when the pst twins come back
             # empty the field defaults to 0, which is a fact only if nothing was found

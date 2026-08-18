@@ -438,6 +438,35 @@ def test_field_format_rules():
     check("invoice_number has no format rule", vr("invoice_number", "INV-2201") is None)
 
 
+def test_invoice_number_trailing_date_is_trimmed():
+    print("\n[field_policy: a date swallowed into the invoice number is trimmed]")
+
+    # recommend_260120_0036 prints 'Invoice # / Date: 8001214179 - 01/14/2026' on one line
+    # and the extract twin takes the whole run on about 1 replicate in 14.
+    strip = field_policy.strip_trailing_date
+    check("slashed date trimmed", strip("8001214179 - 01/14/2026") == "8001214179")
+    check("two-digit year trimmed", strip("8001214179 - 1/14/26") == "8001214179")
+    check("ISO date trimmed", strip("8001214179 2026-01-14") == "8001214179")
+    check("month-name date trimmed", strip("INV-2201 Jan 14, 2026") == "INV-2201")
+    check("day-first month name trimmed", strip("INV-2201 14 Jan 2026") == "INV-2201")
+
+    # Identifiers that are merely dashed and numeric keep every part -- these are real
+    # corpus values (business_license, bug_260605_0017, bug_260601_0018).
+    for identifier in ("26-158696", "2353671-0602-0", "7300-0002803156", "#116412", "6896"):
+        check(f"{identifier} is untouched", strip(identifier) == identifier)
+
+    # A value that is ENTIRELY a date keeps its own text rather than emptying out.
+    check("a date-shaped invoice number survives", strip("2026-01-14") == "2026-01-14")
+    check("a slashed date-shaped number survives", strip("01/14/2026") == "01/14/2026")
+    check("non-strings pass through", strip(None) is None and strip(98) == 98)
+
+    # End to end: the written value is the identifier alone.
+    r = ev(commercial_fields(invoice_number_extract=fstr("8001214179 - 01/14/2026", 0.91)))
+    check("written invoice_number carries no date",
+          r["writeValues"]["invoice_number"] == "8001214179",
+          str(r["writeValues"].get("invoice_number")))
+
+
 def test_find_po_candidates():
     print("\n[field_policy: OCR-text PO candidate scanner]")
     find = field_policy.find_po_candidates
@@ -1323,13 +1352,29 @@ def test_sectioned_gst_rescue():
     check("single GST line -> no rescue", r["writeValues"]["gst_amount"] == 10.82)
     check("...source untouched", r["resolutions"]["gst_amount"]["source"] != "sectioned_sum")
 
-    # Commercial bills are out of scope even on an identical document.
+    # Commercial bills are in scope since 2026-08-18: recommend_260120_0036 (CentiMark)
+    # prints a GST row per line item with no recap and both twins return the first row, the
+    # same shape on a commercial document. What keeps the widening safe is the arithmetic
+    # guard below, not the bucket.
     r = ev_md(commercial_fields(
         total_invoice_amount_extract=fnum(34.69, 0.96),
         gst_amount_extract=fnum(0.90, 0.93),
     ), MD_FORTIS_TWO_SECTIONS)
-    check("commercial bucket -> no rescue", r["writeValues"]["gst_amount"] == 0.90,
+    check("commercial bucket -> rescued too", r["writeValues"]["gst_amount"] == 1.65,
           str(r["writeValues"]["gst_amount"]))
+    check("...source sectioned_sum", r["resolutions"]["gst_amount"]["source"] == "sectioned_sum")
+    check("...and the derived amount follows",
+          r["writeValues"]["amount_excluding_gst"] == 33.04,
+          str(r["writeValues"].get("amount_excluding_gst")))
+
+    # ...but a commercial bill whose GST genuinely breaks the 5% identity still declines --
+    # the case the municipal-only gate used to exclude by bucket.
+    r = ev_md(commercial_fields(
+        total_invoice_amount_extract=fnum(500.00, 0.96),
+        gst_amount_extract=fnum(0.90, 0.93),
+    ), MD_FORTIS_TWO_SECTIONS)
+    check("commercial bill breaking the identity -> no rescue",
+          r["writeValues"]["gst_amount"] == 0.90, str(r["writeValues"]["gst_amount"]))
 
     # A sum that does not fit the bill's arithmetic is never written: same two GST lines,
     # but a total that makes neither 0.90 nor 1.65 credible.
@@ -1659,6 +1704,80 @@ def test_billing_period_twins_and_derivation():
     check("derive without end -> None", derive(None, None, 61, 0.9) is None)
     check("derive without days -> None", derive("2026-04-30", 0.9, None, None) is None)
     check("derive junk days -> None", derive("2026-04-30", 0.9, "n/a", 0.9) is None)
+
+
+def test_implausible_billing_period_is_repaired_or_dropped():
+    print("\n[gates: a 20-year billing period is re-read from the printed range]")
+
+    # bug_260605_0017 (Waste Management). The bill prints one range in one format; CU reads
+    # the end correctly (30 cannot be a month) and the start as YY/MM/DD, giving a period
+    # from 2006 to 2026 -- both twins at 0.989, routing happy, written unreviewed.
+    MD = ("<tr>\n<td>Service Period:</td>\n<td>06/01/26-06/30/26</td>\n</tr>\n"
+          "<tr>\n<td>Invoice Date:</td>\n<td>06/03/2026</td>\n</tr>")
+
+    r = ev_md(commercial_fields(
+        billing_period_start_date_extract=fdate("2006-01-26", 0.989),
+        billing_period_end_date_extract=fdate("2026-06-30", 0.989),
+    ), MD)
+    check("the start is re-read from the printed range",
+          r["writeValues"]["billing_period_start_date"] == "2026-06-01",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("source = range_repaired",
+          r["resolutions"]["billing_period_start_date"]["source"] == "range_repaired",
+          str(r["resolutions"].get("billing_period_start_date")))
+    check("the end date is left alone",
+          r["writeValues"]["billing_period_end_date"] == "2026-06-30")
+    check("repair advisory raised",
+          any("re-read from the printed date range" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # No printed range to anchor on -> blank rather than a wrong period date, the same
+    # principle the billing-period fields already follow (never substitute a default).
+    r = ev_md(commercial_fields(
+        billing_period_start_date_extract=fdate("2006-01-26", 0.989),
+        billing_period_end_date_extract=fdate("2026-06-30", 0.989),
+    ), "no range printed here")
+    check("uncorroborated implausible start -> blanked",
+          r["writeValues"]["billing_period_start_date"] == "",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("discard advisory raised",
+          any("is not a billing period" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # An ordinary period is untouched, range printed or not.
+    r = ev_md(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-06-01", 0.95),
+        billing_period_end_date_extract=fdate("2026-06-30", 0.95),
+    ), MD)
+    check("a plausible period keeps its extract value",
+          r["writeValues"]["billing_period_start_date"] == "2026-06-01")
+    check("...and is not relabelled",
+          r["resolutions"]["billing_period_start_date"]["source"] not in ("range_repaired", "span_rejected"))
+
+    # An inverted period is implausible too, even though the span is short.
+    r = ev_md(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-07-05", 0.95),
+        billing_period_end_date_extract=fdate("2026-06-30", 0.95),
+    ), "no range printed here")
+    check("inverted period -> blanked", r["writeValues"]["billing_period_start_date"] == "")
+
+    span = field_policy.billing_period_span_implausible
+    check("61-day period is plausible", not span("2026-03-01", "2026-04-30"))
+    check("366-day period is the boundary", not span("2025-06-30", "2026-06-30"))
+    check("20-year period is not", span("2006-01-26", "2026-06-30"))
+    check("same day is not a period", span("2026-06-30", "2026-06-30"))
+    check("missing values are not judged", not span(None, "2026-06-30") and not span("2026-06-01", ""))
+
+    repair = field_policy.repair_billing_period_start
+    check("anchored repair reads MM/DD/YY", repair("06/01/26-06/30/26", "2026-06-30") == "2026-06-01")
+    check("repair handles a 'to' range", repair("06/01/26 to 06/30/26", "2026-06-30") == "2026-06-01")
+    check("repair reads DD/MM/YY when that is what anchors",
+          repair("01/06/26-30/06/26", "2026-06-30") == "2026-06-01")
+    check("no anchor on a different end date -> None",
+          repair("06/01/26-06/30/26", "2026-05-31") is None)
+    check("four-digit years are not ambiguous -> None",
+          repair("06/01/2026-06/30/2026", "2026-06-30") is None)
+    check("no range printed -> None", repair("Invoice Date: 06/03/2026", "2026-06-30") is None)
 
 
 def test_payment_due_date_corroboration_rescue():

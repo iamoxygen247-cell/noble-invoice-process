@@ -1012,6 +1012,107 @@ _STREET = re.compile(
 )
 
 
+# The longest real billing period in the corpus is 61 days (an Abbotsford 'Mar/Apr 2026'
+# water bill). A year is far outside anything a utility bills in one go, so a span wider
+# than that is a misread rather than a long period -- see billing_period_span_implausible.
+MAX_BILLING_PERIOD_DAYS = 366
+
+# A slashed date whose three parts are each 1-2 digits ('06/01/26'), and a printed range of
+# two of them ('06/01/26-06/30/26', '06/01/26 to 06/30/26'). Four-digit years are excluded:
+# they are not ambiguous, so there is nothing to repair.
+_SLASHED = r"\d{1,2}/\d{1,2}/\d{1,2}"
+_SLASHED_RANGE = re.compile(rf"({_SLASHED})\s*(?:-|--|to|through)\s*({_SLASHED})", re.I)
+# The three ways a d/d/d date can be meant. Each entry maps (first, second, third) part to
+# (year, month, day) index.
+_SLASH_ORDERS = ((2, 0, 1), (2, 1, 0), (0, 1, 2))  # MM/DD/YY, DD/MM/YY, YY/MM/DD
+
+
+def billing_period_span_implausible(start: Any, end: Any) -> bool:
+    """True when a resolved billing period cannot be one: the start is not before the end,
+    or the two are more than MAX_BILLING_PERIOD_DAYS apart. False when either is missing or
+    unparseable (nothing to judge)."""
+    start_norm, end_norm = _normalize_date(start), _normalize_date(end)
+    if start_norm is None or end_norm is None:
+        return False
+    span = (datetime.strptime(end_norm, DATE_FORMAT) - datetime.strptime(start_norm, DATE_FORMAT)).days
+    return span <= 0 or span > MAX_BILLING_PERIOD_DAYS
+
+
+def _slashed_date(text: str, order: Tuple[int, int, int]) -> Optional[str]:
+    """One d/d/d date read under a given part order, or None when it is not a real date.
+    Two-digit years are 20xx: these are current invoices, and a 19xx billing period is not
+    a thing this pipeline sees."""
+    parts = [int(p) for p in text.split("/")]
+    year, month, day = parts[order[0]], parts[order[1]], parts[order[2]]
+    try:
+        return datetime(2000 + year if year < 100 else year, month, day).strftime(DATE_FORMAT)
+    except ValueError:
+        return None
+
+
+def repair_billing_period_start(text: str, end_value: Any) -> Optional[str]:
+    """
+    The billing-period start re-read from a printed date range, anchored on the already
+    resolved end date -- or None when no printed range corroborates it.
+
+    A range prints both halves in ONE format, so the unambiguous half settles the ambiguous
+    one. bug_260605_0017 prints 'Service Period: 06/01/26-06/30/26': CU reads the end
+    correctly as 2026-06-30 (30 cannot be a month, so the order is forced) but reads the
+    start as 2006-01-26, taking the same digits as YY/MM/DD -- a 20-year period, written
+    unreviewed because the twins agree at 0.989.
+
+    The anchor is what makes this safe: a candidate order is accepted only when the range's
+    SECOND half reproduces the resolved end date exactly under that order, and the first
+    half then yields a plausible span. So this can only ever fire on a document that prints
+    a range whose end we already trust, and it cannot invent a period on a bill that prints
+    none.
+    """
+    end_norm = _normalize_date(end_value)
+    if not text or end_norm is None:
+        return None
+    for match in _SLASHED_RANGE.finditer(text):
+        first, second = match.group(1), match.group(2)
+        for order in _SLASH_ORDERS:
+            if _slashed_date(second, order) != end_norm:
+                continue
+            start = _slashed_date(first, order)
+            if start is not None and not billing_period_span_implausible(start, end_norm):
+                return start
+    return None
+
+
+# A date hanging off the end of an identifier, with the separator that joined them.
+# Anchored at the end and required to carry a date's own punctuation, so identifiers that
+# are merely dashed and numeric keep every part: '26-158696', '2353671-0602-0',
+# '7300-0002803156' contain no <4-digit>-<1-2>-<1-2> or slashed group and are untouched.
+_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_TRAILING_DATE = re.compile(
+    rf"[\s,|/-]+(?:\d{{1,2}}/\d{{1,2}}/\d{{2,4}}"
+    rf"|\d{{4}}-\d{{1,2}}-\d{{1,2}}"
+    rf"|(?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}},?\s+\d{{4}}"
+    rf"|\d{{1,2}}\s+(?:{_MONTHS})[a-z]*\.?,?\s+\d{{4}})\s*$",
+    re.I,
+)
+
+
+def strip_trailing_date(value: Any) -> Any:
+    """
+    An identifier with a date trimmed off its tail, or the value unchanged.
+
+    recommend_260120_0036 prints 'Invoice # / Date: 8001214179 - 01/14/2026' on one line and
+    the extract twin takes the whole run on about 1 replicate in 14, writing
+    '8001214179 - 01/14/2026' as the invoice number. Nothing downstream can match that
+    against the real identifier.
+
+    Only ever trims: a value that is ENTIRELY a date keeps its own text (the remainder must
+    still hold a digit), so an invoice genuinely numbered '2026-01-14' is not emptied out.
+    """
+    if not isinstance(value, str):
+        return value
+    trimmed = _TRAILING_DATE.sub("", value).strip()
+    return trimmed if trimmed and any(c.isdigit() for c in trimmed) else value
+
+
 def normalize_written_text(value: Any) -> Any:
     """One stable spelling for a written name or address: every run of whitespace becomes a
     single space. Non-strings pass through untouched."""
@@ -1283,6 +1384,11 @@ def build_write_values(
     # same property groups together across invoices.
     for name in (VENDOR_FINAL, SERVICE_ADDRESS_FINAL):
         write[name] = normalize_written_text(write[name])
+
+    # An invoice line that prints the number and the date together ('Invoice # / Date:
+    # 8001214179 - 01/14/2026') is occasionally read whole, which writes a date into the
+    # identifier column. Trim it back to the identifier (see strip_trailing_date).
+    write[INVOICE_FINAL] = strip_trailing_date(write[INVOICE_FINAL])
 
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.
