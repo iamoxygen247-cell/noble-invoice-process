@@ -38,4 +38,4 @@ if [ "${NOBLE_SKIP_REGRESS:-0}" = "1" ]; then
 fi
 
 echo "[pre-commit] Tier B: golden-corpus regression (scripts/regress.py) ..."
-"$PY" "$ROOT/scripts/regress.py" --load-local-settings
+"$PY" "$ROOT/scripts/regress.py" --load-local-settings --all-cached

@@ -126,19 +126,19 @@ def csv_scalar(value: Any) -> str:
     return str(value)
 
 
-def count_words(value: Any) -> int:
-    if not isinstance(value, str):
-        return 0
-    return len([word for word in value.replace("/", " ").split() if word.strip()])
+# The analyzer prompt's rule for invoice_description: "Hard limit: under 44 characters
+# including spaces and punctuation". Enforced in the prompt only -- nothing truncates -- so
+# this gate is the one place the rule is checked programmatically.
+INVOICE_DESCRIPTION_MAX_CHARS = 44
 
 
 def invoice_description_gate(value: Any) -> str:
     if value is None or (isinstance(value, str) and value.strip() == ""):
         return "not critical - empty"
-    words = count_words(value)
-    if words <= 15:
+    chars = len(str(value))
+    if chars < INVOICE_DESCRIPTION_MAX_CHARS:
         return "pass"
-    return f"warning: {words} words > 15"
+    return f"warning: {chars} chars >= {INVOICE_DESCRIPTION_MAX_CHARS}"
 
 
 # -----------------------------------------------------------------------------

@@ -1995,3 +1995,58 @@ critical field is a bug to fix, never an assertion to delete. All 29 sidecars as
 **Rule:** for anything containing backslashes or short identifiers, use the `Write`/`Edit`
 tools, not a heredoc-fed `str.replace`. If a script must do it, anchor the match on a unique
 surrounding line and assert the occurrence count before writing.
+
+## `git checkout` on the analyzer silently invalidates the whole regression cache
+
+**2026-08-18.** Reverting an analyzer edit with
+`git checkout analyzers/create-generalinvoice-analyzer.json` restored the *content* exactly —
+`git diff` clean — but the working tree file came back with **LF** line endings where it had
+been **CRLF**. `regress.py` keys its cache on `sha256(analyzer_file.read_bytes())[:12]`, so the
+identical prompt now hashed `c110842176f5` instead of `cd1e585c2f1f`, every one of the 406
+cached replicates missed, and the next `regress.py` run started re-calling CU for the entire
+corpus. It looked like a hang; it was a full live re-roll.
+
+**Detect:** the hash `regress.py` prints in its header is not the one your cache directory is
+named after, and the run reports `0 cache hits`.
+
+**Fix** (restores the byte-identical file, and with it the cache):
+
+```python
+b = pathlib.Path("analyzers/create-generalinvoice-analyzer.json").read_bytes()
+assert b.count(b"\r\n") == 0
+pathlib.Path("analyzers/create-generalinvoice-analyzer.json").write_bytes(b.replace(b"\n", b"\r\n"))
+```
+
+**Why it bites:** git stores this file with LF (hence the standing "CRLF will be replaced by LF"
+warning) while the working copy has always been CRLF, so *any* checkout, stash pop, or fresh
+clone produces a cache-invalidating hash for an unchanged prompt. Verified corpus state is tied
+to the CRLF bytes. Before assuming a prompt change busted the cache, check the line endings.
+
+## Editing only the narrative character limits damaged `vendor_name` and `account_number`
+
+**2026-08-18.** C4 asked for all five narrative limits to be set to 500. The edit touched
+nothing but the `Aim for N characters...` sentence inside five `description` strings — five
+lines, JSON otherwise byte-identical. The first live 3-replicate roll of the new analyzer broke
+two assertions in fields with no relationship to those prompts:
+
+| Assertion | 14 previous analyzer versions | new analyzer, n=3 |
+|---|---|---|
+| `delta_water.vendor_name` | `City of Delta` **68/68** | `Delta` 2, `City of Delta` 1 |
+| `recommend_241105_1061.account_number` | `null` **14/14** | `#11020375` (its PO number) on 1 |
+
+Neither had ever flipped in the cache's history, so this is not the usual re-roll exposing a
+long-standing coin flip — the control arms are large and clean. It is the cross-field coupling
+already recorded for this analyzer, reaching further than expected: a *character-limit* edit on
+generate-only narrative fields moved an extract twin on an unrelated municipal bill.
+
+**Lessons, both re-learned rather than new:**
+
+- Treat ANY change to `analyzers/*.json` as capable of moving ANY field, however local the edit
+  looks. Budget a full live corpus roll for it, and never assume a "cosmetic" prompt edit is
+  cheap.
+- Prefer code-side fixes. Every defect fixed in this session that landed — A2, A3, A4, B1, B5,
+  B6b, B6c — was code-side, verified offline against 1,749 cached decisions, and needed no
+  analyzer push. The one prompt change attempted was reverted.
+- A prompt cannot *guarantee* an output constraint. If a length must be bounded (because the
+  Dataverse column rejects the row and the invoice is lost), bound it in code or in the column
+  size — not in the instruction.

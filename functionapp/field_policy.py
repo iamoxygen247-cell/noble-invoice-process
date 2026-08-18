@@ -1113,6 +1113,124 @@ def strip_trailing_date(value: Any) -> Any:
     return trimmed if trimmed and any(c.isdigit() for c in trimmed) else value
 
 
+# How far a printed day count may sit from its own period span and still be believed:
+# 10 days, or 15% of the span, whichever is larger. Both bounds are pinned by real
+# documents. A metered count legitimately differs from the billing-period span because the
+# meter-reading dates are not the period dates -- the widest honest gap in the corpus is
+# burnaby_water's 83 against a 90-day period (7 days, 7.8%), with delta_water, west_van_water,
+# richmond_water and vancouver_water between 1 and 6 days. The misreads start far above that:
+# 15 days (bug_260624_0015 reads 13 for a 28-day period -- exactly its first month, May 19-31),
+# 29 days and 364 days (an invented "1" against a 30-day and a 365-day period). The band
+# between 7 and 15 days is where this tolerance lives.
+DAYS_TOLERANCE_ABS = 10
+DAYS_TOLERANCE_RATIO = 0.15
+
+
+def days_in_period(start: Any, end: Any) -> Optional[int]:
+    """The inclusive day count of a billing period, or None when either end is missing or
+    unparseable. Counted inclusive of both endpoints, matching derive_billing_period_start
+    (an Abbotsford Mar 1 - Apr 30 period is 61 days)."""
+    start_norm, end_norm = _normalize_date(start), _normalize_date(end)
+    if start_norm is None or end_norm is None:
+        return None
+    span = (datetime.strptime(end_norm, DATE_FORMAT)
+            - datetime.strptime(start_norm, DATE_FORMAT)).days + 1
+    return span if span > 0 else None
+
+
+def reconcile_number_of_days(days: Any, start: Any, end: Any) -> Optional[int]:
+    """
+    The day count implied by a resolved billing period, when the printed count cannot be
+    believed -- or None to keep whatever was read.
+
+    Reads of the period *dates* are far more reliable than reads of the count: across the
+    corpus the two agree on 124 replicates, while every disagreement beyond the tolerance
+    above is a count defect, never a date defect. So the dates arbitrate the count.
+
+    Corrects only; never supplies. A count the pipeline left blank stays blank, because
+    "blank" is already the deliberate answer for a bill whose period did not resolve, and
+    filling it in would propagate the period fields' own instability into a field that does
+    not have it (bug_260601_0018 resolves its period on 6 runs in 14).
+
+    A printed count merely *differing* from the span is also kept: it is the
+    metered-consumption count the utility actually billed, which is what the tenant
+    utility-sharing calculation wants.
+    """
+    span = days_in_period(start, end)
+    current = _days_int(days)
+    if span is None or current is None:
+        return None
+    tolerance = max(DAYS_TOLERANCE_ABS, span * DAYS_TOLERANCE_RATIO)
+    return span if abs(current - span) > tolerance else None
+
+
+# Any wording that labels a customer account number. Used only to tell a real account
+# number from a PO/job number echoed into the field: every one of the 18 corpus documents
+# that prints a genuine account number also prints one of these labels.
+_ACCOUNT_LABEL = re.compile(
+    r"(?i)\b(account\s*(number|no\.?|#)?|acct\.?|a/c|customer\s*(id|number|no\.?|#))\b"
+)
+
+
+def account_number_echoes_po(account: Any, po: Any, text: str) -> bool:
+    """
+    True when ``account_number`` is nothing but the PO/job number repeated, on a document
+    that prints no account label at all.
+
+    260629_0024 prints '# 11022266' beside the paying party's name -- its job number -- and
+    carries no customer account anywhere; the analyzer fills account_number with it on every
+    replicate, and bug_260504_0021 does the same on 3 runs in 14. Both are commercial, where
+    account_number is not critical, so the wrong value auto-writes.
+
+    Two conditions, both required. The digits must match the resolved PO exactly, and the
+    page must print no account label -- that second test is what protects a genuine account
+    number that happens to coincide with a PO, and it is met by every corpus document that
+    has one.
+    """
+    account_digits = re.sub(r"\D", "", str(account)) if account is not None else ""
+    po_digits = re.sub(r"\D", "", str(po)) if po is not None else ""
+    if not account_digits or account_digits != po_digits:
+        return False
+    return not _ACCOUNT_LABEL.search(text or "")
+
+
+# A label that names the date the document was ISSUED, and the unambiguous date forms that
+# may follow it. Deliberately excludes a bare "Date" (too common as a column header), "Due
+# Date", and "Billing period"; and excludes slashed dates, which are ambiguous and are the
+# form a page print timestamp takes (see _normalize_date, date_corroborated_in_text).
+_INVOICE_DATE_LABEL = re.compile(
+    r"(?i)\b(?:invoice|billing|bill|statement|notice|issue)\s*date\b\s*[:\-]?\s*"
+    rf"((?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}},?\s+\d{{4}}"
+    r"|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+\d{4}"
+    r"|\d{4}-\d{1,2}-\d{1,2})"
+)
+
+
+def find_invoice_date_in_text(text: str) -> Optional[str]:
+    """
+    The issue date read straight off the page from its printed label, or None.
+
+    The last resort for bug_260528_0016, where BOTH invoice_date twins return nothing on 5
+    replicates in 14 and build_write_values then substitutes today -- filing the invoice
+    under the wrong date with no review, because invoice_date is not critical. The existing
+    corroboration rescue cannot help: it grounds a value the generate twin produced, and
+    here there is no value at all.
+
+    Label-anchored, never positional. That page also prints 'Due Tuesday, Jun 16, 2026', a
+    'Billing period: May 1 - May 25, 2026', two meter-reading dates and two 2023 payment
+    dates; only 'Billing date: May 25, 2026' names the issue date. Declines when the page
+    carries more than one distinct labelled date, rather than choosing between them.
+    """
+    if not text:
+        return None
+    found = []
+    for match in _INVOICE_DATE_LABEL.finditer(re.sub(r"[ \t]+", " ", text)):
+        normalized = _normalize_date(match.group(1))
+        if normalized is not None and normalized not in found:
+            found.append(normalized)
+    return found[0] if len(found) == 1 else None
+
+
 def normalize_written_text(value: Any) -> Any:
     """One stable spelling for a written name or address: every run of whitespace becomes a
     single space. Non-strings pass through untouched."""
@@ -1390,6 +1508,15 @@ def build_write_values(
     # identifier column. Trim it back to the identifier (see strip_trailing_date).
     write[INVOICE_FINAL] = strip_trailing_date(write[INVOICE_FINAL])
 
+    # po_or_job_number and account_number are TEXT columns in Dataverse, so an absent
+    # identifier is written as an empty string rather than null -- the same rule the
+    # billing-period fields, number_of_days and the five narrative fields already follow
+    # ("the downstream Dataverse write never sees null for a text column"). The amount
+    # fields keep null: they are numeric columns, which reject "".
+    for name in (PO_FINAL, ACCOUNT_FINAL):
+        if write[name] is None or (isinstance(write[name], str) and write[name].strip() == ""):
+            write[name] = ""
+
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.
     pst = write[PST_FINAL]
@@ -1424,6 +1551,11 @@ def build_write_values(
     write[DAYS_FINAL] = (
         days if (days is not None and (write[BILLING_END_FINAL] or days_grounded)) else ""
     )
+
+    # The count is reconciled against the period dates in gates.evaluate, NOT here: the
+    # start date is still the raw read at this point, and the repairs that fix it (the
+    # derivation, the printed-range re-read) run afterwards. Reconciling against an
+    # unrepaired start turns a correct 27 into 1 on a range-collapsed period.
 
     bucket = resolve_bucket(parsed.get("bill_type", (None, None))[0])
 

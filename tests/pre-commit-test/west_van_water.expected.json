@@ -8,7 +8,7 @@
       "invoice_date": "2026-03-31",
       "payment_due_date": "2026-05-29",
       "invoice_number": "west_van_water",
-      "po_or_job_number": null,
+      "po_or_job_number": "",
       "gst_amount": null,
       "pst_amount": 0,
       "account_number": "122901",

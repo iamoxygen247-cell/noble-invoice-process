@@ -336,7 +336,7 @@ def build_scorecard_pairs(
             pairs.append((f"{field_name}.source", str(resolution.get("source") or "")))
 
         if field_name == "invoice_description":
-            pairs.append(("invoice_description.word_count", scorecard.csv_scalar(scorecard.count_words(value))))
+            pairs.append(("invoice_description.char_count", scorecard.csv_scalar(len(str(value or "")))))
             pairs.append(("invoice_description.length_gate", scorecard.invoice_description_gate(value)))
 
     emit_field("bill_type")

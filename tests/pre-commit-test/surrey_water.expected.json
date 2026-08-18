@@ -9,7 +9,7 @@
       "invoice_date": "2026-05-28",
       "payment_due_date": "2026-07-02",
       "invoice_number": "surrey_water",
-      "po_or_job_number": null,
+      "po_or_job_number": "",
       "gst_amount": null,
       "pst_amount": 0,
       "account_number": "425096",

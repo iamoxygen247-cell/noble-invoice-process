@@ -9,7 +9,7 @@
       "invoice_date": "2026-06-09",
       "payment_due_date": "2026-07-02",
       "invoice_number": "123000315972",
-      "po_or_job_number": null,
+      "po_or_job_number": "",
       "gst_amount": 22.02,
       "pst_amount": 0,
       "account_number": "12956781",

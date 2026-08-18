@@ -10,7 +10,7 @@
       "po_or_job_number": "11024469",
       "gst_amount": 23.5,
       "pst_amount": 0,
-      "account_number": null,
+      "account_number": "",
       "bill_type": "commercial",
       "sub_bill_type": "repair",
       "billing_period_start_date": "",

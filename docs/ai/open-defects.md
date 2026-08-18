@@ -12,7 +12,7 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-18 (A3, A4, B5 fixed).
+Last updated: 2026-08-18 (A1-A5, B1, B3, B4, B5, B6b, B6c, C1, C2, C3 fixed; C4 attempted and reverted).
 
 ---
 
@@ -48,10 +48,6 @@ Ordered by what it costs you now.
 
 | # | ID | Defect | Cost today | Fix shape |
 |---|---|---|---|---|
-| 1 | **C1** | The corpus only passes because the cache freezes one roll | No cost per run, but **highest leverage on this list**: it is why the other 15 defects sat unnoticed. The pre-commit hook never passes `--force`, so marginal assertions only surface when someone edits the analyzer and busts the cache | Schedule a periodic `--force` run, or raise the pre-commit replicate count. Not a code fix |
-| 2 | **C2** | 73 stable-but-unverified keys are unasserted | Corpus coverage gap. Note the payoff is double-sided: verifying them against the PDFs is also how A3, A4 and A5 were found, so this task *surfaces* Dataverse bugs rather than just adding assertions | Per-document verification against each PDF; do not bulk-add (4 known-wrong, ~48 are raw twins) |
-| 3 | **C3** | `scripts/scorecard.py` `invoice_description_gate` is stale | The scorecard reports `invoice_description.length_gate` against a 15-**word** rule that was replaced by a 44-**character** rule in `b20104f`. Misleading output; nothing checks 44 chars anywhere | Small, self-contained |
-| 4 | **B4** | `total_invoice_amount_generate` disagrees 1 run in 10 | None operationally — a raw twin, already unasserted, and the resolved total stays correct | Lowest priority on this list; listed for completeness |
 
 ## P2 — Deferred until Phase 4 (Dataverse only)
 
@@ -59,10 +55,6 @@ Fix **before** the Dataverse write goes live, not before that.
 
 | # | ID | Class | Defect |
 |---|---|---|---|
-| 8 | A1 | D1 | `invoice_date` silently becomes today when both date twins fail (**5/10** on one document) |
-| 9 | A2 | D1 | `number_of_days` returns 13 or 28 for the same bill — feeds tenant cost-sharing |
-| 11 | A5 | D1 | `account_number` returns the PO number |
-| 13 | B3 | D1 | `number_of_days` invents a 1-day count (1/10) |
 | 14 | B2 + B6a + B7 | D2 | Vendor-name inconsistency — nothing normalises the *name* (legal suffix, case). The address half (B6b) was fixed on 2026-08-18: `build_write_values` now collapses whitespace in `service_address` as it already did for `vendor_name` |
 
 ## P3 — Already mitigated
@@ -108,10 +100,6 @@ that actually corrupts records.
 
 | ID | Dataverse column | Why it is not caught |
 |---|---|---|
-| A1 | Invoice Date | not a critical field |
-| A2 | Number of Days | not a critical field; feeds tenant cost-sharing |
-| A5 | Account Number | critical on *municipal* only; this document is commercial |
-| B3 | Number of Days | not a critical field |
 
 ### D2 — Dataverse, inconsistent rather than wrong (data quality)
 
@@ -330,18 +318,25 @@ Open question: nothing schedules a periodic `--force` run, so the next crop of m
 assertions will again surface only when someone edits the analyzer and busts the cache.
 Consider a periodic forced re-roll, or raising the pre-commit replicate count.
 
-### C2. 73 stable-but-unverified keys are unasserted
+### C2. 73 stable-but-unverified keys are unasserted — **DONE 2026-08-18**
 
 **`D4` not Dataverse — corpus health**
 
-The audit found 73 keys that are stable at n=10 but not asserted anywhere. They are **not**
-safe to add wholesale: at least four are stably *wrong* (A3, A4, A5 above, plus the
-`amount_excluding_gst` derived from A3), and ~48 are raw `vendor_name_extract` / `_generate`
-twins, which the corpus rule forbids asserting (assert the resolved value, never a raw twin).
+Resolved to 20 verified additions; see *Resolved*. Two traps found while doing it, both worth
+remembering:
 
-The remainder are worth adding **after** per-document verification against the PDF. That would
-raise coverage meaningfully — `amount_excluding_gst` and `payment_due_date` are unasserted on
-several documents where they are stable and probably correct.
+**A defaulted date looks perfectly stable.** Seven `payment_due_date` candidates read
+`2026-09-17` and one `invoice_date` read `2026-08-18` — today+30 and today. They are unanimous
+across every replicate and would have turned the corpus red the next morning. Any candidate
+whose field appears in `defaultedFields` must be excluded, whatever its stability.
+
+**Verifying is still how defects surface.** `260629_0024.invoice_date` is stable 31/31 at
+`2025-08-06` — which is `8/6/25` from a `Date Order Taken and Completed` block whose other value
+is `4/27/26`. The document prints no issue date at all, so the pipeline is filing the invoice
+under the date the order was *taken*, eight months before completion, and the slashed form is
+ambiguous besides (Aug 6 or Jun 8). It is not defaulting and not flagged, because CU returns it
+as a resolved `valueDate` which bypasses the slashed-date rejection that used to catch it.
+**Left unasserted by decision (user, 2026-08-18); the underlying wrong write is open.**
 
 ### C3. `scripts/scorecard.py` `invoice_description_gate` is stale
 
@@ -355,10 +350,35 @@ rule that no longer exists. Nothing checks 44 characters programmatically anywhe
 
 **`D3` the row write itself fails → Diagnosis / Recommendation / Warranty**
 
-`diagnosis_solution` / `recommendation` (800) and `warranty` (400) are enforced in the analyzer
-prompt only — by decision, no code truncates. A `warranty` value was measured at **403
-characters**. Mitigated by sizing the Dataverse columns at 1000/1000/500, which makes the limit
-a target rather than a cliff; revisit only if an overshoot is ever seen in production.
+`diagnosis_solution` / `recommendation` / their `_zh_hant` twins and `warranty` are enforced in
+the analyzer prompt only — by decision, no code truncates.
+
+**Current headroom (measured across every cached replicate, n=14):** longest
+`diagnosis_solution` 399, `recommendation` 393, `warranty` **387**, `diagnosis_solution_zh_hant`
+245, `recommendation_zh_hant` 174. Nothing exceeds its limit today, and the 403-character
+`warranty` in the original report did not reproduce. `warranty` at 387 against 400 is the tight
+one — about one wordy clause of margin.
+
+**2026-08-18: setting all five limits to 500 was attempted, MEASURED HARMFUL, and reverted.**
+Editing only the five narrative `description` strings destabilised two fields that were not
+touched, on the first live 3-replicate roll of the new analyzer:
+
+| Assertion | 14 previous analyzer versions | new analyzer, n=3 |
+|---|---|---|
+| `delta_water.vendor_name` | `City of Delta` **68/68** | `Delta` 2, `City of Delta` 1 |
+| `recommend_241105_1061.account_number` | `null` **14/14** | `#11020375` (the PO number) on 1 |
+
+Neither had ever flipped. This is the cross-field coupling already documented for this analyzer —
+a prompt edit reaching fields it has nothing to do with — and it is why code-side fixes are
+preferred here. The measurement is n=3, enough to show something moved but not to size it; the
+change was dropped rather than measured further because the limit is a nice-to-have (user,
+2026-08-18) and a prompt instruction cannot *guarantee* a length anyway.
+
+**Still open, and the real mitigation is not in this repo:** nothing truncates in code, so the
+limit is an instruction, not a bound. What actually prevents a lost invoice is the Dataverse
+column size — size the three columns comfortably above the longest plausible value and an
+overshoot is stored rather than rejected. A code-side cap would also give a hard guarantee if
+the appetite for truncation ever changes.
 
 ---
 
@@ -370,6 +390,13 @@ a target rather than a cliff; revisit only if an overshoot is ever seen in produ
 | `regress.py` / `test.py` / `diag.py` crashed with `UnicodeEncodeError` on a piped stdout once any field carried non-ASCII | `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` in all three entry points |
 | **B1** — a below-bar, generate-only `service_address` was written but routed to review, 28 times in 1,633 cached replicates across 5 documents | `field_policy.address_corroborated_by_span` + rescue in `gates.evaluate`: CU's own spans for the value must quote text naming the same place. Code-side, no analyzer push |
 | **B6c** — `business_license` routing flipped 4 runs in 10 | Same root cause as B1 (3 runs), plus a run where **both** twins returned nothing. The licensed premises is printed only in a `Locations` table column, which no address-block label covers, so `field_policy.licence_location_address` reads that column directly (municipal only, address-shaped cell, declines on more than one site). 10/10 stable |
+| **C2** — 73 stable-but-unverified keys unasserted | Worked down to 20 verified additions across 14 sidecars, applied 2026-08-18. The original 73 shrank because ~48 were raw twins (never in `writeValues`), several were the stably-wrong values that became A3/A4/A5, and this session asserted the rest. The 20: nine `amount_excluding_gst` verified by arithmetic (`total - gst`), seven verifiable absences (`null`/`""` where the document prints no PO, GST, account or day count — the assertions that would catch a field *inventing* one, as A5 and B3 did), and four dates read off the page. Corpus went from 571 to **611** assertions. **Three candidates were withheld**: `recommend_240124_0001.vendor_name` and `west_van_water.vendor_name` are the open B7/B6a flips, and `260629_0024.invoice_date` is wrong (below) |
+| **C1** — the corpus scored only the FIRST 3 replicates even when 14-31 were cached, so marginal assertions surfaced only when an analyzer edit busted the cache | `regress.py --all-cached` scores every replicate already on disk, and the pre-commit hook now passes it. Zero CU calls, and it lifted each commit's evidence from 87 scored decisions to **450**. The complementary habit — raising `--replicates` *extends* the cache with fresh rolls instead of discarding them, unlike `--force` — is documented in the flag's help |
+| **C3** — `scorecard.py` enforced a 15-**word** rule that `b20104f` had replaced with a 44-**character** one, so the scorecard reported on a rule that no longer existed | `invoice_description_gate` now measures characters against `INVOICE_DESCRIPTION_MAX_CHARS = 44`, `test.py` reports `char_count` instead of `word_count`, and the orphaned `count_words` is gone. This is the only programmatic check of the 44-character limit anywhere, so it now has its own test. Corpus reality: median 30 chars, p90 41, and 5 of 450 values at or over 44 (all on `260521_0024`) |
+| **B4** — `total_invoice_amount_generate` disagreed 1 run in 10 on `abbotsford_water` | **Not reproducible.** `1855.11` on **84 of 85** cached observations and **14/14** on the current analyzer; the single `1952.75` came from the retired analyzer `3dfc9f6fdd22`. The resolved total was always correct and the raw twin is not written to Dataverse. Closed on evidence, no code change |
+| **A1** — `invoice_date` silently became **today** when both date twins returned nothing, written unreviewed because the field is not critical | `field_policy.find_invoice_date_in_text` reads the date off its own printed label. Label-anchored, never positional: the reproduction page also prints a due date, a billing period, two meter-reading dates and two 2023 payment dates. Slashed forms are refused (ambiguous, and the shape a print timestamp takes) and it declines when two *different* labelled dates appear. Fixed **five** documents, not the one logged — 23 replicates that were writing today. Three of the five rescued values match sidecar assertions verified long before this change |
+| **A5** — `account_number` returned the PO/job number (`260629_0024` on 31/31, `bug_260504_0021` on 3/14) | Discarded when its digits equal the resolved PO **and** the page prints no account label. That second test is what protects a genuine account number: all 18 corpus documents that carry one print a label, and both defect documents print none |
+| **A2 + B3** — `number_of_days` wrong on three documents: 13 for a 28-day period (its first month only), and an invented `1` against 30-day and 365-day periods | The period dates arbitrate the count (`field_policy.reconcile_number_of_days`). **Corrects only, never supplies** — a blank count stays blank rather than inheriting the period fields' own instability. A count merely *differing* from the span is kept: five corpus water bills legitimately print a metered count 1-7 days off their period, and that is the consumption the utility billed. Tolerance is `max(10 days, 15%)`, sitting in the measured gap between the widest honest deviation (7) and the narrowest defect (15) |
 | **A3** — `gst_amount` 27.50 where the bill's own arithmetic says 32.62, on a sectioned *commercial* invoice (`recommend_260120_0036`), plus the derived `amount_excluding_gst` | The sectioned-GST rescue in `gates.evaluate` now covers both buckets. Safety comes from the 5% identity it already checked, not from the bucket: a bill whose GST genuinely breaks the identity still declines. gst is now 32.62 on 14/14 |
 | **A4** — `billing_period_start_date` 20 years off (`2006-01-26`), stable, feeding the tenant utility-sharing calculation | The bill prints `Service Period: 06/01/26-06/30/26` in one format; CU forces the end correctly (30 is not a month) and reads the start as YY/MM/DD. `gates.evaluate` now rejects any period that is inverted or longer than a year, then re-reads the start from the printed range anchored on the trusted end date, falling back to `end − (days − 1)` and only then to blank. Also fixed the same misread on `bug_260601_0018` and two *range-collapse* replicates (`fortisbc`, `surrey_water`) where the start twin had returned the end date |
 | **B5** — `invoice_number` written as `8001214179 - 01/14/2026`, 1 run in 14, on a document that A3's fix had just moved from review to auto-write | `field_policy.strip_trailing_date` on the written identifier. Now `8001214179` on 14/14 |

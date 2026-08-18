@@ -228,3 +228,33 @@ def test_active_critical_fields_fail_safe(harness):
     # Missing or unknown bucket info fail-safes to the stricter commercial set.
     assert harness.active_critical_fields({}) == commercial_set
     assert harness.active_critical_fields({"policyBucket": "something-else"}) == commercial_set
+
+
+# --- invoice_description length gate ------------------------------------------------
+
+
+def test_invoice_description_gate_enforces_the_44_character_rule():
+    """The gate must measure what the analyzer prompt actually says.
+
+    It enforced "15 words or fewer" until 2026-08-18, long after b20104f/9a056b8 replaced
+    that with "under 44 characters", so the scorecard reported on a rule that no longer
+    existed. This is the only programmatic check of the 44-character limit anywhere.
+    """
+    import scorecard
+
+    gate = scorecard.invoice_description_gate
+    assert scorecard.INVOICE_DESCRIPTION_MAX_CHARS == 44
+
+    assert gate("Electrical repair work.") == "pass"                       # 23 chars
+    assert gate("Annual business license renewal for 2026.") == "pass"     # 40 chars
+    assert gate("x" * 43) == "pass"
+    assert gate("x" * 44) == "warning: 44 chars >= 44"                     # "under 44"
+    assert gate("x" * 51).startswith("warning: 51 chars")
+
+    # A short phrase of many words passes: the retired rule would have failed it.
+    many_short_words = " ".join(["a"] * 20)                                 # 20 words, 39 chars
+    assert len(many_short_words) < 44
+    assert gate(many_short_words) == "pass"
+
+    assert gate("") == "not critical - empty"
+    assert gate(None) == "not critical - empty"

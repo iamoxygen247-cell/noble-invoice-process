@@ -1,5 +1,5 @@
 {
-  "note": "BC Hydro final bill; BALANCE FORWARD 24.32 -> this bill's ELECTRICITY CHARGES SUBTOTAL 11.37. invoice_date 2026-05-28 is printed in the header table; the extract twin returns null on some runs and the printed-text corroboration carries it, so the invoice_date twins are NOT asserted. payment_due_date is NOT asserted (removed 2026-07-24): the printed due date 2026-06-19 is read on some runs but the extract returns null on others and defaults to today+30, so it flips run to run. || NOT asserted here: invoice_description, payment_due_date. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
+  "note": "BC Hydro final bill; BALANCE FORWARD 24.32 -> this bill's ELECTRICITY CHARGES SUBTOTAL 11.37. invoice_date 2026-05-28 is printed in the header table; the extract twin returns null on some runs and the printed-text corroboration carries it, so the invoice_date twins are NOT asserted. payment_due_date 2026-06-19 was un-asserted on 2026-07-24 because the extract returned null on some runs and the field then defaulted to today+30, flipping run to run. It is asserted again from 2026-08-18: the corroboration rescue in 9c8b283 keeps a sub-threshold due date when the same day is printed in the OCR text, and 'Due $35.69 Due by Jun 19, 2026' is, so the value is stable on all 14 cached replicates. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || C2 2026-08-18: payment_due_date 2026-06-19 asserted -- printed as 'Due $35.69 Due by Jun 19, 2026', a read value rather than the today+30 default. Stable on all 14 cached replicates.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -7,8 +7,9 @@
       "service_address": "202-3538 WINDSOR ST VANCOUVER BC V5V 4N2",
       "total_invoice_amount": 11.37,
       "invoice_date": "2026-05-28",
+      "payment_due_date": "2026-06-19",
       "invoice_number": "137000303570",
-      "po_or_job_number": null,
+      "po_or_job_number": "",
       "gst_amount": 0.54,
       "pst_amount": 0,
       "account_number": "13574616",

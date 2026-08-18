@@ -106,6 +106,21 @@ def _cache_path(analyzer_hash: str, pdf_hash: str, replicate: int) -> pathlib.Pa
     return CACHE_DIR / analyzer_hash / f"{pdf_hash}-r{replicate}.json"
 
 
+def _cached_replicates(analyzer_hash: str, pdf_hash: str) -> List[int]:
+    """Every replicate index already cached for this (analyzer, pdf), ascending.
+
+    Scoring all of them costs nothing -- they are on disk -- and is strictly more evidence
+    than re-scoring the first three. See --all-cached.
+    """
+    found = []
+    for path in (CACHE_DIR / analyzer_hash).glob(f"{pdf_hash}-r*.json"):
+        try:
+            found.append(int(path.stem.split("-r")[1]))
+        except (IndexError, ValueError):  # pragma: no cover - stray file in the cache
+            continue
+    return sorted(found)
+
+
 # --- CU provisioning + analysis ----------------------------------------------
 
 
@@ -378,6 +393,11 @@ def main(argv=None) -> int:
     ap.add_argument("--update-expected", metavar="STEM",
                     help="rewrite the expectation sidecar from observed values for a corpus doc already present, then exit")
     ap.add_argument("--force", action="store_true", help="ignore the cache and re-call CU for every replicate")
+    ap.add_argument("--all-cached", action="store_true",
+                    help="score EVERY replicate already cached for each doc instead of the first "
+                         "--replicates. Zero CU calls, and it uses the evidence already paid for: "
+                         "a corpus rolled to 14 replicates is otherwise re-scored on 3. Falls back "
+                         "to --replicates for a doc with nothing cached")
     ap.add_argument("--no-stamp", action="store_true", help="do not write the out/regress/<sha>.json stamp on green")
     ap.add_argument("--load-local-settings", action="store_true",
                     help="seed AZURE_CU_* env from functionapp/local.settings.json when unset (dev convenience; used by the pre-commit hook)")
@@ -405,6 +425,7 @@ def main(argv=None) -> int:
         pdfs = sorted(CORPUS_DIR.glob("*.pdf"))
         all_rows: List[Dict[str, Any]] = []
         skipped: List[str] = []
+        replicates_scored: Dict[str, int] = {}
 
         for pdf_path in pdfs:
             sidecar = pdf_path.with_suffix(".expected.json")
@@ -413,12 +434,18 @@ def main(argv=None) -> int:
                 continue
             expect = json.loads(sidecar.read_text(encoding="utf-8")).get("expect", {})
             pdf_hash = _sha12(pdf_path.read_bytes())
+            indices = list(range(args.replicates))
+            if args.all_cached and not args.force:
+                cached = _cached_replicates(analyzer_hash, pdf_hash)
+                if cached:
+                    indices = cached
+            replicates_scored[pdf_path.stem] = len(indices)
             decisions = [
                 _decision(
                     raw_result(runner, analyzer_hash, pdf_path, pdf_hash, r, args.force),
                     pdf_path.stem,
                 )
-                for r in range(args.replicates)
+                for r in indices
             ]
             all_rows.extend(score_doc(pdf_path, expect, decisions))
     finally:
@@ -428,8 +455,13 @@ def main(argv=None) -> int:
     ok_count = len(all_rows) - len(bad)
 
     print()
-    print(f"analyzer {analyzer_file.name} [{analyzer_hash}]  x{args.replicates} replicates  "
-          f"({runner.calls} CU calls, {len(pdfs) * args.replicates - runner.calls} cache hits)")
+    scored = sum(replicates_scored.values())
+    if replicates_scored and len(set(replicates_scored.values())) > 1:
+        spread = f"{min(replicates_scored.values())}-{max(replicates_scored.values())}"
+    else:
+        spread = str(next(iter(replicates_scored.values()), args.replicates))
+    print(f"analyzer {analyzer_file.name} [{analyzer_hash}]  x{spread} replicates per doc "
+          f"({scored} scored: {runner.calls} CU calls, {scored - runner.calls} cache hits)")
     print(f"checked {len(all_rows)} (doc, field) expectations across {len(pdfs) - len(skipped)} docs: "
           f"{ok_count} OK, {len(bad)} not OK")
     if skipped:

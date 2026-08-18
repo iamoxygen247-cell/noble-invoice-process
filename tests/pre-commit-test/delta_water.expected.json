@@ -9,7 +9,7 @@
       "invoice_date": "2026-04-16",
       "payment_due_date": "2026-06-01",
       "invoice_number": "delta_water",
-      "po_or_job_number": null,
+      "po_or_job_number": "",
       "gst_amount": null,
       "pst_amount": 0,
       "account_number": "42068",

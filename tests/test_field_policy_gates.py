@@ -1780,6 +1780,140 @@ def test_implausible_billing_period_is_repaired_or_dropped():
     check("no range printed -> None", repair("Invoice Date: 06/03/2026", "2026-06-30") is None)
 
 
+def test_number_of_days_reconciled_against_its_period():
+    print("\n[gates: a day count the billing period contradicts is corrected]")
+
+    span = field_policy.days_in_period
+    check("inclusive span", span("2026-05-19", "2026-06-15") == 28)
+    check("single day is 1", span("2026-06-30", "2026-06-30") == 1)
+    check("missing end -> None", span("2026-06-01", "") is None)
+    check("inverted -> None", span("2026-07-05", "2026-06-30") is None)
+
+    fix = field_policy.reconcile_number_of_days
+    # The three defects: a count that is really the period's first month (A2), and an
+    # invented 1 against a 30-day and a 365-day period (B3).
+    check("13 against a 28-day period -> 28", fix(13, "2026-05-19", "2026-06-15") == 28)
+    check("1 against a 30-day period -> 30", fix(1, "2026-06-01", "2026-06-30") == 30)
+    check("1 against a 365-day period -> 365", fix(1, "2026-01-01", "2026-12-31") == 365)
+
+    # The five corpus water bills, whose metered count honestly differs from the period.
+    for printed, start, end in ((83, "2026-01-01", "2026-03-31"), (91, "2026-01-01", "2026-03-31"),
+                                (85, "2026-01-01", "2026-03-31"), (86, "2026-01-01", "2026-03-31")):
+        check(f"metered {printed} against a 90-day period is kept", fix(printed, start, end) is None)
+    check("117 against a 123-day period is kept", fix(117, "2026-01-01", "2026-05-03") is None)
+
+    # Never supplies a count the pipeline deliberately left blank, and never acts without
+    # a period to judge against.
+    check("blank count is not filled in", fix("", "2026-06-01", "2026-06-30") is None)
+    check("no period -> no opinion", fix(13, "", "") is None)
+    check("no period and no count -> no opinion", fix("", "", "") is None)
+
+    # End to end: the corrected count is written and flagged.
+    r = ev(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-05-19", 0.95),
+        billing_period_end_date_extract=fdate("2026-06-15", 0.95),
+        number_of_days_extract=fint(13, 0.95),
+    ))
+    check("written count corrected to the period span",
+          r["writeValues"]["number_of_days"] == 28, str(r["writeValues"].get("number_of_days")))
+    check("source = period_derived",
+          r["resolutions"]["number_of_days"]["source"] == "period_derived",
+          str(r["resolutions"].get("number_of_days")))
+    check("correction advisory raised",
+          any("taken from the billing period" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # A count within tolerance survives end to end.
+    r = ev(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-01-01", 0.95),
+        billing_period_end_date_extract=fdate("2026-03-31", 0.95),
+        number_of_days_extract=fint(83, 0.95),
+    ))
+    check("metered count survives end to end", r["writeValues"]["number_of_days"] == 83,
+          str(r["writeValues"].get("number_of_days")))
+
+
+def test_invoice_date_read_from_its_printed_label():
+    print("\n[gates: both date twins empty -> read the date off its printed label]")
+
+    # bug_260528_0016: both twins return nothing on 5 replicates in 14, and the date would
+    # default to today. The page is full of decoy dates -- only one carries an issue label.
+    MD = ("You currently owe: $34.69\n\nDue Tuesday, Jun 16, 2026\n\n"
+          "Billing period: May 1 - May 25, 2026\nBilling date: May 25, 2026\n\n"
+          "This bill actual reading: 326 (May 25, 2026)\n"
+          "Payment received (Sep 20, 2023)\n")
+
+    r = ev_md(commercial_fields(invoice_date_extract=fdate("", None)), MD)
+    check("labelled date is read instead of today",
+          r["writeValues"]["invoice_date"] == "2026-05-25",
+          str(r["writeValues"].get("invoice_date")))
+    check("source = printed_label",
+          r["resolutions"]["invoice_date"]["source"] == "printed_label",
+          str(r["resolutions"].get("invoice_date")))
+    check("invoice_date no longer counts as defaulted",
+          "invoice_date" not in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # A document that prints no issue date keeps defaulting -- the licence-renewal shape
+    # that NO_GENERATE_RESCUE exists for.
+    r = ev_md(commercial_fields(invoice_date_extract=fdate("", None)),
+              "Due date: Jun 16, 2026\nPage printed 1/13/26 10:12AM")
+    check("no labelled issue date -> still defaults",
+          "invoice_date" in r["defaultedFields"], str(r["defaultedFields"]))
+
+    find = field_policy.find_invoice_date_in_text
+    check("due date alone is never taken", find("Due date: Jun 16, 2026") is None)
+    check("billing PERIOD is not an issue date",
+          find("Billing period: May 1 - May 25, 2026") is None)
+    check("slashed forms are refused (ambiguous / print timestamps)",
+          find("Invoice Date: 06/03/2026") is None)
+    check("ISO is accepted", find("Invoice Date: 2026-06-03") == "2026-06-03")
+    check("the same date under two labels still resolves",
+          find("Invoice date: May 25, 2026 ... Billing date: May 25, 2026") == "2026-05-25")
+    check("two DIFFERENT labelled dates -> declines",
+          find("Invoice date: May 25, 2026 ... Statement date: Jun 2, 2026") is None)
+    check("an unlabelled date is not taken", find("May 25, 2026") is None)
+
+
+def test_account_number_that_is_just_the_po():
+    print("\n[gates: a PO/job number echoed into account_number is discarded]")
+
+    # 260629_0024 prints '# 11022266' beside the paying party and no customer account.
+    MD = ("Name, Address and Telephone Numbers for the Paying Party\n"
+          "NOBLE & ASSOCIATES PROPERTY MANAGEMENT # 11022266\n\n\\# 11022266\n"
+          "13988 MAYCREST WAY # 155\nRICHMOND, BC")
+
+    r = ev_md(commercial_fields(
+        po_or_job_number_extract=fstr("11022266", 0.93),
+        account_number_extract=fstr("11022266", 0.90),
+    ), MD)
+    check("echoed account_number is discarded",
+          r["writeValues"]["account_number"] == "",
+          str(r["writeValues"].get("account_number")))
+    check("source = po_echo_rejected",
+          r["resolutions"]["account_number"]["source"] == "po_echo_rejected",
+          str(r["resolutions"].get("account_number")))
+    check("the PO itself is untouched", r["writeValues"]["po_or_job_number"] == "11022266")
+    check("discard advisory raised",
+          any("PO/job number repeated" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # A page that labels the number as an account keeps it, even when it equals the PO.
+    r = ev_md(commercial_fields(
+        po_or_job_number_extract=fstr("11022266", 0.93),
+        account_number_extract=fstr("11022266", 0.90),
+    ), "Account number: 11022266\nJob # 11022266")
+    check("a labelled account number is kept",
+          r["writeValues"]["account_number"] == "11022266",
+          str(r["writeValues"].get("account_number")))
+
+    echo = field_policy.account_number_echoes_po
+    check("different values -> not an echo", not echo("4517813", "11022266", "no label"))
+    check("missing account -> not an echo", not echo(None, "11022266", "no label"))
+    check("missing po -> not an echo", not echo("11022266", None, "no label"))
+    check("punctuation ignored when comparing", echo("#11022266", "11022266", "no label"))
+    for label in ("Account Number: 5077636", "Acct. 5077636", "A/C 5077636", "Customer ID: 22-577"):
+        check(f"{label!r} protects the field", not echo("11022266", "11022266", label))
+
+
 def test_payment_due_date_corroboration_rescue():
     print("\n[gates: a printed payment_due_date survives a sub-threshold confidence]")
 

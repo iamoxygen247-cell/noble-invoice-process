@@ -619,6 +619,51 @@ def evaluate(
                     "printed range nor a day count corroborates a correction"
                 )
 
+    # Number of days reconciled against the period, once both dates are final (the
+    # derivation and the range repair above have run). The count is the least reliable of
+    # the three fields -- it is the one CU has been seen inventing a "1" for -- so the dates
+    # arbitrate it: they supply it when it is missing and correct it when it contradicts
+    # them by more than a metered count honestly can. A count that merely differs from the
+    # span is KEPT: on a water bill the meter-reading dates are not the period dates, and
+    # that printed count is the consumption the utility actually billed, which is what the
+    # tenant utility-sharing calculation wants (field_policy.reconcile_number_of_days).
+    reconciled = field_policy.reconcile_number_of_days(
+        write_values[field_policy.DAYS_FINAL],
+        write_values[field_policy.BILLING_START_FINAL],
+        write_values[field_policy.BILLING_END_FINAL],
+    )
+    if reconciled is not None:
+        previous = write_values[field_policy.DAYS_FINAL]
+        resolutions[field_policy.DAYS_FINAL] = (
+            reconciled, 1.0, True, None, "period_derived",
+        )
+        write_values[field_policy.DAYS_FINAL] = reconciled
+        advisory.append(
+            f"number_of_days {reconciled} taken from the billing period "
+            f"{write_values[field_policy.BILLING_START_FINAL]}.."
+            f"{write_values[field_policy.BILLING_END_FINAL]}, "
+            f"replacing {previous!r}, which the period contradicts"
+        )
+
+    # A PO/job number echoed into account_number. 260629_0024 prints '# 11022266' beside the
+    # paying party -- its job number -- and no customer account anywhere, yet the analyzer
+    # fills account_number with it on all 31 replicates (bug_260504_0021: 3 in 14). Both are
+    # commercial, where account_number is not critical, so the wrong value auto-writes.
+    # Discarded only when the digits match the resolved PO *and* the page prints no account
+    # label at all -- every corpus document with a genuine account number prints one, which
+    # is what keeps a real account that coincides with a PO safe (field_policy).
+    if field_policy.account_number_echoes_po(
+            write_values[field_policy.ACCOUNT_FINAL],
+            write_values[field_policy.PO_FINAL],
+            collect_markdown(full)):
+        echoed = write_values[field_policy.ACCOUNT_FINAL]
+        resolutions[field_policy.ACCOUNT_FINAL] = (None, 0.0, False, None, "po_echo_rejected")
+        write_values[field_policy.ACCOUNT_FINAL] = ""
+        advisory.append(
+            f"account_number {echoed!r} discarded: it is the PO/job number repeated and the "
+            "document prints no account number"
+        )
+
     # Domain-corroborated vendor rescue. When a vendor's name is printed only as a stylized
     # logo, vendor_name_extract is steered by its own prompt ("read clearly printed text ...
     # rather than a stylized logo") toward whatever plain text sits in the letterhead -- on
@@ -672,6 +717,28 @@ def evaluate(
             advisory.append(
                 f"invoice_date {corroborated} accepted from the generate twin: the date "
                 "is printed in the document text"
+            )
+
+    # Printed-label invoice date. The rescue above grounds a value the generate twin
+    # produced; on bug_260528_0016 BOTH twins return nothing on 5 replicates in 14, so there
+    # is nothing to ground and build_write_values substitutes today -- filing the invoice
+    # under the wrong date, unreviewed, because invoice_date is not critical. Read the date
+    # off its own printed label instead (field_policy.find_invoice_date_in_text), which is
+    # label-anchored and declines on a page carrying two different labelled dates. A
+    # document that prints no issue date at all -- the licence-renewal shape invoice_date's
+    # NO_GENERATE_RESCUE exists for -- finds nothing here and keeps defaulting exactly as
+    # before. Runs before B4 so the future-date gate judges the rescued value.
+    if field_policy.INVOICE_DATE_FINAL in defaulted:
+        printed_date = field_policy.find_invoice_date_in_text(collect_markdown(full))
+        if printed_date is not None:
+            resolutions[field_policy.INVOICE_DATE_FINAL] = (
+                printed_date, 1.0, True, None, "printed_label",
+            )
+            write_values[field_policy.INVOICE_DATE_FINAL] = printed_date
+            defaulted.remove(field_policy.INVOICE_DATE_FINAL)
+            advisory.append(
+                f"invoice_date {printed_date} read from its printed label: both twins "
+                "returned nothing and the date would otherwise have defaulted to today"
             )
 
     # Corroborated payment-due-date rescue. payment_due_date is a lone extract: no twin, so
