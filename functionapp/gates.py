@@ -541,6 +541,30 @@ def evaluate(
     # value is: it has no grounding on the page, and in the observed failure
     # mode it is the period *end* date (range collapse on a shared-year range
     # like 'May 19 - May 31, 2026'). Informational only: never gates routing.
+    # A period END the generate twin supplied alone -- no extract value corroborating it --
+    # and which is exactly the invoice date is not a billing period: it is the invoice date
+    # leaking into the field. recommend_241105_1061 prints no period at all, and on 1 run in
+    # 12 the generate twin answered '2024-11-05' (its invoice date) at 0.425 with the extract
+    # twin confidently null; the rescue wrote it and the invoice auto-routed
+    # HAPPY_PATH_CANDIDATE. Corroborating against the page cannot catch this -- the invoice
+    # date IS printed. Only the generate-only source is guarded: bug_260528_0016 and
+    # west_van_water legitimately bill through their invoice date and resolve END from the
+    # extract twin on 26/26 and 24/24 cached reads respectively.
+    end_val, end_conf, _end_passed, end_note, end_source = (
+        resolutions[field_policy.BILLING_END_FINAL]
+    )
+    if (
+        end_source == "generate"
+        and not is_empty_value(end_val)
+        and str(end_val) == str(resolutions[field_policy.INVOICE_DATE_FINAL][0] or "")
+    ):
+        resolutions[field_policy.BILLING_END_FINAL] = ("", end_conf, False, end_note, "none")
+        write_values[field_policy.BILLING_END_FINAL] = ""
+        advisory.append(
+            "billing_period_end_date discarded: generate-only value equals the invoice date "
+            f"({end_val}), so the bill prints no period end"
+        )
+
     start_val, _start_conf, start_passed, _start_note, start_source = (
         resolutions[field_policy.BILLING_START_FINAL]
     )

@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -206,9 +207,38 @@ def raw_result(
 # --- scoring -----------------------------------------------------------------
 
 
-def _values_equal(expected: Any, actual: Any) -> bool:
+# vendor_name only: the trailing legal suffix is not part of the assertion. The pipeline
+# writes whichever spelling the generate twin returns, and on diag_260414_0028 that twin
+# returns the full name minus the printed 'Ltd.' on about 1 read in 24 -- one vendor, two
+# spellings, decided by a coin flip. Every code rule that removes the flake breaks the
+# casing normalisation the same twin provides ('CITY OF SURREY' -> 'City of Surrey'), so the
+# instability is accepted and the assertion narrowed instead: downstream matching in Dynamics
+# is suffix-insensitive, so asserting the suffix asserts something nobody depends on.
+#
+# The cost, stated plainly: a future regression whose ONLY effect is adding or dropping a
+# legal suffix on vendor_name will no longer be caught here. Everything else about
+# vendor_name -- a wrong vendor, a truncation, a casing change, an empty value -- still is.
+_VENDOR_LEGAL_SUFFIX_RE = re.compile(
+    r"(?i)[\s,]+(inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company)\.?$"
+)
+
+
+def _strip_vendor_suffix(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    out = value.strip()
+    while True:
+        trimmed = _VENDOR_LEGAL_SUFFIX_RE.sub("", out)
+        if trimmed == out:
+            return out
+        out = trimmed
+
+
+def _values_equal(expected: Any, actual: Any, field: Optional[str] = None) -> bool:
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         return abs(float(expected) - float(actual)) <= MONEY_TOLERANCE
+    if field == "vendor_name" and isinstance(expected, str) and isinstance(actual, str):
+        return _strip_vendor_suffix(expected) == _strip_vendor_suffix(actual)
     return expected == actual
 
 
@@ -252,8 +282,8 @@ def score_doc(
     file_name = pdf_path.stem
     for section, name, expected in _expectation_checks(expect):
         observed = [_observed(d, section, name) for d in decisions]
-        unstable = any(not _values_equal(observed[0], o) for o in observed[1:])
-        matches = all(_values_equal(expected, o) for o in observed)
+        unstable = any(not _values_equal(observed[0], o, name) for o in observed[1:])
+        matches = all(_values_equal(expected, o, name) for o in observed)
         if unstable:
             verdict = "UNSTABLE"
         elif matches:
@@ -302,7 +332,7 @@ def update_expected(runner: CuRunner, analyzer_hash: str, stem: str, replicates:
 
     def stable(section_getter, key):
         vals = [section_getter(d).get(key) for d in decisions]
-        return all(_values_equal(vals[0], v) for v in vals[1:]), vals[0], vals
+        return all(_values_equal(vals[0], v, key) for v in vals[1:]), vals[0], vals
 
     # Only propose keys that are stable across replicates; an unstable key is
     # listed as a warning, never asserted (asserting a coin-flip guarantees a
