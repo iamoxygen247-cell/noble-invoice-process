@@ -1859,6 +1859,191 @@ def test_number_of_days_reconciled_against_its_period():
           r["writeValues"]["number_of_days"] == 19, str(r["writeValues"].get("number_of_days")))
 
 
+def test_municipal_vendor_name_restored_from_its_printed_prefix():
+    print("\n[gates: a municipal name reduced to its bare place name is restored]")
+
+    helper = field_policy.municipal_name_with_prefix
+    MD = "City of Delta\nUtility Billing\n1234 Main St, Delta BC"
+    check("bare place name -> printed full form", helper("Delta", MD) == "City of Delta",
+          repr(helper("Delta", MD)))
+    check("already prefixed -> no opinion", helper("City of Delta", MD) is None)
+    check("a longer vendor name is never rewritten", helper("Delta Plumbing Ltd.", MD) is None)
+    check("multi-word place name",
+          helper("West Vancouver", "District of West Vancouver") == "District of West Vancouver")
+    check("name split across runs is rejoined",
+          helper("Burnaby", "City of\nBurnaby") == "City of Burnaby")
+    check("a partial word does not match", helper("Surrey", "City of Surreybrook") is None)
+    check("absent from the page -> no opinion", helper("Delta", "no municipality here") is None)
+    check("non-string -> no opinion", helper(None, MD) is None)
+
+    # delta_water r0/r2 and burnaby_water r1. BOTH twins take the bare parse and AGREE, so the
+    # agreement boost promotes a sub-threshold pair (0.416 / 0.343) to a passing resolution --
+    # twin disagreement cannot see a perturbation that moves both twins the same way -- and the
+    # wrong vendor auto-writes because 'Delta' is a plausible non-empty string.
+    r = ev_md(municipal_fields(
+        vendor_name_extract=fstr("Delta", 0.416),
+        vendor_name_generate=fstr("Delta", 0.343),
+    ), MD)
+    check("agreeing sub-threshold twins are repaired",
+          r["writeValues"]["vendor_name"] == "City of Delta",
+          str(r["writeValues"].get("vendor_name")))
+    check("source records the repair",
+          r["resolutions"]["vendor_name"]["source"] == "municipal_prefix_restored",
+          str(r["resolutions"].get("vendor_name")))
+    check("advisory names the replacement",
+          any("restored from the printed municipal name" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # A correct read is left exactly as resolved.
+    r = ev_md(municipal_fields(vendor_name_extract=fstr("City of Delta", 0.883)), MD)
+    check("a correct municipal name is untouched",
+          r["writeValues"]["vendor_name"] == "City of Delta",
+          str(r["writeValues"].get("vendor_name")))
+    check("no repair advisory on a correct read",
+          not any("restored from the printed municipal" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # NEGATIVE -- the municipal gate. Same page text, commercial bill: a vendor genuinely
+    # called 'Delta' must survive, which is what keeps 'Delta Plumbing Ltd.' safe too.
+    r = ev_md(commercial_fields(vendor_name_extract=fstr("Delta", 0.95)), MD)
+    check("a commercial bill is left alone",
+          r["writeValues"]["vendor_name"] == "Delta",
+          str(r["writeValues"].get("vendor_name")))
+
+
+def test_printed_period_start_survives_the_derivation():
+    print("\n[gates: a printed billing-period start is never overwritten by arithmetic]")
+
+    # vancouver_water, 4 runs in 12: both extract twins return a confident null, the generate
+    # twin reads the printed "Oct 1, 2025" at 0.51, and the derivation replaced it with
+    # end - (days - 1) = 2025-10-07. The count is not wrong -- 117 is the METERED consumption
+    # period, which on a water bill legitimately differs from the Oct 1 - Jan 31 billing span.
+    MD = "Service period Oct 1, 2025 to Jan 31, 2026\nTotal days billed 117\n"
+    fields = municipal_fields(
+        sub_bill_type=fstr("water", 0.95),
+        billing_period_start_date_generate=fdate("2025-10-01", 0.51),
+        billing_period_end_date_generate=fdate("2026-01-31", 0.51),
+        number_of_days_extract=fint(117, 0.99),
+        number_of_days_generate=fint(117, 0.95),
+    )
+    r = ev_md(fields, MD)
+    check("the printed start survives", r["writeValues"]["billing_period_start_date"] == "2025-10-01",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("no derivation advisory when the date is printed",
+          not any("derived from billing_period_end_date" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # ...but an UNPRINTED below-bar start is still derived: this must not disable A4.
+    r = ev_md(fields, "Total days billed 117\n")
+    check("an unprinted start is still derived",
+          r["writeValues"]["billing_period_start_date"] == "2025-10-07",
+          str(r["writeValues"].get("billing_period_start_date")))
+
+
+def test_vendor_name_taken_from_the_letterhead_not_the_remittance_block():
+    print("\n[gates: truncated and remittance-block vendor names are corrected]")
+
+    # recommend_241105_1061, 1 run in 12: the extract lost the brand word above the descriptor.
+    # A tail of the generate name is a partial letterhead run, so confidence must not rank them.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("HEATING & COOLING LTD", 0.492),
+        vendor_name_generate=fstr("ROMA Heating & Cooling", 0.432),
+    ))
+    check("a tail-truncated extract loses to the full generate name",
+          r["writeValues"]["vendor_name"] == "ROMA Heating & Cooling",
+          str(r["writeValues"].get("vendor_name")))
+
+    # The opposite direction stays on the confidence tiebreak: 'Drips & Drains' (generate) is a
+    # LEADING subset of the extract's full legal name, which is the ordinary normalisation case.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("Drips & Drains Plumbing and Heating Ltd.", 0.90),
+        vendor_name_generate=fstr("Drips & Drains", 0.40),
+    ))
+    check("a leading subset does not trigger the tail rule",
+          r["writeValues"]["vendor_name"] == "Drips & Drains Plumbing and Heating Ltd.",
+          str(r["writeValues"].get("vendor_name")))
+
+    # burnaby_water, 1 run in 12: both twins take the city's accounts-receivable department from
+    # the remittance block and agree, so a sub-threshold pair resolves and auto-writes.
+    MD = ("City of Burnaby\nRevenue Services\n"
+          "By mail to Burnaby Revenue Services, 4949 Canada Way, Burnaby BC.\n"
+          "Please make cheque payable to: City of Burnaby.\n")
+    r = ev_md(municipal_fields(
+        vendor_name_extract=fstr("Revenue Services", 0.537),
+        vendor_name_generate=fstr("Burnaby Revenue Services", 0.37),
+    ), MD)
+    check("the payable-to line overrides the remittance department",
+          r["writeValues"]["vendor_name"] == "City of Burnaby",
+          str(r["writeValues"].get("vendor_name")))
+    check("advisory names the payable-to source",
+          any("printed payable-to line" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # A correct municipal name is left alone even though the phrase is present.
+    r = ev_md(municipal_fields(vendor_name_extract=fstr("CITY OF BURNABY", 0.95)), MD)
+    check("a consistent vendor is not rewritten",
+          r["writeValues"]["vendor_name"] == "CITY OF BURNABY",
+          str(r["writeValues"].get("vendor_name")))
+
+    # NEGATIVE -- the utilities. BC Hydro and FortisBC are bucket municipal but are NOT issued
+    # by a municipality; nothing may rewrite them to a city named elsewhere on the page.
+    r = ev_md(municipal_fields(
+        sub_bill_type=fstr("electricity", 0.95),
+        vendor_name_extract=fstr("BC Hydro", 0.95),
+    ), "BC Hydro\nmake cheque payable to BC Hydro\nService address: 123 Main St, City of Vancouver\n")
+    check("a utility on a municipal bill is never rewritten to the city",
+          r["writeValues"]["vendor_name"] == "BC Hydro",
+          str(r["writeValues"].get("vendor_name")))
+
+
+def test_service_address_settled_by_the_page():
+    print("\n[gates: a service address the twins disagree about is settled by the page]")
+
+    labelled = field_policy.labelled_service_address
+    postal = field_policy.address_trailing_postal
+
+    # richmond_water: the labelled cell holds the street; a separate mailing block holds the
+    # street + city + postal. On 1 read in 12 both twins dipped below the bar, agreed on the
+    # mailing block, and its tail was stitched onto the service address.
+    RICHMOND = ("<table> <tr> <td>FOR SERVICE AT:</td> <td>7171 NO. 5 RD</td> </tr> "
+                "<tr> <td>MAIL TO</td> <td>7171 NO. 5 RD RICHMOND BC V6Y 2V3</td> </tr> </table>")
+    check("labelled cell is read", labelled(RICHMOND) == "7171 NO. 5 RD", repr(labelled(RICHMOND)))
+    check("a column header is not an address",
+          labelled("<td>SERVICE ADDRESS</td> <td>Bill To</td>") is None)
+    check("no label -> no opinion", labelled("just some text") is None)
+
+    r = ev_md(municipal_fields(
+        sub_bill_type=fstr("water", 0.95),
+        service_address_extract=fstr("7171 NO. 5 RD\nRICHMOND BC V6Y 2V3", 0.609),
+        service_address_generate=fstr("7171 NO. 5 RD\nRICHMOND BC V6Y 2V3", 0.662),
+    ), RICHMOND)
+    check("the labelled cell wins over the stitched mailing block",
+          r["writeValues"]["service_address"] == "7171 NO. 5 RD",
+          str(r["writeValues"].get("service_address")))
+    check("advisory names the label",
+          any("labelled service cell" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # warranty_260120_0062: one continuous run; both twins stopped before the postal code.
+    WARRANTY = "Tenant: Victor 6888 Alderbridge Way Unit 701 Richmond, BC V6V 3C3 (236) 777-4206"
+    check("contiguous postal is restored",
+          postal("6888 Alderbridge Way Unit 701 Richmond, BC", WARRANTY)
+          == "6888 Alderbridge Way Unit 701 Richmond, BC V6V 3C3")
+    check("a postal already present is not doubled",
+          postal("6888 Alderbridge Way Unit 701 Richmond, BC V6V 3C3", WARRANTY) is None)
+    check("a value absent from the page is left alone",
+          postal("999 Nowhere Rd", WARRANTY) is None)
+    check("no postal after the address -> no opinion",
+          postal("7171 NO. 5 RD", "<td>7171 NO. 5 RD</td> <td>OTHER</td>") is None)
+
+    r = ev_md(commercial_fields(
+        service_address_extract=fstr("6888 Alderbridge Way\nUnit 701\nRichmond, BC", 0.669),
+        service_address_generate=fstr("6888 Alderbridge Way\nUnit 701\nRichmond, BC", 0.812),
+    ), WARRANTY)
+    check("the dropped postal code is restored end to end",
+          r["writeValues"]["service_address"] == "6888 Alderbridge Way Unit 701 Richmond, BC V6V 3C3",
+          str(r["writeValues"].get("service_address")))
+
+
 def test_invoice_date_read_from_its_printed_label():
     print("\n[gates: both date twins empty -> read the date off its printed label]")
 

@@ -750,7 +750,26 @@ def _prefer_vendor_generate(
     # 0.662 extract. The printed name wins on these bills regardless of confidence.
     if _has_dba_clause(e_val):
         return False
-    if _normalize_vendor(e_val) == _normalize_vendor(g_val):
+    normalized_extract, normalized_generate = _normalize_vendor(e_val), _normalize_vendor(g_val)
+    if normalized_extract == normalized_generate:
+        return True
+    # An extract that is a strict TAIL of the generate has lost the name's leading words: the
+    # extractor took a partial run of the letterhead. recommend_241105_1061 prints the brand on
+    # its own line above the descriptor, and on 1 run in 12 the extract returned only
+    # 'HEATING & COOLING LTD' at 0.492 while the generate had the whole 'ROMA Heating & Cooling'
+    # at 0.432 -- the confidence tiebreak below then wrote the fragment. burnaby_water does the
+    # same with 'Revenue Services' under 'Burnaby Revenue Services'.
+    #
+    # Only the TAIL direction. A generate that is a leading subset of the extract is the
+    # ordinary normalisation case -- 'FortisBC' for 'FortisBC Energy Inc.', 'Drips & Drains' for
+    # 'Drips & Drains Plumbing and Heating Ltd.' -- and those two want opposite answers, which
+    # only the confidence tiebreak separates. Leave them to it.
+    extract_tokens, generate_tokens = normalized_extract.split(), normalized_generate.split()
+    if (
+        extract_tokens
+        and len(extract_tokens) < len(generate_tokens)
+        and generate_tokens[-len(extract_tokens):] == extract_tokens
+    ):
         return True
     return (g_conf or 0.0) >= (e_conf or 0.0)
 
@@ -846,6 +865,147 @@ def vendor_domain_tiebreak(e_val: Any, g_val: Any, text: str) -> Optional[Any]:
     if e_ok == g_ok:
         return None
     return e_val if e_ok else g_val
+
+
+# The municipal name forms printed on BC utility letterheads. Used to rebuild a name whose
+# printed prefix the extractor dropped -- see municipal_name_with_prefix.
+_MUNICIPAL_PREFIXES = "City|District|Township|Corporation|Town|Village"
+
+# A resolved value that already carries one of those prefixes needs no repair.
+_HAS_MUNICIPAL_PREFIX = re.compile(rf"(?i)^\s*(?:the\s+)?(?:{_MUNICIPAL_PREFIXES})\s+of\s+\S")
+
+
+def municipal_name_with_prefix(value: Any, text: str) -> Optional[str]:
+    """
+    The full municipal name printed on the page when ``value`` is only its bare place name --
+    "Delta" where the invoice prints "City of Delta" -- or None, meaning "no opinion".
+
+    Some municipal letterheads make the name locatable two ways: the full string, and the
+    place name on its own. The extractor normally takes the full form at ~0.88, but on
+    delta_water and burnaby_water it sometimes takes the bare name at ~0.415. The generate
+    twin does the same, so the two AGREE on the short answer and the agreement boost promotes
+    a pair of sub-threshold reads to a passing resolution -- twin disagreement, the usual
+    safeguard, cannot see a perturbation that moves both twins the same way. The written value
+    is then a plausible non-empty string, so no gate fires and it auto-writes unreviewed.
+
+    Measured across 2,464 cached reads: 3 occurrences, all three in the only two analyzer
+    versions that edited the warranty prompt, and zero in the other 762 reads
+    (docs/ai/warranty-prompt-retry-plan.md).
+
+    Anchored on the resolved value rather than on a guessed name span, so a multi-word place
+    name -- "District of West Vancouver" -- is matched exactly and a longer printed phrase
+    cannot be over-captured. The match must be whole: a vendor genuinely called
+    "Delta Plumbing Ltd." on an invoice mentioning "City of Delta" is never rewritten. The
+    caller gates this on the municipal bucket as well; both conditions are required.
+    """
+    if not isinstance(value, str):
+        return None
+    bare = " ".join(value.split())
+    if not bare or _HAS_MUNICIPAL_PREFIX.match(bare):
+        return None
+    # A BC municipality is one or two words -- Delta, Burnaby, West Vancouver, New Westminster.
+    # The cap is what stops the pattern running past the name into whatever the letterhead
+    # prints next: burnaby_water sets "Revenue Services" on the line under "City of Burnaby",
+    # so without it a resolved 'Burnaby Revenue Services' matches and is "restored" to
+    # 'City of Burnaby Revenue Services'.
+    if len(bare.split()) > 2:
+        return None
+    flexible = r"\s+".join(re.escape(word) for word in bare.split())
+    printed = re.search(
+        rf"(?i)\b((?:{_MUNICIPAL_PREFIXES})\s+of\s+{flexible})(?![\w\-])",
+        text or "",
+    )
+    return " ".join(printed.group(1).split()) if printed else None
+
+
+# "make cheque payable to: City of Burnaby" -- the biller naming itself. Only a MUNICIPAL
+# payee is captured, which is what keeps this away from BC Hydro and FortisBC: those bills are
+# bucket municipal but are not issued by a municipality, and none of them prints this phrase.
+_MUNICIPAL_PAYEE = re.compile(
+    rf"(?i)payable\s+(?:to|at)\b[:\s]*[\"']?"
+    rf"((?:{_MUNICIPAL_PREFIXES})\s+of\s+[A-Za-z][\w.'-]*(?:\s+[A-Za-z][\w.'-]*)?)"
+)
+
+
+def municipal_payee_override(value: Any, text: str) -> Optional[str]:
+    """
+    The municipality a bill says cheques are payable to, when the resolved ``vendor_name``
+    names something else -- or None, meaning "no opinion".
+
+    burnaby_water prints its remittance block as "By mail to Burnaby Revenue Services,
+    4949 Canada Way". On 1 read in 12 both twins take the vendor from there instead of the
+    letterhead, and because one is a tail of the other they agree, so a sub-threshold pair
+    resolves and the city's own accounts-receivable department is written as the vendor.
+
+    The same page also prints "Please make cheque payable to: City of Burnaby", which is the
+    biller naming itself and is not a field any prompt competes over. Across the corpus this
+    phrase appears on seven municipal documents and matches the asserted vendor on all seven.
+
+    Deliberately narrow. It fires only when the captured payee is a MUNICIPAL name -- a bill
+    payable to "BC Hydro" captures nothing -- and only when the resolved vendor disagrees with
+    it, so a correct 'CITY OF SURREY' against a printed 'City of Surrey' is left alone.
+    """
+    if not text:
+        return None
+    found = _MUNICIPAL_PAYEE.search(re.sub(r"\s+", " ", text))
+    if not found:
+        return None
+    # The name may absorb the sentence's own punctuation -- burnaby_water prints
+    # "payable to: City of Burnaby." -- and a municipal name never ends in one.
+    payee = " ".join(found.group(1).split()).rstrip(".,;:")
+    return None if not payee or _vendor_values_consistent(payee, value) else payee
+
+
+# A service-address label whose value sits in the next markdown table cell, e.g.
+# "<td>FOR SERVICE AT:</td> <td>7171 NO. 5 RD</td>". The capture must start with a street
+# number: without it the pattern also takes a column header ("Bill To") on diag_260106_0008.
+_LABELLED_SERVICE_CELL = re.compile(
+    r"(?i)<td>\s*(?:FOR\s+)?SERVICE\s+(?:AT|ADDRESS)\s*:?\s*</td>\s*<td>\s*(\d[^<]{4,80}?)\s*</td>"
+)
+
+# A Canadian postal code printed immediately after an address, optionally comma-separated.
+_TRAILING_POSTAL = re.compile(r"(?i)^\s*,?\s*([A-Z]\d[A-Z]\s*\d[A-Z]\d)\b")
+
+
+def labelled_service_address(text: str) -> Optional[str]:
+    """
+    The service address printed in its own labelled table cell, or None.
+
+    richmond_water prints "FOR SERVICE AT: | 7171 NO. 5 RD" and, separately, a mailing block
+    carrying the same street plus city and postal code. On 1 read in 12 both twins dip below
+    the bar together, agree on the mailing block, and the agreement boost writes the stitched
+    'RICHMOND BC V6Y 2V3' tail onto the service address. The labelled cell is unambiguous
+    about which of the two the document calls the service address.
+    """
+    if not text:
+        return None
+    found = _LABELLED_SERVICE_CELL.search(re.sub(r"\s+", " ", text))
+    return " ".join(found.group(1).split()) if found else None
+
+
+def address_trailing_postal(value: Any, text: str) -> Optional[str]:
+    """
+    ``value`` extended with the postal code the page prints immediately after it, or None.
+
+    warranty_260120_0062 prints the whole address as one run -- "...Richmond, BC V6V 3C3
+    (236) 777-4206". On 1 read in 12 both twins stop before the postal code and agree, so the
+    truncated form resolves. Only a postal code CONTIGUOUS with the value already written is
+    appended, so nothing is stitched together from elsewhere on the page.
+    """
+    if not isinstance(value, str) or not value.strip() or not text:
+        return None
+    flat = re.sub(r"\s+", " ", text)
+    current = " ".join(value.split())
+    at = flat.lower().find(current.lower())
+    if at < 0:
+        return None
+    following = _TRAILING_POSTAL.match(flat[at + len(current):])
+    if not following:
+        return None
+    postal = " ".join(following.group(1).split())
+    if postal.replace(" ", "").lower() in current.replace(" ", "").lower():
+        return None
+    return f"{current} {postal}"
 
 
 def _field_passes(value: Any, confidence: Optional[float], threshold: float) -> bool:

@@ -544,7 +544,19 @@ def evaluate(
     start_val, _start_conf, start_passed, _start_note, start_source = (
         resolutions[field_policy.BILLING_START_FINAL]
     )
-    if is_empty_value(start_val) or (not start_passed and start_source != "extract"):
+    # ...but a start date PRINTED on the page is never overwritten by arithmetic, however low
+    # its confidence. vancouver_water resolves both extract twins to a confident null on 4 runs
+    # in 12; the generate twin then reads the printed "Oct 1, 2025" at 0.51, and the derivation
+    # replaced it with 2025-10-07 computed from number_of_days. The count is not wrong -- 117 is
+    # the METERED consumption period, which on a water bill legitimately differs from the
+    # Oct 1 - Jan 31 billing span (the same asymmetry reconcile_number_of_days documents from
+    # the other side). Arithmetic over a metered count cannot beat the date the bill prints.
+    start_printed = not is_empty_value(start_val) and field_policy.date_corroborated_in_text(
+        start_val, collect_markdown(full)
+    ) is not None
+    if not start_printed and (
+        is_empty_value(start_val) or (not start_passed and start_source != "extract")
+    ):
         end_value, end_conf = resolutions[field_policy.BILLING_END_FINAL][:2]
         days_value, days_conf = resolutions[field_policy.DAYS_FINAL][:2]
         derived = field_policy.derive_billing_period_start(end_value, end_conf, days_value, days_conf)
@@ -694,6 +706,54 @@ def evaluate(
                 f"vendor_name {flat!r} accepted over {vendor_value!r}: the vendor's own "
                 "web or e-mail domain printed on the invoice corroborates it and not "
                 "the alternative"
+            )
+
+    # A municipal letterhead that makes its name locatable twice -- the full "City of Delta"
+    # and the bare "Delta" -- lets the extractor take the short parse at ~0.415 where it
+    # normally takes the full one at ~0.88. The generate twin slips the same way, so the two
+    # AGREE and the agreement boost promotes a sub-threshold pair to a passing resolution:
+    # twin disagreement cannot catch a perturbation that moves both twins together. The
+    # result is a plausible non-empty string, so no critical-field gate fires and the wrong
+    # vendor auto-writes. Measured at 3 reads in 768, all three under the two analyzer
+    # versions that edited the warranty prompt (docs/ai/warranty-prompt-retry-plan.md).
+    #
+    # Municipal only, and the resolved value must be the WHOLE bare place name -- together
+    # those keep a commercial "Delta Plumbing Ltd." on a page mentioning "City of Delta"
+    # untouched. bill_type is safe to gate on: it held 'municipal' at 0.856 on all three
+    # slip reads, so it does not fail in company with vendor_name.
+    # ...and the same bill's remittance block can capture the vendor outright. burnaby_water
+    # prints "By mail to Burnaby Revenue Services"; on 1 read in 12 both twins take the city's
+    # accounts-receivable department from there, agree (one is a tail of the other), and write
+    # it. The page also states who the cheque is payable to, which is the biller naming itself.
+    if bucket == field_policy.MUNICIPAL:
+        payee = field_policy.municipal_payee_override(
+            write_values[field_policy.VENDOR_FINAL], collect_markdown(full)
+        )
+        if payee is not None:
+            displaced = write_values[field_policy.VENDOR_FINAL]
+            resolutions[field_policy.VENDOR_FINAL] = (
+                payee, resolutions[field_policy.VENDOR_FINAL][1], True, None, "municipal_payee",
+            )
+            write_values[field_policy.VENDOR_FINAL] = payee
+            advisory.append(
+                f"vendor_name {payee!r} taken from the printed payable-to line, replacing "
+                f"{displaced!r}, which the bill does not name as the payee"
+            )
+
+    if bucket == field_policy.MUNICIPAL:
+        printed_name = field_policy.municipal_name_with_prefix(
+            write_values[field_policy.VENDOR_FINAL], collect_markdown(full)
+        )
+        if printed_name is not None:
+            previous_name = write_values[field_policy.VENDOR_FINAL]
+            resolutions[field_policy.VENDOR_FINAL] = (
+                printed_name, resolutions[field_policy.VENDOR_FINAL][1], True, None,
+                "municipal_prefix_restored",
+            )
+            write_values[field_policy.VENDOR_FINAL] = printed_name
+            advisory.append(
+                f"vendor_name {printed_name!r} restored from the printed municipal name, "
+                f"replacing {previous_name!r}, which is only its bare place name"
             )
 
     # Corroborated invoice-date rescue: the extract twin intermittently returns nothing
@@ -873,6 +933,45 @@ def evaluate(
             advisory.append(
                 f"service_address {premises!r} read from the licence 'Locations' column: "
                 "the notice carries no service-address block"
+            )
+
+    # Both twins can dip below the bar together and agree on a DIFFERENT reading of the same
+    # address -- the third instance of correlated twin failure in this file. The page settles
+    # it two ways, in order of authority.
+    #
+    # 1. A labelled "FOR SERVICE AT:" cell says which block the document itself calls the
+    #    service address. richmond_water prints the street there and the street + city +
+    #    postal in a separate mailing block; on 1 read in 12 the pair agreed on the mailing
+    #    block and stitched its tail onto the service address.
+    service_value = write_values[field_policy.SERVICE_ADDRESS_FINAL]
+    if service_value:
+        labelled = field_policy.labelled_service_address(collect_markdown(full))
+        if labelled and labelled.lower() != str(service_value).strip().lower():
+            resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+                labelled, resolutions[field_policy.SERVICE_ADDRESS_FINAL][1], True, None,
+                "service_label",
+            )
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = labelled
+            advisory.append(
+                f"service_address {labelled!r} taken from the labelled service cell, "
+                f"replacing {service_value!r}, which is not what the label names"
+            )
+
+    # 2. Otherwise, restore a postal code the pair dropped -- but only one printed CONTIGUOUSLY
+    #    with the address already written, so nothing is assembled from elsewhere on the page.
+    #    warranty_260120_0062 prints one continuous run and both twins stopped short of it.
+    service_value = write_values[field_policy.SERVICE_ADDRESS_FINAL]
+    if service_value:
+        completed = field_policy.address_trailing_postal(service_value, collect_markdown(full))
+        if completed is not None:
+            resolutions[field_policy.SERVICE_ADDRESS_FINAL] = (
+                completed, resolutions[field_policy.SERVICE_ADDRESS_FINAL][1], True, None,
+                "postal_completed",
+            )
+            write_values[field_policy.SERVICE_ADDRESS_FINAL] = completed
+            advisory.append(
+                f"service_address completed to {completed!r}: the postal code is printed "
+                "immediately after the address the twins returned"
             )
 
     # Sectioned-bill GST. A utility bill that splits its charges into sections prints a

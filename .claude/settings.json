@@ -20,7 +20,11 @@
       "Bash(./.venv/Scripts/python.exe __TRACKED_VAR__/e2e.py tests/pre-commit-test)",
       "PowerShell(Remove-Item \"$env:TEMP\\\\nb_fnkey.txt\" -Force -ErrorAction SilentlyContinue; if \\(Test-Path \"$env:TEMP\\\\nb_fnkey.txt\"\\) { \"still present\" } else { \"function key file removed\" })",
       "Read(//c/Users/georg/.claude/projects/c--Users-georg-dev-Noble-Homes-Invoice-Extractor-noble-invoice-process/memory/**)",
-      "Bash(printf '%s\\\\n' '- [Warranty disclaimer-suppression reverted]\\(warranty-disclaimer-suppression-reverted.md\\) — prompt worked 10/10 but the corpus went red on surrey_water; measured evidence + the 0.566-twin fragility behind it.')"
+      "Bash(printf '%s\\\\n' '- [Warranty disclaimer-suppression reverted]\\(warranty-disclaimer-suppression-reverted.md\\) — prompt worked 10/10 but the corpus went red on surrey_water; measured evidence + the 0.566-twin fragility behind it.')",
+      "Bash(./.venv/Scripts/python.exe __TRACKED_VAR__/snap.py __TRACKED_VAR__/A_after.json)",
+      "Bash(./.venv/Scripts/python.exe __TRACKED_VAR__/snap.py __TRACKED_VAR__/A_before.json)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_field_policy_gates.py::test_municipal_vendor_name_restored_from_its_printed_prefix -q)",
+      "Bash(./.venv/Scripts/python.exe scripts/regress.py --replicates 12 --load-local-settings)"
     ]
   }
 }
