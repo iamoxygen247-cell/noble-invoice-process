@@ -7,7 +7,8 @@
       "PowerShell($APP = \"func-invoiceprocess-westus\")",
       "Read(//c/Users/georg/AppData/Local/az-truststore/**)",
       "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe scripts\\\\regress.py --force --replicates 3 --load-local-settings 2>&1)",
-      "PowerShell(powershell -ExecutionPolicy Bypass -File scripts\\\\hooks\\\\install.ps1)"
+      "PowerShell(powershell -ExecutionPolicy Bypass -File scripts\\\\hooks\\\\install.ps1)",
+      "Bash(./.venv/Scripts/python.exe scripts/regress.py --all-cached --load-local-settings)"
     ]
   }
 }
