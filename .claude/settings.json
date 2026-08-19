@@ -26,7 +26,9 @@
       "Bash(git ls-remote *)",
       "Bash(git stash *)",
       "Bash(git merge *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(exit 1)",
+      "Bash(git branch *)"
     ]
   }
 }
