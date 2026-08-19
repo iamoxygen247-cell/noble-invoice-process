@@ -341,6 +341,43 @@ Each retry: edit → commit → **full live corpus pass** (not `--all-cached`) �
 `delta_water` + `burnaby_water` → stamp → `create_analyzer.py --load-local-settings`. Stage D
 changes no code, so no function-app deploy should be needed.
 
+### Blast-radius sweep — was `vendor_name` the only casualty? (2026-08-19, 0 CU calls)
+
+Compared every field across the regime boundary using the cache alone: `cd1e585c2f1f`
+(08-18, 450 reads, 29 docs) vs `42db7d9eaee4` (08-19, 388 reads, 29 docs).
+
+**Only `vendor_name_extract` degraded** — unstable on 5 docs before, 9 after. Every other field
+held flat or improved on both instability and empty rate. The narrative fields specifically:
+
+| field | unstable docs before → after | empty rate before → after |
+|---|---|---|
+| `warranty` | 2 → 2 | 93.8 % → 91.2 % |
+| `recommendation` | 4 → 4 | 86.7 % → 86.3 % |
+| `diagnosis_solution` | 14 → 13 | 53.3 % → 53.4 % |
+| `recommendation_zh_hant` | 4 → 4 | 87.6 % → 87.6 % |
+| `diagnosis_solution_zh_hant` | 13 → 12 | 58.4 % → 58.8 % |
+
+Their *text* differs run to run, but that is ordinary paraphrase variance in a generative field
+and reads as equivalent quality on inspection — no drop in coverage or specificity.
+
+**The four newly unstable documents are exactly the four `vendor_name` defects stage A fixed**,
+and all four were rock-solid before:
+
+| document | before (n=14) | after (n=12) | writeValues after the guard |
+|---|---|---|---|
+| `delta_water` | `City of Delta` 14/14 | `Delta` on 6 | `City of Delta` 12/12 |
+| `burnaby_water` | `City of Burnaby` 14/14 | `Revenue Services` on 1 | `City of Burnaby` 12/12 |
+| `business_license` | `CITY OF VANCOUVER` 14/14 | casing flip on 1 | `City of Vancouver` 12/12 |
+| `recommend_241105_1061` | `ROMA Heating & Cooling Ltd` 14/14 | `HEATING & COOLING LTD` on 4 | `ROMA Heating & Cooling` 12/12 |
+
+**This reframes stage A's finding.** Those defects were recorded as long-standing coin flips that
+3 replicates had been hiding. They were not — they were **14/14 stable the day before** and are
+new with the regime change. The "a green corpus can be a lucky draw" reading was wrong here; the
+guards were built the same day the defects appeared, which is why they landed in time.
+
+**Conclusion: the blast radius is one field, and it is fully guarded.** No action needed on the
+narrative fields.
+
 ## 5. Standing cautions
 
 - **Never bundle a code fix with a prompt change.** It destroys attribution — the exact failure

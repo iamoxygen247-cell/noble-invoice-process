@@ -123,6 +123,16 @@ coverage from the unit suite alone. A two-tier net guards them — offline contr
 are gitignored). Full description: `docs/ai/troubleshooting.md` → "Verifying analyzer /
 prompt changes".
 
+**Attributing a regression to an analyzer edit requires a concurrent control.** The cache rolls
+each analyzer version exactly once, on the day it is created, so "which definition" and "which
+day" are the same variable — and CU's own behaviour has been observed to change underneath a
+fixed definition (2026-08-18/19: municipal `vendor_name` went from 0 slips in 66 reads to ~40 %,
+on every definition tested, including ones predating the edit that was blamed). Never compare a
+new version against cached numbers from an older one. Re-roll the **old** definition the same
+day, beside the new one, at n ≥ 12 per arm. A red corpus can be the service moving rather than
+your diff. Full write-up: `docs/ai/troubleshooting.md` → "Analyzer version is confounded with
+wall-clock time".
+
 **Standing rule — the corpus must track every change.** Every bug fix that has a
 reproduction PDF must grow the corpus. When you fix an extraction/routing bug and a sample
 PDF reproduces it, add that PDF as a permanent regression anchor in the same change:
