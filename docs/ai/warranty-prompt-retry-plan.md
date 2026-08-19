@@ -79,11 +79,40 @@ Those two versions hold ~6 % of the reads and 100 % of both anomalies: **p ≈ 3
 
 | stage | what | status | sha |
 |---|---|---|---|
-| **A** | `City of` guard — code-side, ships to prod | ☐ not started | |
-| **B** | Attribution standard recorded in `troubleshooting.md` | ☐ not started | |
+| **A** | `City of` guard + four more repairs — code-side | ☑ **done, deployed 2026-08-19** | `ed9b045` |
+| **B** | Attribution standard recorded in `troubleshooting.md` | ☑ done | `ed9b045` |
 | **C** | Trigger experiment — scratch analyzer, nothing ships | ☐ not started | |
 | **D1** | Retry C4 character limits | ☐ blocked on C | |
 | **D2** | Retry warranty disclaimer wording | ☐ blocked on C | |
+
+### What stage A actually shipped
+
+The live `--replicates 12` roll (171 fresh CU calls) took every document from 3 replicates to 12
+and **exposed four more defects that 3 replicates had been hiding** — the "a green corpus can be
+a lucky draw" effect, measured. All five were fixed together:
+
+| defect | rate | cause | fix |
+|---|---|---|---|
+| `delta_water` / `burnaby_water` `vendor_name` → bare place name | 6/12, 1/12 | two-parse letterhead | `municipal_name_with_prefix` |
+| `vancouver_water.billing_period_start_date` → `2025-10-07` | 4/12 | A4 derivation overwrote a **printed** date using a *metered* day count (117) that legitimately differs from the Oct 1 – Jan 31 span | a printed start is never overwritten by arithmetic |
+| `recommend_241105_1061.vendor_name` → `HEATING & COOLING LTD` | 1/12 | extract lost the leading brand word; confidence tiebreak preferred the fragment | extract that is a strict **tail** of generate loses |
+| `burnaby_water.vendor_name` → `Revenue Services` | 1/12 | both twins read the remittance block | `municipal_payee_override` — the printed "payable to" line |
+| `richmond_water` / `warranty_260120_0062` `service_address` | 1/12 each | twins agreed on the mailing block / stopped before the postal code | `labelled_service_address`, `address_trailing_postal` |
+
+Verification: **112 tests** (from 108), corpus **611/611** on 388 scored reads, and a replay of all
+**2,635 cached decisions** showing **20 changed — every one a correction, zero routing changes**.
+
+### Two findings that change how to read the corpus
+
+**1. The test analyzer and prod do not behave the same.** `delta_water.vendor_name` was wrong
+**6 times in 12** on `generalinvoicetest`, but **21/21 correct** on the prod `generalinvoice`
+analyzer. The two are provisioned from identical JSON. So a corpus failure rate describes the
+*test* analyzer and **does not transfer to production** — quote it as such.
+
+**2. The new guards are exercised offline only.** None has fired in production, because the
+defects are not reproducing there. They are proven against the 20 cached reads where they do
+fire. Deployment itself is confirmed by the publish log (17:43:04Z) against a clean tree at
+`ed9b045`, not by observing a repair live.
 
 ### Stage A — the guard
 
@@ -207,10 +236,24 @@ changes no code, so no function-app deploy should be needed.
 
 ## 6. Open questions
 
-- **The agreement boost can promote two sub-threshold twins that failed the same way.** The
-  `City of` guard fixes this instance; the general hole is untouched and could affect any twinned
-  field. How often correlated twin failure occurs elsewhere has **not** been measured. Worth its
-  own investigation, not part of these stages.
+- **Correlated twin failure — no longer a hypothesis, now a measured pattern.** The agreement
+  boost promotes two sub-threshold twins that failed the *same* way. Stage A found this to be the
+  cause of **five of the five** defects fixed, across **four different fields**:
+
+  | document | field | twins |
+  |---|---|---|
+  | `delta_water`, `burnaby_water` | `vendor_name` | 0.416 / 0.343, 0.415 / 0.341 |
+  | `recommend_241105_1061` | `vendor_name` | 0.492 / 0.432 |
+  | `burnaby_water` | `vendor_name` | 0.537 / 0.37 |
+  | `richmond_water` | `service_address` | 0.609 / 0.662 |
+  | `warranty_260120_0062` | `service_address` | 0.669 / 0.812 |
+
+  Twin disagreement is the pipeline's main safeguard against a bad read, and it is **structurally
+  blind** to any perturbation that moves both twins together. Every fix so far is a page-anchored
+  corroboration bolted on afterwards — five patches for one hole. A sixth patch is not the
+  answer; the resolution rule itself deserves review (e.g. whether agreement should confer a pass
+  when *both* twins sit far below threshold, or only corroborate a value one twin already
+  supports). **Not scheduled** — worth its own investigation.
 - **Why `warranty` specifically** is not observable from cached data — only two analyzer versions
   have ever edited it, so "warranty's content" and "the narrative block" cannot be separated
   without stage C.

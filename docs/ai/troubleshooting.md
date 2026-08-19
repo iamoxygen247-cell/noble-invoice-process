@@ -2202,3 +2202,55 @@ single failure as a broken configuration, and do not read a single success as a 
 **Also flaky:** `az functionapp show` intermittently dies with `ConnectionResetError 10054`
 mid-handshake while `az functionapp function list` succeeds seconds later. Same known reset;
 retry once, then stop chasing it and verify another way.
+
+---
+
+## Correlated twin failure: the agreement boost passes two bad reads that agree
+
+**The single most productive bug shape in this corpus.** On 2026-08-19 it turned out to be the
+cause of **five** separate defects across **four** fields, all found in one 12-replicate roll.
+
+**Mechanism.** `resolve_twin` passes a field when the extract clears the threshold *or* when the
+two twins agree -- corroboration, on the reasoning that two independent reads landing on the same
+value is evidence even when neither is individually confident. That reasoning fails when a
+perturbation moves **both** twins the same way. They agree on the *wrong* value, the boost
+promotes a sub-threshold pair to a passing resolution, and because the result is a plausible
+non-empty string no critical-field gate fires and it auto-writes.
+
+| document | field | extract / generate | wrote |
+|---|---|---|---|
+| `delta_water`, `burnaby_water` | `vendor_name` | 0.416 / 0.343 | bare place name |
+| `recommend_241105_1061` | `vendor_name` | 0.492 / 0.432 | `HEATING & COOLING LTD` |
+| `burnaby_water` | `vendor_name` | 0.537 / 0.37 | `Revenue Services` |
+| `richmond_water` | `service_address` | 0.609 / 0.662 | the mailing block |
+| `warranty_260120_0062` | `service_address` | 0.669 / 0.812 | postal code dropped |
+
+**Every fix so far is a page-anchored corroboration bolted on afterwards** -- read the label, the
+payable-to line, the contiguous postal code. Five patches for one hole. When you meet the sixth,
+consider fixing the resolution rule instead: should agreement *confer a pass* when both twins sit
+far below threshold, or only *corroborate* a value one twin already supports?
+
+**Diagnostic signature:** the decision's `resolutions[field]["source"] == "agreement"` with both
+raw twin confidences under `THRESHOLD`. Worth grepping for whenever a stable field goes odd.
+
+---
+
+## A corpus failure rate describes `generalinvoicetest`, not production
+
+**Symptom (measured 2026-08-19).** `delta_water.vendor_name` was wrong on **6 of 12** cached
+reads, and that number was quoted as the production impact. Sending the same PDF to the deployed
+function returned the correct value **21 times out of 21** (p < 0.01 against a 50% rate).
+
+**Cause.** `regress.py` provisions its own analyzer, `generalinvoicetest`, from the same JSON that
+prod's `generalinvoice` is built from. Identical content, **different analyzer instances**, and
+they do not behave identically on a borderline document.
+
+**Lesson.** The corpus is the right tool for "did my code change break anything" -- it replays
+fixed inputs deterministically. It is **not** a measurement of production incidence. Never quote
+a corpus rate as a live failure rate without checking prod directly; the check is cheap (a few
+calls to `/api/process-invoice` with a corpus PDF).
+
+**Corollary for verifying a deploy:** a guard that only fires on a defect cannot be confirmed live
+if the defect is not reproducing. Confirm the deploy from the publish log (`The deployment was
+successful!`) against a clean tree, and treat the live calls as a health check rather than proof
+the new code is running.
