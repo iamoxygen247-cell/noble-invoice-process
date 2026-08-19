@@ -1832,6 +1832,32 @@ def test_number_of_days_reconciled_against_its_period():
     check("metered count survives end to end", r["writeValues"]["number_of_days"] == 83,
           str(r["writeValues"].get("number_of_days")))
 
+    # bug_260601_0018 r6: a commercial invoice printing NEITHER a period nor a day count.
+    # Both extract twins return a confident null; the generate twin offers end 2026-06-30 at
+    # 0.516 and count 1 at 0.238 -- both below the bar. An unread period must not vouch for
+    # an ungrounded count, or one guess licenses the other and the reconciliation below
+    # promotes the invented 1 to a fully-invented 30.
+    r = ev(commercial_fields(
+        billing_period_end_date_generate=fdate("2026-06-30", 0.516),
+        number_of_days_generate=fint(1, 0.238),
+    ))
+    check("below-bar period end does not license an ungrounded count",
+          r["writeValues"]["number_of_days"] == "", str(r["writeValues"].get("number_of_days")))
+    check("and the reconciliation therefore never fires",
+          not any("taken from the billing period" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # ...but a period end that PASSED still licenses a generate-only count. bug_260609_0031
+    # reads 19 from the generate twin alone on 2 runs in 3, corroborated by its printed
+    # period -- that count is real and must survive.
+    r = ev(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-05-08", 0.95),
+        billing_period_end_date_extract=fdate("2026-05-26", 0.95),
+        number_of_days_generate=fint(19, 0.60),
+    ))
+    check("passed period end still licenses a generate-only count",
+          r["writeValues"]["number_of_days"] == 19, str(r["writeValues"].get("number_of_days")))
+
 
 def test_invoice_date_read_from_its_printed_label():
     print("\n[gates: both date twins empty -> read the date off its printed label]")

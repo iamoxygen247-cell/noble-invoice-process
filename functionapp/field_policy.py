@@ -1546,10 +1546,19 @@ def build_write_values(
     # DAYS column its extract twin reads 8/8 (0.74-0.99) while its period end -- a meter
     # reading date supplied by the generate twin -- intermittently fails to resolve. A
     # printed count must not be discarded because a *different* field had a bad run.
+    # ...AND the period end date must itself have been read with confidence. A below-bar
+    # generate-only end date is not a period -- it is the same reasoning twin guessing, and
+    # letting it vouch for the count lets one guess license another: bug_260601_0018 prints
+    # no day count and no period, yet on 1 read in 90 the twin offered end 2026-06-30 at
+    # 0.516 and count 1 at 0.238, and the bare "is the field non-empty?" test passed them
+    # both through on a commercial invoice that has neither.
     days = _days_int(write[DAYS_FINAL])
     days_grounded = resolve_field(DAYS_FINAL, parsed, threshold)[4] in ("extract", "agreement")
+    period_read = bool(write[BILLING_END_FINAL]) and resolve_field(
+        BILLING_END_FINAL, parsed, threshold
+    )[2]
     write[DAYS_FINAL] = (
-        days if (days is not None and (write[BILLING_END_FINAL] or days_grounded)) else ""
+        days if (days is not None and (period_read or days_grounded)) else ""
     )
 
     # The count is reconciled against the period dates in gates.evaluate, NOT here: the

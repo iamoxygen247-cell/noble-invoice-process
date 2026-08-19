@@ -1729,6 +1729,41 @@ confidence alone cannot filter the invented values (one landed at 0.984). It fee
 utility-sharing math and the billing-start derivation, where the standing policy is already
 "blank beats a substituted value". Twin **agreement** still writes a sub-threshold count.
 
+### The same invented `1` came back through the gate's own precondition (2026-08-18)
+
+The reliability gate above was later re-keyed from confidence onto the period — *"is there a
+period?" separates the two cases cleanly* — because confidence alone could not (one invented
+count landed at 0.984, while a legitimate generate-only count sat below the bar). The premise
+is right. The **test** was too loose: it asked whether `write[BILLING_END_FINAL]` was
+non-empty, and that write value is itself informational, so it carries below-bar values.
+
+On `bug_260601_0018` — a commercial invoice printing neither a period nor a day count — one
+read in 90 had the generate twin offer end `2026-06-30` at **0.516** and count `1` at
+**0.238**, both against confident-null extract twins (0.876). The unread end date satisfied
+"is there a period?", so **one guess licensed the other**, and the A2/A4 machinery then did
+its job on poisoned input: derive start = end − 1 + 1 → a 1-day period → implausible →
+re-read the printed range → `2026-06-01..2026-06-30` → `reconcile_number_of_days` promoted the
+invented `1` to a fully-invented **30**. Routed `HAPPY_PATH_CANDIDATE`, so it auto-wrote.
+
+**Fix:** the precondition now also requires the end date's own resolution to have `passed`.
+One clause, in the same expression.
+
+**Reusable lesson — a below-bar value must never serve as another field's precondition.**
+Informational fields are written unconditionally by design; that makes their *write value* a
+statement about what CU offered, not about what the page says. When one field gates another,
+read the **resolution** (`passed`), never the write value's emptiness. The same shape produced
+the `invoice_date` print-timestamp bug and the original invented `1`.
+
+**Two verification lessons, both earned here:**
+
+- **`--replicates 3` and `--all-cached` are different tests.** The run that declared this
+  corpus green scored the first 3 replicates per doc and passed 611/611. The defect sits at
+  **r6**. Run `--all-cached` before calling anything green — same cost, zero CU calls.
+- **Diff every cached decision, not just the corpus.** The 611 assertions cover what sidecars
+  pin; replaying all **2,327** cached decisions across every analyzer version is what proved
+  the one-clause change touched exactly the 2 intended decisions, kept all 46 legitimate
+  reconciliations, and left `bug_260609_0031`'s generate-only 19 at 101/101.
+
 ---
 
 ## `260629_0010` asserted a routing decision that was always a coin-flip
