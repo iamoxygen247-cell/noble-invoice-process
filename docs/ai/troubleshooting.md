@@ -2061,6 +2061,16 @@ to the CRLF bytes. Before assuming a prompt change busted the cache, check the l
 
 ## Editing only the narrative character limits damaged `vendor_name` and `account_number`
 
+> **⚠ REFUTED 2026-08-19 by a controlled experiment. Kept for the reasoning error.**
+> Three analyzer definitions — pre-warranty-edit, current HEAD, and the reverted disclaimer
+> wording — were rolled at n = 24 each on a scratch analyzer the same afternoon. All slipped
+> equally (10/24, 12/24, 14/24; p = 0.39 and 0.19), and live prod matched at 8/24. **The prompt
+> edits had no effect.** What actually happened is a step change in CU's own behaviour around
+> 2026-08-18/19, from ~0 % to ~40 % on these documents, for every definition. The versions blamed
+> below were simply the ones under test when it happened. Full write-up:
+> `docs/ai/warranty-prompt-retry-plan.md`. See also "Analyzer version is confounded with
+> wall-clock time" below.
+
 **2026-08-18.** C4 asked for all five narrative limits to be set to 500. The edit touched
 nothing but the `Aim for N characters...` sentence inside five `description` strings — five
 lines, JSON otherwise byte-identical. The first live 3-replicate roll of the new analyzer broke
@@ -2078,9 +2088,11 @@ generate-only narrative fields moved an extract twin on an unrelated municipal b
 
 **Lessons, both re-learned rather than new:**
 
-- Treat ANY change to `analyzers/*.json` as capable of moving ANY field, however local the edit
-  looks. Budget a full live corpus roll for it, and never assume a "cosmetic" prompt edit is
-  cheap.
+- ~~Treat ANY change to `analyzers/*.json` as capable of moving ANY field, however local the edit
+  looks.~~ **This is the claim that was refuted** — it rested entirely on the confounded evidence
+  above. Budgeting a full live corpus roll for any analyzer change is still right, but for the
+  ordinary reason (a prompt edit can change the field it edits), not because of cross-field
+  coupling. **A concurrent control arm is now required** to attribute anything to an edit.
 - Prefer code-side fixes. Every defect fixed in this session that landed — A2, A3, A4, B1, B5,
   B6b, B6c — was code-side, verified offline against 1,749 cached decisions, and needed no
   analyzer push. The one prompt change attempted was reverted.
@@ -2241,16 +2253,75 @@ raw twin confidences under `THRESHOLD`. Worth grepping for whenever a stable fie
 reads, and that number was quoted as the production impact. Sending the same PDF to the deployed
 function returned the correct value **21 times out of 21** (p < 0.01 against a 50% rate).
 
-**Cause.** `regress.py` provisions its own analyzer, `generalinvoicetest`, from the same JSON that
-prod's `generalinvoice` is built from. Identical content, **different analyzer instances**, and
-they do not behave identically on a borderline document.
+**Cause — corrected 2026-08-19, the original diagnosis below was wrong.** The two numbers measure
+**different things**. The corpus reports the raw `vendor_name_extract` twin; `/api/process-invoice`
+returns `writeValues` — i.e. the value *after* the stage A `municipal_name_with_prefix` guard has
+repaired it. The 21/21 was the guard working, not the analyzer behaving better.
 
-**Lesson.** The corpus is the right tool for "did my code change break anything" -- it replays
-fixed inputs deterministically. It is **not** a measurement of production incidence. Never quote
-a corpus rate as a live failure rate without checking prod directly; the check is cheap (a few
-calls to `/api/process-invoice` with a corpus PDF).
+Measured directly on the prod `generalinvoice` analyzer (24 read-only analyze calls, no push):
+**8/24 raw extract slips** — statistically identical to `generalinvoicetest` at 12/24 (p = 0.38).
+The instances behave the same. Replaying all 96 measured reads through `gates.evaluate` gives
+**0 wrong `vendor_name`, 96/96 repaired**.
+
+~~Original diagnosis: `regress.py` provisions its own analyzer, `generalinvoicetest`, and identical
+content on different **analyzer instances** does not behave identically.~~ Instance identity was
+never tested against a like-for-like measurement; it does not hold up.
+
+**Lesson — sharper than the original.** Before comparing two rates, check they measure the same
+layer. A corpus rate is a **pre-guard** rate; the deployed endpoint reports a **post-guard** rate.
+Comparing them measures your own guards and tells you nothing about the analyzer. To compare
+analyzers, call the analyzer directly and read the raw twins.
 
 **Corollary for verifying a deploy:** a guard that only fires on a defect cannot be confirmed live
 if the defect is not reproducing. Confirm the deploy from the publish log (`The deployment was
 successful!`) against a clean tree, and treat the live calls as a health check rather than proof
 the new code is running.
+
+---
+
+## Analyzer version is confounded with wall-clock time — the cache cannot attribute a regression
+
+**2026-08-19.** Two `warranty` prompt edits were each reverted after an unrelated field regressed.
+The evidence looked overwhelming: `delta_water.vendor_name` returned `City of Delta` on **66 of 66**
+cached reads across 14 analyzer definitions from 07-23 to 08-18, then slipped on exactly the two
+warranty-touching versions. That is p ≈ 3×10⁻⁴, and it was wrong.
+
+**Cause.** In this repo *an analyzer version is only ever rolled on the day it is created.* Nobody
+re-rolls a superseded definition. So "which definition" and "which day" are the **same variable**,
+and any drift in CU's own behaviour is indistinguishable from an effect of whatever edit was under
+test that day.
+
+A controlled experiment settled it — three definitions (pre-warranty `3c403ce`, HEAD `54a4669`,
+reverted disclaimer `3af5354`) rolled at n = 24 each on one scratch analyzer, same afternoon:
+
+| definition | pooled extract slips |
+|---|---|
+| pre-warranty (predates both edits) | 10 / 24 |
+| HEAD | 12 / 24 |
+| the reverted disclaimer wording | 14 / 24 |
+| live prod `generalinvoice` | 8 / 24 |
+
+No difference (p = 0.39, 0.19). **CU stepped from ~0 % to ~40 % on these documents around
+08-18/19, under a fixed definition.** The edits were bystanders.
+
+**The trap is subtle:** the historical baseline was *real*. 0 in 66 is not sampling luck — at 40 %
+it is ~10⁻¹⁴. The old regime genuinely existed. What was invalid was using it as a **control** for
+a measurement taken weeks later.
+
+**Rules.**
+
+1. **Every arm needs a concurrent control.** To attribute anything to an analyzer edit, re-roll the
+   *old* definition the same day, beside the new one. Never compare against cached numbers.
+2. **Cached history records what CU did *then*.** It is a regression net for *your code*, not a
+   fixed yardstick for the service. The service has now been observed to move underneath it.
+3. **Verify the push actually swapped the definition.** After `begin_create_analyzer(...,
+   allow_replace=True)`, fetch the analyzer back and compare a description length against the local
+   file. Otherwise a null result cannot be told from a silent no-op.
+4. Corollary to "a green corpus can be a lucky draw": a **red** corpus can equally be the service
+   moving. Investigate before attributing it to the diff in front of you.
+
+**What saved production.** The stage A `municipal_name_with_prefix` guard had shipped hours
+earlier. Replaying all 96 measured reads — the 24 live prod reads included — through
+`gates.evaluate` gives **0 wrong `vendor_name`, 96/96 repaired, all `HAPPY_PATH_CANDIDATE`**. The
+code-side guard absorbed a service-side regression that no prompt work would have caught. This is
+the strongest argument yet for the standing "prefer code-side fixes" rule.
