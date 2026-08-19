@@ -6,6 +6,21 @@ Update it as each stage completes; record the commit sha in the checklist.
 
 Opened 2026-08-19. Source analysis: all **2,464 cached CU responses across 30 analyzer versions**.
 
+> ### ⚠ 2026-08-19 — the trigger hypothesis was measured and is FALSE
+>
+> Stage C ran three arms at n = 24 each on a scratch analyzer. **No arm differs from any other.**
+> Editing the `warranty` description does not move the `vendor_name` parse — the pre-warranty
+> definition slips just as often as the edited ones.
+>
+> The historical "0 slips" baseline was **real**, not a sampling artifact: 0 in 66 `delta_water`
+> reads from 2026-07-23 to 2026-08-18. What actually happened is a **step change in CU's
+> behaviour around 2026-08-18/19** — the rate went from ~0 % to ~42 % for *every* definition. The
+> two edited versions were simply the ones being tested when it happened. See §4 *Stage C — the
+> confound*.
+>
+> **Both reverted prompt edits are exonerated.** Sections 2 and 3 below are kept for the record
+> with their withdrawn claims marked; read §4 *Stage C — results* for what is actually true.
+
 ---
 
 ## 1. The two failed attempts
@@ -43,7 +58,11 @@ burnaby_water r1      extract 'Burnaby'/0.415  generate 'Burnaby'/0.341
 
 Both twins sit far below the 0.73 threshold, but they **slip together and agree**, and the
 agreement boost promotes the pair to a passing resolution. Twin disagreement — the main safeguard
-against a bad read — cannot protect against a perturbation that moves both twins the same way.
+against a bad read — cannot protect against a failure that moves both twins the same way.
+
+**This half of the root cause survived stage C and is confirmed.** What did *not* survive is the
+claim that a prompt edit is what perturbs it — see the banner above. There is no perturbation:
+the bare parse is chosen ~42 % of the time on these two documents, always, on every version.
 
 It is **not** a classification effect: `bill_type` stays `'municipal'` at 0.856 on every read,
 slips included. That hypothesis was tested and discarded.
@@ -52,7 +71,12 @@ slips included. That hypothesis was tested and discarded.
 string, so no gate fires — it routes `HAPPY_PATH_CANDIDATE` and auto-writes to Dynamics
 unreviewed.
 
-## 3. Evidence
+## 3. Evidence — ⚠ WITHDRAWN 2026-08-19
+
+**This section's conclusion is wrong.** It is preserved because the *reasoning error* is worth
+keeping: it is the same thin-sampling error the stage B standard exists to prevent, committed in
+the very analysis that motivated stage B. What follows was the argument; the refutation is after
+it.
 
 Two independent fields are anomalous in **exactly** the two warranty-touching analyzer versions
 and nowhere else.
@@ -72,8 +96,34 @@ write-value level by the shipped A5 rescue, so visible only in the raw twins.
 Those two versions hold ~6 % of the reads and 100 % of both anomalies: **p ≈ 3×10⁻⁴**.
 
 > **Method note.** Analysing `burnaby_water` alone gives p = 0.037 and the wrong conclusion
-> ("noise"). Pooling the two incidents gives p ≈ 3×10⁻⁴ and the right one. See the attribution
-> standard in stage B.
+> ("noise"). Pooling the two incidents gives p ≈ 3×10⁻⁴. See the attribution standard in stage B.
+
+### Why that p-value was wrong — analyzer version is confounded with wall-clock time
+
+The arithmetic was right and the baseline was **real**. `delta_water` genuinely returned
+`City of Delta` on **66 of 66 reads** between 2026-07-23 and 2026-08-18, across 14 analyzer
+definitions — one of them sampled 14 times on its own. At a 42 % slip rate that run of luck has
+probability ~10⁻¹⁴. The old regime existed.
+
+The error is **confounding**, not sampling. In this repo *an analyzer version is only ever rolled
+on the day it is created.* Nobody re-rolls a superseded definition. So in the cache,
+"which definition" and "which day" are the same variable, and any change in CU's own behaviour
+over time is indistinguishable from an effect of the edit that happened to be under test that day.
+
+| | measured | when |
+|---|---|---|
+| 14 older definitions | 0 slips / 66 reads | 2026-07-23 → 08-18 |
+| C4 (`67b315677a27`) | 2 slips / 3 reads | 2026-08-18 |
+| warranty rewrite (`bc708c840f30`) | 1 slip / 3 (`burnaby`) | 2026-08-18 |
+| HEAD (`42db7d9eaee4`), `generalinvoicetest` | 6 slips / 12 | 2026-08-19 |
+| HEAD, pre-warranty, and reverted-wording on scratch | 10–14 slips / 24 each | 2026-08-19 |
+
+Read down that column: the rate rises with the **date**, and on 08-19 it is ~42 % for
+*definitions that predate the warranty edit entirely*. The edits were bystanders.
+
+**Lesson, generalised:** a cache that rolls each version exactly once cannot attribute anything to
+a version. It needs a **concurrent control** — the old definition re-rolled *today*, beside the
+new one. That is precisely what arm 0 was, and it is the only reason this was catchable.
 
 ## 4. Stage checklist
 
@@ -81,9 +131,9 @@ Those two versions hold ~6 % of the reads and 100 % of both anomalies: **p ≈ 3
 |---|---|---|---|
 | **A** | `City of` guard + four more repairs — code-side | ☑ **done, deployed 2026-08-19** | `ed9b045` |
 | **B** | Attribution standard recorded in `troubleshooting.md` | ☑ done | `ed9b045` |
-| **C** | Trigger experiment — scratch analyzer, nothing ships | ☐ not started | |
-| **D1** | Retry C4 character limits | ☐ blocked on C | |
-| **D2** | Retry warranty disclaimer wording | ☐ blocked on C | |
+| **C** | Trigger experiment — scratch analyzer, nothing ships | ☑ **done 2026-08-19 — result: NO trigger exists** | n/a (scratch only) |
+| **D1** | Retry C4 character limits | ☐ **unblocked** by C — proceed under normal verification | |
+| **D2** | Retry warranty disclaimer wording | ☐ **unblocked** by C — but see the `surrey_water` caveat in §4 | |
 
 ### What stage A actually shipped
 
@@ -195,23 +245,97 @@ Power: at the observed effect size (C4 gave 2 of 3 on `delta_water`), n = 12 det
 rate ~93 % of the time. **If an arm returns 0 slips, extend it** — 0 of 12 still admits rates up
 to ~22 %.
 
-#### C results — empty until measured
+#### The design was broken, and the control arm is what exposed it
 
-| arm | `delta_water` slips / n | `burnaby_water` slips / n | notes |
-|---|---|---|---|
-| 1 · control | / | / | |
-| 2 · warranty-only | / | / | |
-| 3 · other-narrative | / | / | |
-| 4 · non-narrative | / | / | |
+Run as designed, **arm 1 slipped 6/12 on `delta_water` and 6/12 on `burnaby_water` — with no edit
+applied at all.** The "control" was supposed to establish a near-zero baseline against which an
+edited arm would stand out. Instead it reproduced the defect at will.
+
+The reason: **commit `54a4669` "warranty modification" — current HEAD, and current production —
+*is* the first warranty attempt, and it was kept.** Arm 1 was never a control; it already
+contained a warranty edit. The design compared two edited states and called one of them the
+baseline.
+
+**Redesign (arm 0).** Added an arm at commit `3c403ce`, the last state before any warranty edit.
+Verified before spending anything that `warranty` is the **only** field whose definition differs
+between `3c403ce` and `54a4669` (1481 → 1274 chars), so arm 0 vs arm 1 isolates exactly one
+prompt edit. All arms ran on the same `generalinvoicescratch` id, holding the analyzer instance
+constant.
+
+#### C results — measured 2026-08-19, n = 12 per document per arm
+
+Slips = the `vendor_name` twin returning the bare place name instead of the printed `City of X`.
+
+| arm | analyzer state | `delta_water` extract | `burnaby_water` extract | pooled extract | pooled generate |
+|---|---|---|---|---|---|
+| **0 · pre-warranty** | `3c403ce` — original warranty wording (desc 1481 ch) | 5/12 | 5/12 | **10/24** | 17/24 |
+| **1 · current** | `54a4669` — kept warranty edit, = HEAD (desc 1274 ch) | 6/12 | 6/12 | **12/24** | 18/24 |
+| **2 · reverted wording** | `3af5354` — the reverted disclaimer edit (desc 1490 ch) | 6/12 | 8/12 | **14/24** | 18/24 |
+| **5 · LIVE PROD** | `generalinvoice`, same definition as arm 1, different instance | 2/12 | 6/12 | **8/24** | 16/24 |
+
+**Validity check.** `begin_create_analyzer(allow_replace=True)` was confirmed to actually swap the
+definition — after each push the live `warranty` description length was fetched back and matched
+the local file (1481 / 1490 / 1481 on a repeat). The arms were genuinely different on the service,
+so a null result means "no effect", not "the push silently no-opped".
+
+Arm 5 vs arm 1 — **same definition, two different analyzer instances** — gives p = 0.38. Instance
+identity does not explain it either.
+
+Fisher's exact, one-sided, against arm 0: arm 1 **p = 0.39**, arm 2 **p = 0.19**. Generate twin:
+both **p = 0.50**. **No arm differs from any other.**
+
+Arms 3 (other-narrative) and 4 (non-narrative) were **not run, and are not needed**. They existed
+to localise an effect — is it warranty's content, the narrative block, or any byte at all? With
+the strongest candidate (arm 2, the actual reverted edit) showing no effect against a true
+pre-warranty control, there is no effect left to localise.
+
+#### What stage C establishes
+
+1. **Editing the `warranty` prompt does not perturb `vendor_name`.** Measured directly, twice
+   (arm 1 and arm 2), against a clean control.
+2. **CU's behaviour on these documents stepped from ~0 % to ~40 % around 2026-08-18/19**, for
+   every definition and every instance tested. Not the prompt, not the analyzer id.
+   **Production is in the degraded regime** (arm 5, measured directly on `generalinvoice`).
+3. **The stage A guard holds against it.** All **96** measured reads — the 24 prod reads included
+   — were replayed through `gates.evaluate` at `ed9b045`: **0 wrong `vendor_name`, 96/96 repaired,
+   all routing `HAPPY_PATH_CANDIDATE`.** The guard shipped hours before the regime change was
+   noticed, which was luck, not planning.
+4. **`--replicates 3` cannot support any claim about an analyzer version**, because version and
+   date are confounded (above). Every historical "this version is clean" statement rests on 3–5
+   reads taken on one day.
+
+#### What stage C does NOT establish
+
+The disclaimer attempt was reverted because the **corpus went red on `surrey_water`**, not
+because of `vendor_name`. Stage C measured `vendor_name` on two municipal documents; it says
+nothing about `surrey_water`. That failure needs re-examining on its own terms before D2 —
+it may be the same ~coin-flip-under-thin-sampling story, or it may be real.
 
 ### Stage D — the retries, contingent on C
+
+**C resolved to a row the table did not anticipate: equal slips in *every* arm, including a true
+pre-warranty control.** The nearest row is the last one — proceed under normal verification — but
+for a different reason than it assumed. A did not remove the failure mode; the failure mode was
+never edit-triggered, and A repairs it continuously.
 
 | C result | meaning | retry approach |
 |---|---|---|
 | slips in arm 2 only | warranty's *content* is the trigger | retry the warranty wording with A guarding; n ≥ 12 on both docs **plus a full live corpus pass** to find casualties beyond the two known |
 | slips in arms 2 **and** 3 | the whole narrative block is sensitive | both retries carry the same risk; attempt one at a time, never together |
 | slips in arm 4 too | *any* analyzer edit perturbs this parse | the retries are no riskier than any other analyzer change; the real conclusion is that every future analyzer edit needs n ≥ 12 baselines |
-| no slips in any arm | A removed the practical failure mode | proceed with both retries under normal verification |
+| ~~no slips in any arm~~ | ~~A removed the practical failure mode~~ | ~~proceed with both retries under normal verification~~ |
+| **⇐ actual: equal slips in all arms** | **no analyzer edit perturbs this parse; the slip is the documents** | **proceed with both retries.** The `vendor_name` risk that blocked them does not exist. Remaining risk is ordinary: any prompt edit can change the field it edits, and the corpus must still pass at n ≥ 12 |
+
+**Before D2 specifically:** re-examine the `surrey_water` corpus failure that actually caused the
+revert. Stage C did not test it. Establish whether it reproduces at n ≥ 12 on the *current*
+analyzer without any warranty edit — if it does, it is a pre-existing coin flip and not a
+consequence of the disclaimer wording at all. Given the regime change, the prior for "it was a
+bystander too" is now high.
+
+**New standing requirement — every arm needs a concurrent control.** Never compare a new analyzer
+version against cached numbers from an older one. Re-roll the old definition *the same day*,
+beside the new one. Cached history is a record of what CU did **then**, and CU has now been
+observed to change underneath a fixed definition.
 
 Each retry: edit → commit → **full live corpus pass** (not `--all-cached`) → n ≥ 12 on
 `delta_water` + `burnaby_water` → stamp → `create_analyzer.py --load-local-settings`. Stage D
@@ -221,9 +345,10 @@ changes no code, so no function-app deploy should be needed.
 
 - **Never bundle a code fix with a prompt change.** It destroys attribution — the exact failure
   this investigation is about. C4 and the warranty wording are **two separate commits**.
-- **Never `--force`.** It re-calls every replicate and discards accumulated evidence, including
-  the 3 reads that are the only surviving record of this defect. `--replicates` adds; `--force`
-  destroys.
+- **Never `--force`.** It re-calls every replicate and discards accumulated evidence.
+  `--replicates` adds; `--force` destroys. (The original wording called 3 reads "the only
+  surviving record of this defect" — stage C showed the defect reproduces at ~42 % on demand, so
+  that particular justification was wrong. The caution stands on its own merits.)
 - **Scratch analyzer only in stage C** (`generalinvoicescratch`), and delete it afterwards.
 - **Never `create_analyzer.py --force` on `generalinvoice`**, and never weaken a sidecar to make a
   retry pass. A red corpus means investigate, not suppress.
@@ -254,9 +379,12 @@ changes no code, so no function-app deploy should be needed.
   answer; the resolution rule itself deserves review (e.g. whether agreement should confer a pass
   when *both* twins sit far below threshold, or only corroborate a value one twin already
   supports). **Not scheduled** — worth its own investigation.
-- **Why `warranty` specifically** is not observable from cached data — only two analyzer versions
-  have ever edited it, so "warranty's content" and "the narrative block" cannot be separated
-  without stage C.
+- ~~**Why `warranty` specifically**~~ — **answered by stage C: it isn't.** The `warranty` prompt
+  has no measurable effect on `vendor_name`. The question was malformed; it presupposed an effect
+  that thin sampling had manufactured.
+- **Does `--replicates 3` invalidate other conclusions in this repo?** Every "version X is clean"
+  claim rests on 3–5 reads. At a 42 % defect rate that is a ~11 % chance of a false all-clear per
+  version. Worth auditing which historical decisions depend on such a claim. **Not scheduled.**
 - **Vendor-name casing** (`DISTRICT OF WEST VANCOUVER` from the extract twin vs title case from
   generate) remains unnormalised — open defects **B6a / B2 / B7**. Stage A closes only the
   prefix-loss half.
