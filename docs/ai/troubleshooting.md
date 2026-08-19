@@ -2085,3 +2085,43 @@ generate-only narrative fields moved an extract twin on an unrelated municipal b
 - A prompt cannot *guarantee* an output constraint. If a length must be bounded (because the
   Dataverse column rejects the row and the invoice is lost), bound it in code or in the column
   size — not in the instruction.
+
+---
+
+## The tracked pre-commit hook is not the hook that runs
+
+**Symptom (found 2026-08-18, while shipping the `number_of_days` fix).** The commit's own
+Tier B output read:
+
+```
+x3 replicates per doc (87 scored: 0 CU calls, 87 cache hits)
+```
+
+87 = 29 docs x 3. But `scripts/hooks/pre-commit` passes `--all-cached`, which should have
+scored every replicate on disk (197 for the current analyzer, 450 at the time C1 shipped).
+
+**Cause.** `.git/hooks/` is **not versioned**. `scripts/hooks/pre-commit` is only the *source*;
+`scripts/hooks/install.ps1` copies it into place. C1 edited the source and never re-ran the
+installer, so the hook that actually executed was a stale pre-C1 copy without the flag. Every
+commit between C1 and this one was gated on 87 decisions rather than 197 — including the
+commits that shipped A1-A5, B1, B3, B5, B6b and B6c.
+
+The defect found that day (`bug_260601_0018.number_of_days`, at replicate **r6**) is precisely
+one the real hook would have caught and the stale one could not. C1's own Resolved row claimed
+"the pre-commit hook now passes it" — true of the tracked file, false of the running hook.
+
+**Fix.**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\hooks\install.ps1
+tail -1 .git/hooks/pre-commit   # must end with --all-cached
+```
+
+**Reusable lesson — editing a hook's source does not change behaviour; installing it does.**
+Anything under `.git/` is per-checkout state that git will never carry for you: hooks,
+`config`, `info/exclude`. After changing `scripts/hooks/pre-commit`, re-run the installer and
+**verify against the running copy**, not the tracked one. The same applies to a fresh clone,
+where no hook is installed at all and the corpus gate is silently absent.
+
+Cheapest standing check: read the scored count in the hook's own output. `87` means three
+replicates per doc; the `--all-cached` number is larger and grows as replicates accumulate.
