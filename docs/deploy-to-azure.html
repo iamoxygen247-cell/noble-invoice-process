@@ -122,11 +122,56 @@ az functionapp list --query "[].{name:name, rg:resourceGroup, state:state}" -o t
   </div>
 
   <h2><span class="num">2</span>Deploy the Function code</h2>
+
+  <div class="warn">
+    <strong>Prerequisite on this machine — <code>func</code> needs the <code>az</code> shim, not the profile wrapper.</strong>
+    <code>func</code> shells out to <code>az</code> for authentication and app lookup, and it does so from a
+    <em>child process</em>. The truststore fix is a PowerShell <em>function</em>, which lives only inside the
+    PowerShell process and is invisible to children — so <code>func</code> gets the raw
+    <code>az.cmd</code>, which fails TLS behind the inspecting proxy. The symptom is misleading:
+    <code>Can't find app with name "func-invoiceprocess-westus"</code> or
+    <code>Unable to connect to Azure</code>. The app is fine; <code>func</code> simply could not enumerate it.
+    <br><br>
+    The fix is a <code>.cmd</code> on <code>PATH</code> (a file <em>is</em> visible to child processes), installed
+    at <code>%LOCALAPPDATA%\az-truststore\shim\az.cmd</code> and prepended to the user <code>PATH</code>.
+    Verify before deploying — and note that <code>az account show</code> proves nothing, because it only reads
+    the local token cache:
+    <pre><code>az account get-access-token --query expiresOn -o tsv   # must succeed</code></pre>
+  </div>
+
   <h3>Option A — Core Tools (CLI)</h3>
   <pre><code>cd "C:\Users\georg\dev\Noble Homes\Invoice Extractor\noble-invoice-process\functionapp"
 $APP= "func-invoiceprocess-westus"
 $RG = "rg-content-understanding-dev"
 func azure functionapp publish $APP --build remote</code></pre>
+
+  <div class="note">
+    <strong>Expect to retry.</strong> Even with the shim, ARM calls through the TLS inspector drop
+    intermittently with <code>ConnectionResetError 10054</code> — measured at <strong>1 success in 8</strong>
+    during the 2026-08-18 deploy, while succeeding on the first try an hour earlier. <code>func</code> makes its
+    app-lookup call with <em>no retry</em>, so a dropped connection surfaces as <code>Can't find app with name</code>.
+    That message means "try again", not "wrong app name". Loop it:
+    <pre><code>for ($i=1; $i -le 8; $i++) {
+    func azure functionapp publish $APP --build remote
+    if ($LASTEXITCODE -eq 0 -or $?) { break }
+    "attempt $i failed - retrying"
+}</code></pre>
+    The publish itself is idempotent, so a retry after a partial failure is safe.
+  </div>
+
+  <div class="note">
+    <strong>Two things that look like failures and are not.</strong>
+    <ul>
+      <li><strong>A trailing SSL error after <code>The deployment was successful!</code></strong> —
+        <code>func</code> fetches the invoke URLs as its last step and that call goes through the inspector.
+        The deploy already landed; the process still exits non-zero.
+        <em>Read the log, not the exit code.</em></li>
+      <li><strong><code>Local python version '3.14.7' is different from … '3.13'</code></strong> — only matters
+        for a <em>local</em> build. With <code>--build remote</code> the packages are built on Azure against the
+        app's configured 3.13. Do not "fix" it by moving the app to 3.14: Flex Consumption has no remote-build
+        support there.</li>
+    </ul>
+  </div>
   <h3>Option B — VS Code</h3>
   <p>Azure extension → <strong>Workspace</strong> → <strong>Deploy to Function App…</strong> → pick
      <span class="ph">&lt;APP&gt;</span>. It uses <code>deploySubpath: functionapp</code> automatically;
@@ -177,9 +222,17 @@ az functionapp show -g $RG -n $APP --query "defaultHostName" -o tsv   # -> &lt;A
 # Function key (route auth_level is FUNCTION)
 az functionapp keys list -g $RG -n $APP --query "functionKeys.default" -o tsv</code></pre>
   <p>Call these <span class="ph">&lt;HOST&gt;</span> and <span class="ph">&lt;KEY&gt;</span>. On this machine the
-     <code>az functionapp …</code> commands can die on TLS-inspector resets (<code>10054</code>) — fall back to the
-     portal (<strong>Overview → Default domain</strong>; <strong>App keys</strong>) or the ARM REST recipe in
-     <code>docs/ai/troubleshooting.md</code>. All keys minted before 2026-07-14 are invalid (host storage was replaced).</p>
+     <code>az functionapp …</code> commands can die on TLS-inspector resets (<code>10054</code>) — retry in a loop
+     before reaching for a fallback, since the failure is transient rather than a permission or naming problem
+     (the key below came back on attempt 5 of 6 on 2026-08-18):</p>
+  <pre><code>$k = $null
+for ($i=1; $i -le 6 -and -not $k; $i++) {
+    $k = az functionapp keys list -g $RG -n $APP --query "functionKeys.default" -o tsv 2>$null
+}</code></pre>
+  <p>If it still will not come, fall back to the portal (<strong>Overview → Default domain</strong>;
+     <strong>App keys</strong>) or the ARM REST recipe in <code>docs/ai/troubleshooting.md</code>. All keys minted
+     before 2026-07-14 are invalid (host storage was replaced). Treat the key as a secret: keep it out of
+     command output and shell history, and delete any file you stage it in.</p>
 
   <h2><span class="num">5</span>End-to-end smoke test the deployed Function</h2>
   <p>Use the harness <code>scripts\test.py</code> (its predecessor <code>verify_fn.py</code> was retired; the flags

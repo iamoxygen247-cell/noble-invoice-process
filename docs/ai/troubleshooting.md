@@ -2152,22 +2152,42 @@ PowerShell module installed and logged in and try again
    it gets the raw CLI, which fails TLS. A non-interactive shell (`-NoProfile`, CI, this
    agent's tool calls) has the same problem for plain `az`.
 
-**Fix — a `PATH` shim, not a profile function.** Put an `az.cmd` in a directory prepended to
-`PATH`, so *any* child process resolves `az` to the truststore bootstrap:
+**Fix — a `PATH` shim, not a profile function.** A `.cmd` file on disk *is* visible to child
+processes. Installed permanently on this machine (2026-08-18) at
+`%LOCALAPPDATA%\az-truststore\shim\az.cmd`, with that folder prepended to the **user** `PATH`:
 
 ```bat
 @echo off
-"C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe" "%LOCALAPPDATA%\az-truststore\azrun.py" %*
+"C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe" -B "%LOCALAPPDATA%\az-truststore\azrun.py" %*
 ```
+
+Verify before deploying — and note `az account show` proves nothing, it only reads the local
+token cache:
 
 ```powershell
-$env:PATH = "<shim dir>;$env:PATH"
-az account get-access-token --query expiresOn -o tsv   # must succeed before deploying
-func azure functionapp publish func-invoiceprocess-westus --build remote
+az account get-access-token --query expiresOn -o tsv   # must succeed
 ```
 
-Session-scoped by default. Making it permanent means putting the shim dir on the user `PATH`
-— which would also make the profile function redundant.
+The pre-change user `PATH` is saved at `%LOCALAPPDATA%\az-truststore\userpath-backup.txt`. The
+shim makes the profile `function az` redundant, though leaving it costs nothing.
+
+**The shim is necessary but NOT sufficient — expect to retry.** It fixes certificate
+*verification*; it cannot fix connection *resets*. ARM calls through the inspector flap badly:
+measured **1 success in 8** on 2026-08-18, having succeeded first-try an hour earlier. `func`
+makes its app-lookup call with no retry, so a dropped connection surfaces as
+`Can't find app with name "<app>"` — which means "try again", not "wrong name". Loop it; the
+publish is idempotent so retrying after a partial failure is safe:
+
+```powershell
+for ($i=1; $i -le 8; $i++) {
+    func azure functionapp publish $APP --build remote
+    if ($?) { break }
+}
+```
+
+This flakiness is also why two publishes succeeded first-try earlier the same day while three
+consecutive attempts failed later — luck of the draw, not a difference in setup. Do not read a
+single failure as a broken configuration, and do not read a single success as a fixed network.
 
 **Two things that look like failures and are not:**
 

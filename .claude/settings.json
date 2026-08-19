@@ -16,7 +16,9 @@
       "Bash(git merge *)",
       "Bash(git push *)",
       "Bash(git pull *)",
-      "Bash(git branch *)"
+      "Bash(git branch *)",
+      "Bash(./.venv/Scripts/python.exe __TRACKED_VAR__/e2e.py tests/pre-commit-test)",
+      "PowerShell(Remove-Item \"$env:TEMP\\\\nb_fnkey.txt\" -Force -ErrorAction SilentlyContinue; if \\(Test-Path \"$env:TEMP\\\\nb_fnkey.txt\"\\) { \"still present\" } else { \"function key file removed\" })"
     ]
   }
 }
