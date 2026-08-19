@@ -157,7 +157,9 @@ root `.venv` only. Set `languageWorkers__python__defaultExecutablePath` to
   strict-rejects it with `Basic Constraints of CA cert not marked critical`.
 - Intermittently (even once TLS verifies): `ConnectionResetError 10054` during the
   TLS handshake.
-- `func azure functionapp publish` and other .NET tools work fine.
+- `func azure functionapp publish` and other .NET tools work fine **for their own HTTPS
+  traffic** — but see the deploy note below: `func` shells out to `az` for auth, and that
+  child process is not covered by the PowerShell profile wrapper.
 
 **Cause:** a transparent TLS-inspecting security agent re-signs HTTPS traffic.
 `func`/.NET trust the agent's root automatically via the Windows certificate store
@@ -2125,3 +2127,58 @@ where no hook is installed at all and the corpus gate is silently absent.
 
 Cheapest standing check: read the scored count in the hook's own output. `87` means three
 replicates per doc; the `--all-cached` number is larger and grows as replicates accumulate.
+
+---
+
+## `func azure functionapp publish` fails "Unable to connect to Azure" — it shells out to raw `az`
+
+**Symptom (verified 2026-08-18, first real deploy since the truststore fix):**
+
+```
+Unable to connect to Azure. Make sure you have the `az` CLI or `Az.Accounts`
+PowerShell module installed and logged in and try again
+```
+
+...even though `az account show` in the same shell returns the right subscription.
+
+**Cause, in two parts.**
+
+1. `az account show` proves nothing about connectivity — it only reads the local token
+   cache. The entry above says so; it is easy to read it as "auth is fine". The honest probe
+   is a network call: `az account get-access-token`.
+2. The truststore fix is installed as a **PowerShell profile function** named `az`. That
+   shadows the real CLI only inside an interactive PowerShell session that loaded the
+   profile. `func` spawns its own child process and invokes `az.cmd` off `PATH` directly, so
+   it gets the raw CLI, which fails TLS. A non-interactive shell (`-NoProfile`, CI, this
+   agent's tool calls) has the same problem for plain `az`.
+
+**Fix — a `PATH` shim, not a profile function.** Put an `az.cmd` in a directory prepended to
+`PATH`, so *any* child process resolves `az` to the truststore bootstrap:
+
+```bat
+@echo off
+"C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe" "%LOCALAPPDATA%\az-truststore\azrun.py" %*
+```
+
+```powershell
+$env:PATH = "<shim dir>;$env:PATH"
+az account get-access-token --query expiresOn -o tsv   # must succeed before deploying
+func azure functionapp publish func-invoiceprocess-westus --build remote
+```
+
+Session-scoped by default. Making it permanent means putting the shim dir on the user `PATH`
+— which would also make the profile function redundant.
+
+**Two things that look like failures and are not:**
+
+- **A trailing SSL error after "The deployment was successful!"** `func` fetches the invoke
+  URLs as a last step and that call goes through the inspector. The deploy has already
+  landed; the process still exits non-zero. Read the log, not the exit code.
+- **`Local python version '3.14.7' is different from ... '3.13'`.** Only matters for a *local*
+  build. With `--build remote` the packages are built on Azure against the app's configured
+  3.13, so the warning is noise. (Do not "fix" it by moving the app to 3.14 — Flex
+  Consumption has no remote-build support there.)
+
+**Also flaky:** `az functionapp show` intermittently dies with `ConnectionResetError 10054`
+mid-handshake while `az functionapp function list` succeeds seconds later. Same known reset;
+retry once, then stop chasing it and verify another way.
