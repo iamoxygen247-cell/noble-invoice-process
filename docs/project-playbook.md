@@ -742,11 +742,26 @@ storage and breaks the app in a way that reads as a platform fault.
 IDE path). The platform reinstalls from `requirements.txt` server-side, so the venv is never
 shipped and a native wheel is built for the *target* OS rather than yours.
 
-**Rule.** `Local python version '3.14.x' is different from '3.13'` under remote build is **noise**
-— packages are built on the platform against the app's configured runtime. Do not "fix" it by
-moving the app to the newer runtime: on this hosting plan the newer minor had no remote-build
-support at all. **Pin the runtime deliberately and write down why**, or someone will upgrade it
-to silence a warning.
+**Rule.** A local/remote version-mismatch warning under remote build is **noise** — packages are
+built on the platform against the app's configured runtime, not against yours. Never "fix" a
+warning by changing the platform runtime; decide the runtime on its own merits.
+
+**Rule — and the reason this one is worth reading twice.** This section used to say the newer
+minor "had no remote-build support at all on this hosting plan", and told you to pin deliberately
+and write down why. The pin was correct *and it outlived its cause*: the platform gap was fixed
+upstream on 2026-06-23, but the rule sat in four files unchallenged until 2026-08-20, backed by a
+**stale warning string in the build tool** that made the limitation look like it persisted. The
+runtime was migrated that day with no functional change (611/611 corpus expectations green).
+
+> **A platform-capability rule needs a "verified on" date and a re-check command, or it becomes
+> folklore.** Re-check against the platform's own API — here
+> `az functionapp list-flexconsumption-runtimes` — never against a tool's warning text. A CLI
+> warning is a *claim about the past*; the control-plane API is the present.
+
+**Rule.** Write down *where* a setting lives, not just its value. The runtime version on this
+hosting plan lives under `functionAppConfig`, not `siteConfig`, so the obvious
+`config set --python-version` succeeds and changes nothing. A setting that silently no-ops is
+worse than one that errors.
 
 **Rule.** Keep a packaging ignore file (`.funcignore`) and check it when the artifact grows:
 

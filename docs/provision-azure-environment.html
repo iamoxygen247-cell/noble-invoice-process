@@ -51,7 +51,7 @@
   <p>
     <span class="tag">target env: prod</span>
     <span class="tag">region: westus</span>
-    <span class="tag">runtime: Python 3.13 · Flex Consumption (FC1)</span>
+    <span class="tag">runtime: Python 3.14 · Flex Consumption (FC1)</span>
     <span class="tag">auth: keyless (user-assigned identity)</span>
     <span class="tag">naming: see docs/naming-convention.html</span>
   </p>
@@ -241,10 +241,10 @@ $AI_CONN = az monitor app-insights component show --app $APPI -g $RG --query con
     <strong>Verify:</strong> <code>$AI_CONN</code> is non-empty and starts with <code>InstrumentationKey=</code>.
   </div>
 
-  <h2><span class="num">7</span>Function App — Flex Consumption, Python 3.13</h2>
+  <h2><span class="num">7</span>Function App — Flex Consumption, Python 3.14</h2>
   <pre><code>az functionapp create -g $RG -n $APP `
   --flexconsumption-location $LOC `
-  --runtime python --runtime-version 3.13 `
+  --runtime python --runtime-version 3.14 `
   --storage-account $ST_FUNC `
   --app-insights $APPI `
   --tags env=$ENVTOKEN workload=invoice
@@ -262,8 +262,15 @@ az functionapp identity assign -g $RG -n $APP --identities $UAMI_ID</code></pre>
     <code>UserAssignedIdentity</code>, and grant the UAMI <strong>Storage Blob Data Owner</strong> on
     <code>$ST_FUNC</code>. After changing deployment storage, a full <strong>stop&nbsp;→&nbsp;start</strong> (a plain
     restart is not enough) is required before the next deploy — see <code>docs/ai/troubleshooting.md</code>.
-    <strong>Stay on Python 3.13:</strong> 3.14 has no remote-build support on Flex Consumption and step&nbsp;9
-    deploys with <code>--build remote</code>.
+    <strong>Python 3.14 (since 2026-08-20).</strong> The former "stay on 3.13" rule is retired: 3.14 is
+    <strong>GA</strong> on Flex Consumption (EOL Oct&nbsp;2030) and the remote-build gap was fixed upstream on
+    <strong>2026-06-23</strong>, so step&nbsp;9's <code>--build remote</code> works. Core&nbsp;Tools&nbsp;&lt;4.13.0
+    still prints a stale <code>Remote build for Python 3.14 is not yet supported for Flex</code> warning —
+    ignore it, the build succeeds. To change the version on an <em>existing</em> Flex app, note it lives at
+    <code>functionAppConfig.runtime.version</code>, <strong>not</strong> <code>siteConfig</code>, so
+    <code>az functionapp config set --linux-fx-version</code>/<code>--python-version</code> silently do
+    nothing; use the portal or a targeted <code>az rest --method patch</code>. See
+    <code>docs/python-314-migration.html</code>.
   </div>
   <h3>Application settings</h3>
   <pre><code>az functionapp config appsettings set -g $RG -n $APP --settings `

@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noble Invoice Processor — Python 3.13 → 3.14 Migration</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5a6472; --line:#e2e6ea;
+          --code-bg:#1e2430; --code-fg:#e6edf3; --accent:#0b6bcb;
+          --warn-bg:#fff7e6; --warn-bd:#e0a500; --ok-bg:#e9f7ef; --ok-bd:#2e9e5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:40px 24px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:22px; margin:38px 0 12px; padding-top:14px; border-top:2px solid var(--line); }
+  h2 .num { display:inline-block; min-width:34px; height:34px; line-height:34px; text-align:center;
+            background:var(--accent); color:#fff; border-radius:8px; font-size:16px; margin-right:10px; }
+  h2 .num.stop { background:#c0392b; }
+  h2 .num.go   { background:var(--ok-bd); }
+  h3 { font-size:17px; margin:20px 0 8px; }
+  p { margin:10px 0; }
+  code { font-family:"Cascadia Code",Consolas,Menlo,monospace; font-size:13.5px;
+         background:#eef1f4; padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code-bg); color:var(--code-fg); padding:14px 16px; border-radius:10px;
+        overflow:auto; font-size:13.5px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .note, .warn, .ok { border-left:4px solid; padding:12px 16px; border-radius:8px; margin:16px 0; }
+  .note { background:#eef4fb; border-color:var(--accent); }
+  .warn { background:var(--warn-bg); border-color:var(--warn-bd); }
+  .ok   { background:var(--ok-bg);   border-color:var(--ok-bd); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; }
+  .ph { color:#b5179e; font-weight:600; }
+  ul { margin:10px 0 10px 22px; } li { margin:4px 0; }
+  .tag { display:inline-block; background:#eef1f4; color:var(--muted); border:1px solid var(--line);
+         border-radius:999px; padding:2px 10px; font-size:12px; margin-right:6px; }
+  .local { display:inline-block; background:var(--ok-bg); color:#1d6b40; border:1px solid var(--ok-bd);
+           border-radius:999px; padding:1px 9px; font-size:11.5px; margin-left:8px; vertical-align:middle; }
+  .prod  { display:inline-block; background:#fdecea; color:#a3271c; border:1px solid #c0392b;
+           border-radius:999px; padding:1px 9px; font-size:11.5px; margin-left:8px; vertical-align:middle; }
+  footer { margin-top:50px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; }
+  @media print { .wrap{max-width:none;} pre{white-space:pre-wrap;} h2{break-after:avoid;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Python 3.13 &rarr; 3.14 Migration</h1>
+  <p class="sub">Noble Invoice Processor &middot; local venvs + the Flex Consumption Function App</p>
+
+  <p>
+    <span class="tag">target: Python 3.14.7</span>
+    <span class="tag">plan: Flex Consumption FC1</span>
+    <span class="tag">cutover: in place</span>
+    <span class="tag">evidence verified: 2026-08-20</span>
+  </p>
+
+  <div class="warn">
+    <strong>&#9940; This migration takes production down for one deploy.</strong>
+    The outage window opens at <strong>step&nbsp;4a</strong> (the runtime flip is saved) and closes at
+    <strong>step&nbsp;4b</strong> (the remote-build redeploy completes). Steps&nbsp;1&ndash;3 are entirely
+    local and steps&nbsp;5&ndash;7 are documentation &mdash; <em>neither touches the app</em>.
+    Full detail in <a href="#outage">&sect;&nbsp;The outage window</a>.
+  </div>
+
+  <div class="note">
+    <strong>Who runs what (2026-08-20).</strong> Steps <strong>1&ndash;4 are run by hand by the
+    operator</strong> &mdash; they rebuild the venvs, pre-flight the wheels, and cut the app over.
+    Steps <strong>5&ndash;7 are documentation</strong> and were done separately. This page is the
+    <strong>source of truth</strong> for the migration; any planning notes elsewhere are superseded by it.
+  </div>
+
+  <div class="note">
+    <strong>Naming, so nobody relaxes.</strong> The app lives in <code>rg-content-understanding-dev</code>,
+    but it <strong>is</strong> the production instance &mdash; the 2026-08-19 watermark records the analyzer
+    and function app verified live at HEAD, and the separate prod environment in
+    <code>docs/provision-azure-environment.html</code> is still unprovisioned. The &ldquo;dev&rdquo; in the
+    resource-group name is historical, not a safety net.
+  </div>
+
+  <h2>Why this changed</h2>
+
+  <p>
+    The repo carried a standing rule against this migration, repeated in four places
+    (<code>CLAUDE.local.md</code>, <code>docs/provision-azure-environment.html</code>,
+    <code>docs/deploy-to-azure.html</code>, <code>docs/project-playbook.md</code>&nbsp;&sect;7.4):
+  </p>
+
+  <blockquote style="margin:12px 0; padding:10px 16px; border-left:3px solid var(--line); color:var(--muted);">
+    &ldquo;Stay on Python 3.13: 3.14 has no remote-build support on Flex Consumption, and deploys use
+    <code>func &hellip; publish --build remote</code>.&rdquo;
+  </blockquote>
+
+  <p><strong>That rule was true when written and is now false.</strong> Evidence gathered 2026-08-20:</p>
+
+  <table>
+    <tr><th>Claim</th><th>Status today</th><th>Source</th></tr>
+    <tr>
+      <td>3.14 unsupported on Flex</td>
+      <td><strong>GA</strong>, EOL Oct&nbsp;2030</td>
+      <td>ARM <code>az functionapp list-flexconsumption-runtimes</code> returns <code>python 3.14</code>,
+          <code>skuCode&nbsp;FC1</code>, <code>endOfLifeDate&nbsp;2030-10-31</code>; Learn
+          <em>Supported languages</em> lists Python&nbsp;3.14 as <strong>GA</strong></td>
+    </tr>
+    <tr>
+      <td>Remote build broken for 3.14 on Flex</td>
+      <td><strong>Fixed 2026-06-23</strong>, deployed to all regions</td>
+      <td><code>Azure/azure-functions-python-worker#1801</code>, closed as <em>completed</em>:
+          &ldquo;The fix has been deployed to all regions, so remote build for Python 3.14 is now fully
+          supported&rdquo;</td>
+    </tr>
+    <tr>
+      <td>&mdash;</td>
+      <td>A <strong>stale, non-blocking warning</strong> survives in Core&nbsp;Tools &lt;&nbsp;4.13.0</td>
+      <td>Same issue, 2026-07-09: &ldquo;This is a non-blocking warning from Core Tools. Your deployments
+          will work successfully.&rdquo; Removed in Core&nbsp;Tools <strong>4.13.0</strong>
+          (2026-08-10). Local <code>func</code> is <strong>4.12.0</strong>.</td>
+    </tr>
+  </table>
+
+  <p>
+    Outcome: one Python version (3.14.7) locally and in the cloud, a runtime supported to Oct&nbsp;2030
+    rather than Oct&nbsp;2029, and the end of the recurring
+    <code>Local python version '3.14.x' is different from '3.13'</code> warning noise.
+  </p>
+
+  <div class="note">
+    <strong>Decisions taken (user, 2026-08-20).</strong> Migrate local <em>and</em> Azure; cut over
+    <strong>in place</strong> accepting a short outage; leave <code>requirements.txt</code> constraints
+    <strong>unpinned</strong>.
+  </div>
+
+  <h2 id="outage">The outage window</h2>
+
+  <table>
+    <tr><th></th><th>Step</th><th>Trigger</th><th>State</th></tr>
+    <tr>
+      <td><strong>Opens</strong></td>
+      <td><strong>4a</strong></td>
+      <td>The runtime flip is saved &mdash; portal <strong>Save &rarr; Continue</strong>, or
+          <code>az rest --method patch</code> returns</td>
+      <td>App restarts (30&ndash;60&nbsp;s) and comes back on the <strong>3.14 worker</strong> against a
+          package built for <strong>3.13</strong> &rarr; the Python worker <strong>fails at import</strong>
+          &rarr; <code>/process-invoice</code> returns <strong>500</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Closes</strong></td>
+      <td><strong>4b</strong></td>
+      <td><code>func &hellip; publish --build remote</code> logs
+          <code>The deployment was successful!</code> and the worker re-initializes on the freshly built
+          package</td>
+      <td><code>/process-invoice</code> serves normally again</td>
+    </tr>
+  </table>
+
+  <ul>
+    <li><strong>Steps 1&ndash;3 are entirely local.</strong> Nothing before 4a touches the app.</li>
+    <li><strong>Steps 5&ndash;7 are documentation.</strong> They happen after the app is healthy.</li>
+    <li><strong>The window is exactly 4a&nbsp;&rarr;&nbsp;4b.</strong> Nothing else here causes downtime.</li>
+    <li>Confirm it is closed with <strong>check&nbsp;7</strong> (no <code>ModuleNotFoundError</code> at
+        worker init) and definitively with <strong>check&nbsp;8</strong> (smoke test returns 200).</li>
+  </ul>
+
+  <div class="warn">
+    <strong>Stage the 4b publish command in a second terminal <em>before</em> you flip.</strong>
+    The window is your reaction time plus the deploy &mdash; do not flip and then go hunting for a
+    terminal. And note the duration is dominated by <em>this machine's ARM flakiness</em>, not by Azure:
+    the documented measurement is <strong>1 successful <code>func publish</code> in 8 attempts</strong>
+    on 2026-08-18 through the TLS inspector. Budget for retries; 4b is written as a retry loop.
+  </div>
+
+  <p>
+    A <strong>rollback re-opens a second, identical window</strong> &mdash; Flex Consumption has no
+    deployment slots, so there is nothing to swap.
+  </p>
+
+  <h2>Re-examination &mdash; what changed on the second pass</h2>
+
+  <p>
+    The steps were re-checked against the live system on 2026-08-20 before any of them were run.
+    <strong>Three command-level defects were found, all in steps that are executed by hand.</strong>
+    They are corrected in place below; this table records what changed so the diff is reviewable.
+  </p>
+
+  <table>
+    <tr><th>Was</th><th>Problem</th><th>Now</th></tr>
+    <tr>
+      <td>Step&nbsp;3 upgraded Core&nbsp;Tools via <code>winget</code> to reach 4.13.0</td>
+      <td><code>winget</code> serves only <strong>4.12.1</strong> &mdash; the fix is in 4.13.0,
+          GitHub-only &mdash; so the step could not achieve its goal. It also swapped build tooling
+          immediately before a production deploy for a purely cosmetic gain.</td>
+      <td><strong>Removed.</strong> Core Tools stays at 4.12.0, which is proven to deploy to 3.14 Flex
+          apps. Slot&nbsp;3 now holds the Linux wheel pre-flight.</td>
+    </tr>
+    <tr>
+      <td>Step&nbsp;4b looped on <code>if ($LASTEXITCODE -eq 0) { break }</code></td>
+      <td><code>func</code> exits <strong>non-zero even on success</strong>, so the loop never breaks
+          &mdash; it would re-publish up to <strong>8 times, extending the outage every time</strong>.</td>
+      <td><strong>Rewritten</strong> to match the <code>The deployment was successful!</code> string,
+          with <code>2&gt;&amp;1</code> omitted for PowerShell&nbsp;5.1.</td>
+    </tr>
+    <tr>
+      <td>Nothing verified the <em>Linux</em> wheel set before the cutover</td>
+      <td>A missing <code>manylinux</code> cp314 wheel would have surfaced as a remote-build failure
+          <em>inside the outage window</em>.</td>
+      <td><strong>New step&nbsp;3</strong> resolves the full transitive set for cp314 + manylinux
+          locally, first.</td>
+    </tr>
+    <tr>
+      <td>Only the runtime version was asserted after the flip</td>
+      <td>A nested ARM PATCH can shallow-replace <code>functionAppConfig</code> and null the keyless
+          <code>deployment.storage</code> wiring &mdash; breaking 4b with production already down.</td>
+      <td><strong>New check&nbsp;5b</strong> asserts
+          <code>authentication.type</code> is still <code>UserAssignedIdentity</code>.</td>
+    </tr>
+  </table>
+
+  <div class="ok">
+    <strong>Verified and unchanged:</strong> corpus cache covers 29/29 documents under the current
+    analyzer; <code>az rest --body @file</code> is supported; the venvs are not process-locked;
+    <code>multidict</code> and <code>propcache</code> ship cp314 wheels for both platforms; and
+    <code>azure-ai-contentunderstanding</code> is pure-Python <code>py3-none-any</code> with
+    <code>requires_python&nbsp;&gt;=3.9</code> (its classifiers stop at 3.13, which is cosmetic &mdash;
+    pip does not enforce classifiers and there is no ABI to mismatch).
+  </div>
+
+  <h2>Compatibility &amp; impact</h2>
+
+  <h3>Verified compatible</h3>
+  <ul>
+    <li><strong>Source compiles clean on 3.14.</strong> All 16 project <code>.py</code> files compiled
+        under the real 3.14.7 interpreter with <strong>0 syntax errors and 0 warnings</strong>.</li>
+    <li><strong>Conservative stdlib surface.</strong> Only <code>argparse, base64, csv, datetime, hashlib,
+        html, json, logging, mimetypes, os, pathlib, re, ssl, subprocess, sys, time, urllib, uuid,
+        zoneinfo, typing</code>. No <code>datetime.utcnow()</code>, no <code>distutils</code>, no
+        <code>multiprocessing</code> (so 3.14's Linux <code>forkserver</code> default is irrelevant).</li>
+    <li><strong>Every file already uses <code>from __future__ import annotations</code></strong>, so
+        PEP&nbsp;649/749 lazy annotations in 3.14 cannot change behaviour here.</li>
+    <li><strong>All dependencies ship cp314 wheels.</strong> <code>cryptography&nbsp;50.0.0</code> ships
+        <strong>abi3</strong> wheels (one wheel covers 3.9+) plus explicit cp314;
+        <code>cffi&nbsp;2.1.1</code> ships <code>cp314-manylinux_2_17_x86_64</code> and
+        <code>cp314-win_amd64</code>. <code>azure-functions&nbsp;2.2.0</code> declares
+        <code>requires_python&nbsp;&gt;=3.13</code> and a <code>Python :: 3.14</code> classifier.</li>
+    <li><strong><code>host.json</code> bundle <code>[4.*, 5.0.0)</code></strong> is already the version a
+        language-version change requires &mdash; no change.</li>
+  </ul>
+
+  <h3>No functional drift expected in the decision engine</h3>
+  <p>The three places an interpreter swap could leak into output were checked directly:</p>
+  <ul>
+    <li><strong>Money</strong> &mdash; <code>round(float(total) - float(gst), 2)</code>,
+        <code>abs(a-b) &lt; 0.005</code>: IEEE-754 doubles and banker's rounding are unchanged.</li>
+    <li><strong>Dates</strong> &mdash; <code>strptime</code> / <code>strftime</code> /
+        <code>fromisoformat</code>: no 3.14 semantic change, and
+        <code>ZoneInfo("America/Vancouver")</code> resolves from the <strong><code>tzdata</code>
+        wheel</strong>, not the interpreter.</li>
+    <li><strong>Ordering</strong> &mdash; sets are membership/dedup only, output order follows source
+        lists, and the single <code>sorted()</code> is stable.</li>
+  </ul>
+
+  <h3>Blast radius</h3>
+  <p>
+    The app is a <em>single HTTP-triggered function</em>
+    (<code>@app.route(route="process-invoice", &hellip;)</code>), called synchronously by Power Automate.
+    No queue or timer trigger, so nothing accumulates a backlog or poisons a queue.
+  </p>
+  <p>
+    <strong>Why the flip breaks the running app:</strong> with <code>--build remote</code> packages are
+    built server-side against the app's <em>configured</em> runtime, so the order is forced &mdash; flip
+    first, then rebuild. In between, <code>cffi</code> (and <code>multidict</code>/<code>propcache</code>/
+    <code>yarl</code>) ship version-tagged <code>.so</code> files
+    (<code>&hellip;cpython-313-x86_64-linux-gnu.so</code>) that 3.14 will not import.
+    (<code>cryptography</code> is abi3 and would survive &mdash; <code>cffi</code> alone is enough.)
+  </p>
+
+  <div class="ok">
+    <strong>The failure mode is clean.</strong> Because the worker dies at <em>import</em>, gate A1 never
+    runs: <strong>no ledger claim is taken, no partial ledger row is written, no diagnostics blob is
+    half-written.</strong> Invoices posted during the window simply fail and can be re-posted &mdash;
+    <code>function_app.py</code> re-claims and fully re-processes a repeat <code>sourceId</code> by design.
+  </div>
+
+  <h3>Azure settings: nothing to change</h3>
+  <p>
+    The live app has exactly 13 settings &mdash; <code>A1_LEASE_SECONDS</code>,
+    <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code>, <code>AZURE_CLIENT_ID</code>,
+    <code>AZURE_CU_ANALYZER_ID</code>, <code>AZURE_CU_API_VERSION</code>, <code>AZURE_CU_ENDPOINT</code>,
+    <code>AZURE_CU_GENERAL_ANALYZER_ID</code>, <code>AZURE_CU_TIMEOUT_SECONDS</code>,
+    <code>AZURE_STORAGE_ACCOUNT</code>, <code>AZURE_TABLES_TABLE</code>, and the three
+    <code>AzureWebJobsStorage__*</code> keys &mdash; none of them Python-version dependent.
+  </p>
+  <div class="warn">
+    <strong>Three settings are absent and must stay absent.</strong>
+    <code>FUNCTIONS_WORKER_RUNTIME</code> (invalid on Flex &mdash; the runtime lives in
+    <code>functionAppConfig</code>), <code>FUNCTIONS_EXTENSION_VERSION</code> (deprecated on Flex), and
+    any <code>PYTHON_*</code> setting &mdash; <code>PYTHON_ENABLE_INIT_INDEXING</code> is unnecessary
+    because init indexing is on by default from 3.13 up. Check after the deploy that nothing injected them.
+  </div>
+
+  <h3>Out of scope</h3>
+  <ul>
+    <li><strong>No <code>analyzers/*.json</code> edits &rArr; no prod analyzer push.</strong></li>
+    <li><strong>No corpus or sidecar changes.</strong> This is neither an extraction bug fix with a
+        reproduction PDF nor a requirement change. <code>scripts/regress.py</code> caches by
+        <code>(analyzer_hash, pdf_hash, replicate)</code> &mdash; the Python version is <em>not</em> in the
+        cache key, so the cache stays valid and the corpus run makes <strong>zero CU calls</strong>.</li>
+    <li><strong>No dependency version changes</strong> &mdash; <code>requirements.txt</code> keeps its
+        <code>&gt;=</code> constraints.</li>
+    <li><strong><code>func-noble-stratadocument</code></strong> (rg-noble-strata) is a different project's
+        Flex app in the same subscription. <strong>Do not touch it.</strong></li>
+  </ul>
+
+  <h2><span class="num">1</span>Rebuild the local venvs on 3.14 <span class="local">local only</span></h2>
+
+  <p>
+    3.14.7 is already installed at <code>%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe</code> and is
+    already the <code>py -0p</code> default. A venv hard-codes its base interpreter in
+    <code>pyvenv.cfg</code> and cannot be upgraded in place &mdash; recreate both.
+  </p>
+
+<pre><code>$PY314 = "$env:LOCALAPPDATA\Python\pythoncore-3.14-64\python.exe"
+&amp; $PY314 --version          # expect: Python 3.14.7
+
+# Root venv - pytest, scripts/, and the pre-commit hook all use this one
+Remove-Item -Recurse -Force .\.venv
+&amp; $PY314 -m venv .\.venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r .\functionapp\requirements.txt
+.\.venv\Scripts\python.exe -m pip install pytest truststore
+
+# functionapp venv - used only by a local `func start`
+Remove-Item -Recurse -Force .\functionapp\.venv
+&amp; $PY314 -m venv .\functionapp\.venv
+.\functionapp\.venv\Scripts\python.exe -m pip install -r .\functionapp\requirements.txt
+.\functionapp\.venv\Scripts\python.exe -m pip install truststore</code></pre>
+
+  <div class="note">
+    <strong><code>pytest</code> and <code>truststore</code> are deliberately not in
+    <code>requirements.txt</code>.</strong> <code>truststore</code> is this machine's TLS-inspection
+    workaround and is unwanted on the Azure Linux host. Install them explicitly or the pre-commit hook and
+    <code>scripts/regress.py</code> break.
+  </div>
+
+  <div class="ok"><strong>Verify:</strong> <code>--version</code> reports 3.14.7 for both venvs, and
+    <code>-m pip check</code> is clean for both.</div>
+
+  <h2><span class="num">2</span>Verify locally before touching Azure <span class="local">local only</span></h2>
+
+<pre><code>.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts\regress.py --load-local-settings</code></pre>
+
+  <ul>
+    <li><code>pytest</code> &mdash; the offline suite, scoped by <code>pytest.ini</code>.</li>
+    <li><code>regress.py</code> &mdash; the golden corpus. <strong>Cache hit &rArr; 0 CU calls</strong>, but
+        it re-runs <code>gates.py</code> and <code>field_policy.py</code> scoring over all 29 documents
+        under 3.14. This is the highest-value check in the whole migration: a direct
+        functional-equivalence test of the decision engine against real CU output.
+        <br><em>Measured 2026-08-20:</em> the current analyzer
+        (<code>create-generalinvoice-analyzer.json</code>) hashes to <code>bc708c840f30</code> and
+        <strong>29/29 documents already have &ge;3 cached replicates</strong> &mdash; so this run needs
+        no network and no credentials. One corpus file is uppercase
+        (<code>recommend_260120_0036.PDF</code>); <code>pathlib.glob("*.pdf")</code> is case-insensitive
+        on Windows under <em>both</em> 3.13.15 and 3.14.7, so no document is silently dropped.</li>
+  </ul>
+
+  <div class="warn">
+    <strong>Both must be green before any Azure change.</strong> A red corpus means investigate, never
+    suppress. And if a document comes back <code>UNSTABLE</code>, do <em>not</em> attribute it to 3.14
+    without a control &mdash; the documented flake rate is 1&ndash;2 UNSTABLE at n=5 by chance.
+  </div>
+
+  <h2><span class="num">3</span>Pre-flight the <em>Linux</em> cp314 wheel set <span class="local">local only</span></h2>
+
+  <div class="note">
+    <strong>Your laptop is Windows; the Function App is Linux.</strong> Flex Consumption is Linux-only,
+    and <code>--build remote</code> builds the packages <em>on Azure</em>. So the artifacts that decide
+    whether 4b succeeds are <code>manylinux</code> cp314 wheels &mdash; a different set of files from the
+    <code>win_amd64</code> wheels step&nbsp;1 installs. <strong>Step&nbsp;1 passing proves nothing about
+    step&nbsp;4b.</strong>
+  </div>
+
+  <p>
+    <strong>This is the step that de-risks the outage.</strong> If any dependency lacks a
+    <code>manylinux</code> cp314 wheel, pip on the build host falls back to compiling from source and
+    blows the documented <strong>60-second remote-build timeout</strong> &mdash; failing <em>inside the
+    outage window</em>, with production already down. Resolve the whole transitive set locally first.
+    <code>pip download</code> only fetches wheels into a temp folder; it modifies neither venv.
+  </p>
+
+<pre><code>.\.venv\Scripts\python.exe -m pip download -r .\functionapp\requirements.txt `
+    --only-binary=:all: `
+    --implementation cp --python-version 314 `
+    --platform manylinux_2_28_x86_64 `
+    --platform manylinux_2_17_x86_64 `
+    --platform manylinux2014_x86_64 `
+    --dest "$env:TEMP\wheelcheck-linux-cp314"</code></pre>
+
+  <div class="warn">
+    <strong>All three <code>--platform</code> tags are required.</strong> <code>pip download --help</code>:
+    <em>&ldquo;Use this option multiple times to specify multiple platforms supported by the target
+    interpreter.&rdquo;</em> Packages tag wheels inconsistently &mdash; <code>cffi&nbsp;2.1.1</code> ships
+    <code>cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl</code> with <strong>no</strong>
+    <code>manylinux_2_28</code> tag, so a single <code>--platform manylinux_2_28_x86_64</code> would
+    reject it and report a <strong>false failure</strong>. Do <strong>not</strong> pass
+    <code>--abi</code>: omitting it lets pip accept <code>abi3</code> wheels such as
+    <code>cryptography</code>'s.
+  </div>
+
+  <div class="ok">
+    <strong>Pass = every dependency resolved to a wheel</strong>, printed as <code>Saved &hellip;</code>,
+    and <strong>no <code>.tar.gz</code> source distributions</strong> in the destination folder.
+    <br><strong>Run 2026-08-20: PASS.</strong> 25 wheels, 0 sdists, exit code 0. Seven compiled wheels,
+    all <code>manylinux</code>: <code>cffi</code>, <code>charset_normalizer</code>,
+    <code>cryptography</code> (<code>cp311-abi3</code>), <code>markupsafe</code>,
+    <code>multidict</code>, <code>propcache</code> and &mdash; the one dependency PyPI's truncated file
+    list could not confirm &mdash; <code>yarl-1.24.5-cp314-cp314-manylinux2014_x86_64&hellip;whl</code>.
+    <strong>The remote build in 4b will find a wheel for everything.</strong>
+  </div>
+
+  <div class="warn">
+    <strong>&#9888; Keep the <code>--dest</code> path short (Windows MAX_PATH).</strong> These
+    <code>manylinux</code> filenames carry three platform tags and run to ~90 characters, so a deep
+    destination blows the 260-character limit and pip dies mid-download with
+    <code>FileNotFoundError: [Errno 2] No such file or directory</code> on a wheel it already resolved.
+    <em>That is not a missing wheel</em> &mdash; resolution had already succeeded. Hit for real on
+    2026-08-20 with a nested temp folder; <code>$env:TEMP\wheelcheck-linux-cp314</code> is short enough.
+  </div>
+
+  <div class="warn">
+    If it fails it names the offending package. <strong>Do not proceed to step&nbsp;4.</strong> A
+    source-only dependency would break the remote build with production already down. Pin that one
+    package to a version that ships a cp314 wheel, then re-run.
+  </div>
+
+  <div class="note">
+    <strong>Core Tools stays at 4.12.0 &mdash; do not upgrade it as part of this migration.</strong>
+    An earlier draft of this page told you to run
+    <code>winget upgrade Microsoft.Azure.FunctionsCoreTools</code> to reach 4.13.0. That was wrong twice
+    over: <code>winget</code> only offers <strong>4.12.1</strong> (the warning fix is in
+    <strong>4.13.0</strong>, GitHub-only), and swapping build tooling immediately before a production
+    deploy trades a proven-good binary for a cosmetic gain. 4.12.0 is <em>known</em> to deploy
+    successfully to 3.14 Flex apps. Upgrade later from the GitHub release, if ever.
+  </div>
+
+  <h2><span class="num">4</span>Cut the Azure app over <span class="prod">production</span></h2>
+
+  <p>Confirm <code>az</code> works first &mdash; <code>az account show</code> proves nothing, it only
+     reads the local token cache:</p>
+
+<pre><code>$az = "$env:LOCALAPPDATA\az-truststore\shim\az.cmd"
+&amp; $az account get-access-token --query expiresOn -o tsv    # must succeed</code></pre>
+
+  <h3><span class="num stop" style="min-width:44px">4a</span> Flip the runtime version &mdash; the outage starts here</h3>
+
+  <p>On Flex the version lives at <code>properties.functionAppConfig.runtime.version</code>,
+     <strong>not</strong> in <code>siteConfig</code>.</p>
+
+  <div class="warn">
+    <strong>&#9888; <code>az functionapp config set --linux-fx-version</code> /
+    <code>--python-version</code> do not work on Flex.</strong> They write <code>siteConfig</code>, which
+    Flex ignores &mdash; the exact trap reported in <code>Azure/Azure-Functions#2638</code>. Learn's
+    generic <em>Update language versions</em> Linux/CLI tab will send you there. Don't go.
+  </div>
+
+  <p>
+    <strong>Portal &mdash; lowest risk on this machine.</strong> It is documented as supported for Flex on
+    Linux and avoids the flaky Python-based <code>az</code> transport entirely (a browser handles the
+    inspection CA fine): Function App &rarr; <strong>Settings &rarr; Configuration &rarr; General
+    settings</strong> &rarr; <strong>Python Version</strong> &rarr; <code>3.14</code> &rarr;
+    <strong>Save</strong> &rarr; <strong>Continue</strong>.
+  </p>
+
+  <p><strong>CLI alternative</strong> &mdash; the body file avoids PowerShell/JSON quoting problems:</p>
+
+<pre><code>$SUB = "&lt;subscription id&gt;"          # recorded in CLAUDE.local.md
+$RG  = "rg-content-understanding-dev"
+$APP = "func-invoiceprocess-westus"
+$URL = "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG" +
+       "/providers/Microsoft.Web/sites/$APP?api-version=2024-04-01"
+
+'{"properties":{"functionAppConfig":{"runtime":{"name":"python","version":"3.14"}}}}' |
+    Set-Content -Encoding utf8 .\out\runtime-314.json
+
+&amp; $az rest --method patch --url $URL --body "@out/runtime-314.json"</code></pre>
+
+  <div class="note">
+    Prefer this targeted PATCH over <code>az resource update --set</code>, which does a GET-then-PUT of the
+    whole site object.
+  </div>
+
+  <p><strong>Verify the flip &mdash; check the runtime <em>and</em> that nothing else was collateral
+     damage:</strong></p>
+
+<pre><code>&amp; $az rest --method get --url $URL --query "properties.functionAppConfig" -o json</code></pre>
+
+  <p>Assert <strong>both</strong>:</p>
+  <ul>
+    <li><code>runtime</code> &rarr; <code>{"name":"python","version":"3.14"}</code></li>
+    <li><code>deployment.storage.authentication.type</code> &rarr; still
+        <strong><code>UserAssignedIdentity</code></strong>, and <code>deployment.storage.value</code>
+        still points at the <code>function-deployments</code> container.</li>
+  </ul>
+
+  <div class="warn">
+    <strong>&#9888; Why the second assertion exists.</strong> A nested PATCH that sends
+    <code>functionAppConfig.runtime</code> alone can, if the provider shallow-replaces
+    <code>functionAppConfig</code>, null out <code>deployment.storage</code> &mdash; the keyless wiring
+    rebuilt on 2026-07-14. That would break the deploy in 4b <em>while production is already down</em>.
+    The portal path has no such failure mode, which is the main reason it is recommended over the CLI.
+    If <code>deployment</code> did come back null, restore it <em>before</em> running 4b.
+  </div>
+
+  <h3><span class="num go" style="min-width:44px">4b</span> Redeploy immediately &mdash; the outage ends here</h3>
+
+<pre><code>cd functionapp
+$deployed = $false
+for ($i = 1; $i -le 8; $i++) {
+    "--- publish attempt $i ---"
+    func azure functionapp publish $APP --build remote | Tee-Object -Variable log
+    if (($log -join "`n") -match 'The deployment was successful') { $deployed = $true; break }
+    "attempt $i did not land - retrying"
+}
+if (-not $deployed) {
+    Write-Warning "8 attempts with no success line - check the portal before publishing again"
+}</code></pre>
+
+  <div class="warn">
+    <strong>&#9888; Do not use <code>if ($LASTEXITCODE -eq 0) { break }</code> here.</strong>
+    <code>func</code> exits <strong>non-zero even when the deploy succeeds</strong> (the trailing SSL
+    error described below), so an exit-code loop never breaks &mdash; it would re-publish up to
+    <strong>8 times and hold the outage open for every one of them</strong>. Match on the success
+    <strong>string</strong> instead. Note also that <code>2&gt;&amp;1</code> is deliberately absent: this
+    shell is <strong>PowerShell 5.1 Desktop</strong>, which wraps native stderr in
+    <code>ErrorRecord</code>s and would corrupt the match.
+  </div>
+
+  <div class="note">
+    <strong>Three things that look like failures and are not.</strong>
+    <ul>
+      <li><code>Can't find app with name "func-invoiceprocess-westus"</code> &mdash; an ARM
+          <code>10054</code> reset. It means <em>retry</em>, not wrong app name.</li>
+      <li>A trailing SSL error <em>after</em> <code>The deployment was successful!</code> &mdash;
+          <code>func</code> fetches invoke URLs last, through the inspector. The deploy already landed.
+          <em>Read the log, not the exit code.</em></li>
+      <li>On Core Tools 4.12.0 only: <code>Remote build for Python 3.14 is not yet supported for Flex</code>
+          &mdash; <strong>stale and non-blocking</strong>; the build succeeds. Gone in 4.13.0.</li>
+    </ul>
+  </div>
+
+  <div class="ok">
+    The window is closed once the worker re-initializes on the new package. Confirm with checks 7 and 8
+    below.
+  </div>
+
+  <h2><span class="num">5</span>Correct the docs that now state the opposite <span class="local">no prod impact</span></h2>
+
+  <p>
+    The &ldquo;stay on 3.13&rdquo; rule is now wrong in four files and will otherwise send the next person
+    to revert this work. Replace each with the <em>reason it changed</em>, dated &mdash;
+    <code>docs/project-playbook.md</code>&nbsp;&sect;7.4 itself warns: &ldquo;<strong>Pin the runtime
+    deliberately and write down why</strong>, or someone will upgrade it to silence a warning.&rdquo;
+  </p>
+
+  <table>
+    <tr><th>File</th><th>Change</th></tr>
+    <tr><td><code>CLAUDE.local.md</code></td>
+        <td>&ldquo;Stay on Python 3.13&rdquo; bullet &rarr; 3.14, remote build fixed 2026-06-23; interpreter
+            path note &rarr; <code>pythoncore-3.14-64</code></td></tr>
+    <tr><td><code>docs/provision-azure-environment.html</code></td>
+        <td>&sect;7 heading and <code>--runtime-version 3.13</code> &rarr; <code>3.14</code>; replace the
+            &ldquo;Stay on Python 3.13&rdquo; note</td></tr>
+    <tr><td><code>docs/deploy-to-azure.html</code></td>
+        <td>The <code>Local python version &hellip; is different from '3.13'</code> bullet is obsolete
+            (versions now match); replace with the Core&nbsp;Tools&nbsp;&lt;4.13.0 stale-warning note</td></tr>
+    <tr><td><code>docs/project-playbook.md</code> &sect;7.4</td>
+        <td>Build-on-the-platform still holds; retire the &ldquo;newer minor had no remote-build
+            support&rdquo; clause, dated</td></tr>
+    <tr><td><code>README.md</code> (lines 53&ndash;55)</td>
+        <td>Setup omits <code>pytest</code>; add it, and note <code>truststore</code> is local-only</td></tr>
+  </table>
+
+  <h2><span class="num">6</span>Add the troubleshooting entry <span class="local">no prod impact</span></h2>
+
+<pre><code>Mistake:      A dated platform limitation was written into four files as a standing rule
+              ("3.14 has no remote-build support on Flex") with no re-check trigger.
+Cause:        The constraint was real on 2026-08-18 but was fixed upstream on 2026-06-23 and
+              lingered only as a stale Core Tools warning string, which looked like the
+              limitation persisting.
+Correction:   Platform-capability rules get a dated "verified on" stamp and are re-checked
+              against the live ARM API (az functionapp list-flexconsumption-runtimes) before
+              being treated as binding - not against a tool's warning text.
+Reusable:     Yes -&gt; docs/ai/troubleshooting.md.</code></pre>
+
+  <h2><span class="num">7</span>This page <span class="local">no prod impact</span></h2>
+
+  <p>
+    You are reading it. Per <code>CLAUDE.md</code>, generated deliverables stay on this machine in
+    <code>docs/</code> &mdash; never a hosted page &mdash; and carry <strong>no secrets</strong>:
+    app-setting <em>names</em> only, never values; no keys, connection strings, or SAS URLs; the
+    subscription id and the hashed hostname stay in <code>CLAUDE.local.md</code>.
+  </p>
+
+  <h2>Verification</h2>
+
+  <table>
+    <tr><th>#</th><th>Check</th><th>Command / expectation</th></tr>
+    <tr><td>1</td><td>Both venvs on 3.14</td>
+        <td><code>.\.venv\Scripts\python.exe --version</code> and the same for
+            <code>functionapp\.venv</code> &rarr; <code>3.14.7</code></td></tr>
+    <tr><td>2</td><td>No broken deps</td><td><code>&hellip; -m pip check</code> &rarr; clean, both venvs</td></tr>
+    <tr><td>3</td><td>Offline suite</td><td><code>.\.venv\Scripts\python.exe -m pytest</code> &rarr; green</td></tr>
+    <tr><td>4</td><td>Decision engine on real CU output</td>
+        <td><code>.\.venv\Scripts\python.exe scripts\regress.py --load-local-settings</code> &rarr; PASS,
+            <strong>0 CU calls</strong> &mdash; measured 2026-08-20: <strong>29/29 documents cached</strong>
+            under analyzer hash <code>bc708c840f30</code>, so no network and no credentials are needed</td></tr>
+    <tr><td><strong>4b</strong></td><td><strong>Linux wheels resolve for cp314</strong></td>
+        <td>the <code>pip download</code> command in step&nbsp;3 &rarr; every dependency reported
+            <code>Saved &hellip;</code>, nothing built from source</td></tr>
+    <tr><td>5</td><td>Live runtime flipped</td>
+        <td><code>az rest --method get &hellip; --query "properties.functionAppConfig.runtime"</code> &rarr;
+            <code>{"name":"python","version":"3.14"}</code></td></tr>
+    <tr><td><strong>5b</strong></td><td><strong>Keyless deploy config survived the PATCH</strong></td>
+        <td>same call &rarr; <code>functionAppConfig.deployment.storage.authentication.type</code> is still
+            <code>UserAssignedIdentity</code></td></tr>
+    <tr><td>6</td><td>Deploy landed</td>
+        <td>Publish log ends <code>The deployment was successful!</code>; <code>process_invoice</code>
+            listed</td></tr>
+    <tr><td>7</td><td><strong>Outage closed</strong></td>
+        <td>Portal &rarr; Overview &rarr; <strong>Running</strong>; Log stream shows <strong>no
+            <code>ModuleNotFoundError</code></strong> at worker init</td></tr>
+    <tr><td>8</td><td><strong>End-to-end healthy</strong></td>
+        <td><code>.\.venv\Scripts\python.exe scripts\test.py --base-url https://<span class="ph">&lt;APP-HOST&gt;</span>/api
+            --key <span class="ph">&lt;function key&gt;</span> --file .\samples\<span class="ph">&lt;invoice&gt;</span>.pdf</code>
+            &rarr; 200 + decision payload</td></tr>
+    <tr><td>9</td><td>Settings survived</td>
+        <td><code>az functionapp config appsettings list &hellip; -o table</code> &rarr; still exactly the
+            13 names; nothing injected</td></tr>
+    <tr><td>10</td><td>Ledger row written</td>
+        <td><code>.\.venv\Scripts\python.exe scripts\diag.py --source-id <span class="ph">&lt;smoke-test GUID&gt;</span></code>
+            &rarr; <code>Status=Extracted</code></td></tr>
+  </table>
+
+  <div class="warn">
+    <strong>Checks 1&ndash;4b are local and gate the Azure change. Do not open the outage window (4a)
+    unless every one of them is green.</strong> Each is free and reversible, and together they move
+    every known failure mode <em>outside</em> the window.
+  </div>
+
+  <div class="note">
+    The real hostname is hashed &mdash; the bare <code>.azurewebsites.net</code> name does not resolve.
+    It is recorded in <code>CLAUDE.local.md</code>.
+  </div>
+
+  <h2>Rollback</h2>
+
+  <p>
+    Flex Consumption has <strong>no deployment slots</strong>, so there is no swap. Rollback is the same two
+    steps in reverse and <strong>opens a second outage window of the same shape</strong>:
+  </p>
+
+  <ol>
+    <li>PATCH <code>properties.functionAppConfig.runtime.version</code> back to <code>"3.13"</code>
+        (or portal &rarr; Python Version &rarr; 3.13 &rarr; Save). <em>Window opens.</em></li>
+    <li><code>func azure functionapp publish $APP --build remote</code> from the same commit &mdash; the
+        remote build re-resolves against 3.13 and restores a working package. <em>Window closes.</em></li>
+  </ol>
+
+  <p>
+    Locally, recreate the two venvs with <code>pythoncore-3.13-64\python.exe</code> &mdash; 3.13 is still
+    installed alongside 3.14 (<code>py -0p</code> lists both), so nothing needs reinstalling.
+  </p>
+
+  <div class="ok">
+    No analyzer, app setting, RBAC assignment, or ledger schema changes &mdash; so there is nothing else
+    to undo.
+  </div>
+
+  <footer>
+    Noble Invoice Processor &middot; Python 3.13 &rarr; 3.14 migration runbook &middot; evidence verified
+    2026-08-20. Companion docs: <code>docs/deploy-to-azure.html</code>,
+    <code>docs/provision-azure-environment.html</code>, <code>docs/project-playbook.md</code>&nbsp;&sect;7,
+    <code>docs/ai/troubleshooting.md</code>.
+  </footer>
+
+</div>
+</body>
+</html>

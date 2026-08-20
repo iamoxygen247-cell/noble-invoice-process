@@ -2325,3 +2325,105 @@ earlier. Replaying all 96 measured reads — the 24 live prod reads included —
 `gates.evaluate` gives **0 wrong `vendor_name`, 96/96 repaired, all `HAPPY_PATH_CANDIDATE`**. The
 code-side guard absorbed a service-side regression that no prompt work would have caught. This is
 the strongest argument yet for the standing "prefer code-side fixes" rule.
+
+---
+
+## A platform limitation written down as a standing rule outlived its cause by two months
+
+**Symptoms (2026-08-20).** Four files — `CLAUDE.local.md`, `docs/provision-azure-environment.html`,
+`docs/deploy-to-azure.html`, `docs/project-playbook.md` §7.4 — all carried the rule *"Stay on Python
+3.13: 3.14 has no remote-build support on Flex Consumption."* Every one of them was wrong, and the
+tooling actively reinforced the error: Core Tools 4.12.0 still prints
+
+```
+Remote build for Python 3.14 is not yet supported for Flex.
+```
+
+**even though the remote build then runs and succeeds.**
+
+**Cause.** The rule was true when written (2026-08-18). Upstream fixed remote build for Python 3.14
+on Flex on **2026-06-23** and rolled it to all regions
+(`Azure/azure-functions-python-worker#1801`, closed *completed*); what lingered was a **stale
+warning string** in Core Tools, which is exactly what a human re-checking the rule would see. The
+warning was removed in Core Tools **4.13.0** — which `winget` does **not** serve (it offers 4.12.1),
+so "just upgrade the tool" does not clear it either.
+
+**Fix — re-check against the control plane, never against a tool's warning text:**
+
+```powershell
+az functionapp list-flexconsumption-runtimes --location westus --runtime python -o json
+# python 3.14 -> skuCode FC1, endOfLifeDate 2030-10-31  => GA on this plan
+```
+
+**Reusable rules.**
+
+1. **A platform-capability rule needs a dated "verified on" stamp and a re-check command**, or it
+   becomes folklore. A CLI warning is a claim about the past; the ARM API is the present.
+2. **A tool's warning is not evidence of a platform limitation.** Warning strings outlive the
+   conditions that produced them, and they are the first thing a re-checker sees.
+3. Corollary to the standing "pin deliberately and write down why" rule: writing down *why* is only
+   half of it. Write down **what would have to change for the pin to be wrong**, so the next reader
+   knows what to test.
+
+---
+
+## `func publish` exits non-zero on success — never loop on the exit code
+
+**Symptoms.** `docs/deploy-to-azure.html` documented a retry loop guarded by
+`if ($LASTEXITCODE -eq 0 -or $?) { break }`. It never breaks. On a good deploy it re-publishes up to
+**8 times**; during a runtime migration that holds the outage window open for every iteration.
+
+**Cause.** `func azure functionapp publish` fetches the invoke URLs as its **last** step, and that
+call goes through the TLS inspector and fails. The deploy has already landed, but the process still
+exits non-zero — a fact recorded two sections above the broken loop in the very same document.
+
+**Fix — match the success string, not the exit code:**
+
+```powershell
+$deployed = $false
+for ($i = 1; $i -le 8; $i++) {
+    func azure functionapp publish $APP --build remote | Tee-Object -Variable log
+    if (($log -join "`n") -match 'The deployment was successful') { $deployed = $true; break }
+}
+```
+
+Do **not** add `2>&1`: PowerShell 5.1 wraps native stderr in `ErrorRecord`s and corrupts the match.
+If you are at the keyboard, a single un-looped publish is safer still — just read the log.
+
+**Reusable lesson.** When a document states "read the log, not the exit code" *and* ships a snippet
+that reads the exit code, the snippet is the one people run. Grep your own runbooks for the pattern
+a caveat warns about.
+
+---
+
+## The `az` truststore shim is shadowed on PATH and has never actually been used
+
+**Symptoms (2026-08-20).** `CLAUDE.local.md` claimed the shim at
+`%LOCALAPPDATA%\az-truststore\shim\az.cmd` was "prepended to the user `PATH`" so that `func` would
+resolve it. Measured resolution order:
+
+```
+1. C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd   <- wins
+2. C:\Users\georg\AppData\Local\az-truststore\shim\az.cmd   <- never reached
+```
+
+**Cause.** Windows composes `PATH` as **machine entries first, then user entries**. `CLI2\wbin` is a
+*machine* entry, so prepending to the *user* PATH can never win. Everything that resolves `az` from
+`PATH` — `func`, and `azure-identity`'s `AzureCliCredential` — gets the **stock** CLI.
+
+**Consequences observed.** Deploys still work (the 2026-08-20 publish succeeded), because the stock
+`az` serves **cached** ARM tokens fine. But a **new scope** needs a real round trip and fails:
+`scripts/diag.py` could not reach the ledger, with
+`AzureCliCredential: CERTIFICATE_VERIFY_FAILED` for a `storage.azure.com` token. Note
+`truststore.inject_into_ssl()` does **not** help here — the failure is in a *subprocess*, not in the
+calling interpreter.
+
+**Workarounds.**
+
+- Read ledger rows with the shim by **absolute path**:
+  `& "$env:LOCALAPPDATA\az-truststore\shim\az.cmd" storage entity show --auth-mode login ...`
+- A real fix requires a **machine** PATH entry ahead of `CLI2\wbin`, or removing the stock entry.
+
+**Reusable lesson.** "It is on PATH" is not the same as "it wins on PATH". Verify with
+`Get-Command <name> -All`, which lists every match in resolution order — a single `Get-Command`
+shows only the winner and would have hidden this for another two months.

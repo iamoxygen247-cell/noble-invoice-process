@@ -151,12 +151,28 @@ func azure functionapp publish $APP --build remote</code></pre>
     during the 2026-08-18 deploy, while succeeding on the first try an hour earlier. <code>func</code> makes its
     app-lookup call with <em>no retry</em>, so a dropped connection surfaces as <code>Can't find app with name</code>.
     That message means "try again", not "wrong app name". Loop it:
-    <pre><code>for ($i=1; $i -le 8; $i++) {
-    func azure functionapp publish $APP --build remote
-    if ($LASTEXITCODE -eq 0 -or $?) { break }
-    "attempt $i failed - retrying"
+    <pre><code>$deployed = $false
+for ($i = 1; $i -le 8; $i++) {
+    "--- publish attempt $i ---"
+    func azure functionapp publish $APP --build remote | Tee-Object -Variable log
+    if (($log -join "`n") -match 'The deployment was successful') { $deployed = $true; break }
+    "attempt $i did not land - retrying"
+}
+if (-not $deployed) {
+    Write-Warning "8 attempts with no success line - check the portal before publishing again"
 }</code></pre>
     The publish itself is idempotent, so a retry after a partial failure is safe.
+  </div>
+
+  <div class="warn">
+    <strong>⚠ Loop on the success <em>string</em>, never on the exit code.</strong> This snippet previously
+    read <code>if ($LASTEXITCODE -eq 0 -or $?) { break }</code>, which is <strong>broken</strong>:
+    <code>func</code> exits non-zero even when the deploy succeeds (see the trailing-SSL-error note below),
+    so that loop never breaks and re-publishes up to <strong>8 times</strong> — on a runtime change, holding
+    the outage open for every one of them. Corrected 2026-08-20. Note also that <code>2&gt;&amp;1</code> is
+    deliberately absent: PowerShell 5.1 wraps native stderr in <code>ErrorRecord</code>s and would corrupt
+    the match. If you are at the keyboard, a <em>single</em> un-looped
+    <code>func azure functionapp publish $APP --build remote</code> is safer still — just read the log.
   </div>
 
   <div class="note">
@@ -166,11 +182,22 @@ func azure functionapp publish $APP --build remote</code></pre>
         <code>func</code> fetches the invoke URLs as its last step and that call goes through the inspector.
         The deploy already landed; the process still exits non-zero.
         <em>Read the log, not the exit code.</em></li>
-      <li><strong><code>Local python version '3.14.7' is different from … '3.13'</code></strong> — only matters
-        for a <em>local</em> build. With <code>--build remote</code> the packages are built on Azure against the
-        app's configured 3.13. Do not "fix" it by moving the app to 3.14: Flex Consumption has no remote-build
-        support there.</li>
+      <li><strong><code>Remote build for Python 3.14 is not yet supported for Flex</code></strong> — a
+        <strong>stale, non-blocking warning</strong> printed by Core&nbsp;Tools&nbsp;4.12.0. The remote build
+        runs and succeeds; observed on the 2026-08-20 deploy, where Oryx completed and the app came up on
+        3.14. Upstream fixed remote build on <strong>2026-06-23</strong>
+        (<code>Azure/azure-functions-python-worker#1801</code>); only the warning string lingered. It is gone
+        in Core&nbsp;Tools&nbsp;4.13.0 — which <strong><code>winget</code> does not yet serve</strong> (it
+        offers 4.12.1), so don't chase the upgrade, and especially not right before a deploy.</li>
     </ul>
+  </div>
+
+  <div class="note">
+    <strong>The app runs Python 3.14 as of 2026-08-20.</strong> Local and cloud now match, so the old
+    <code>Local python version '3.14.x' is different from '3.13'</code> mismatch warning no longer appears.
+    The former "stay on 3.13, Flex has no remote-build support" rule is <strong>retired</strong>: 3.14 is GA
+    on Flex with EOL Oct&nbsp;2030. Full runbook, including the outage window and rollback:
+    <code>docs/python-314-migration.html</code>.
   </div>
   <h3>Option B — VS Code</h3>
   <p>Azure extension → <strong>Workspace</strong> → <strong>Deploy to Function App…</strong> → pick

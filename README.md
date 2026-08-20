@@ -53,8 +53,17 @@ cd noble-invoice-process
 py -m venv .venv
 .venv\Scripts\activate
 pip install -r functionapp\requirements.txt
+pip install pytest truststore
 copy functionapp\local.settings.json.template functionapp\local.settings.json
 ```
+
+`pytest` and `truststore` are installed separately and on purpose. They are **not** in
+`functionapp\requirements.txt` because that file is what Azure rebuilds from server-side, and
+neither belongs on the Function host — `truststore` is a local workaround for TLS-inspecting
+proxies. Without them, `python -m pytest` and the pre-commit hook fail on a fresh checkout.
+
+The project targets **Python 3.14** (migrated from 3.13 on 2026-08-20); the Function App runs the
+same version. See `docs/python-314-migration.html`.
 
 Put the CU key in `AZURE_CU_KEY` in `local.settings.json` (or leave it blank to use
 your `az login` identity), and set `AZURE_STORAGE_ACCOUNT`. `local.settings.json` is
