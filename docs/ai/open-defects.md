@@ -3,6 +3,12 @@
 Defects found but **not fixed**, with the evidence behind each. Deferred deliberately so the
 work in flight stays reviewable; this file is the backlog they were deferred into.
 
+> **Scope (user, 2026-08-19):** anything whose only impact is on the written Dynamics/Dataverse
+> record — mapping, column shape, normalisation — is a **TODO in `docs/ai/dataverse-todo.md`**,
+> not a defect here. A finding that is both gets its extraction half logged here and its
+> write half there. Items 14 and 15 moved out under this rule; the *Resolved* history and the
+> Dataverse impact index below are kept as written.
+
 **How to use this file.** Add a row when you find a defect you are not fixing now. Record the
 measured rate, not an impression — "5/10 runs" is actionable, "sometimes" is not. When a defect
 is fixed, move it to *Resolved* with the commit sha rather than deleting it, so a future
@@ -55,13 +61,13 @@ Fix **before** the Dataverse write goes live, not before that.
 
 | # | ID | Class | Defect |
 |---|---|---|---|
-| 14 | B2 + B6a + B7 | D2 | Vendor-name inconsistency — nothing normalises the *name* (legal suffix, case). The address half (B6b) was fixed on 2026-08-18: `build_write_values` now collapses whitespace in `service_address` as it already did for `vendor_name` |
+| 14 | B2 + B6a + B7 | D2 | **Moved to `docs/ai/dataverse-todo.md` → DV-4** (2026-08-19). Vendor-name inconsistency — nothing normalises the *name* (legal suffix, case). The address half (B6b) was fixed on 2026-08-18: `build_write_values` now collapses whitespace in `service_address` as it already did for `vendor_name` |
 
 ## P3 — Already mitigated
 
 | # | ID | Class | Status |
 |---|---|---|---|
-| 15 | C4 | D3 | Narrative limits are prompt-only and a `warranty` value measured 403 chars against 400. Mitigated by sizing the Dataverse columns 1000/1000/500 — revisit only if an overshoot is seen in production |
+| 15 | C4 | D3 | **Moved to `docs/ai/dataverse-todo.md` → DV-5** (2026-08-19). Narrative limits are prompt-only. The overshoot behind it is gone: the D2 warranty edit cut the longest value from 435 to 255 against a 400 limit, which also supersedes stage D1 of the retry plan |
 
 ---
 

@@ -40,6 +40,7 @@ Use these files for durable project knowledge:
 
 * `docs/ai/troubleshooting.md` — confirmed mistakes, failed commands, debugging lessons, environment issues, and verified fixes.
 * `docs/ai/open-defects.md` — running list of defects found but **not** fixed, with the measured rate for each. Add a row whenever you defer a defect; move it to *Resolved* with its sha when fixed.
+* `docs/ai/dataverse-todo.md` — TODOs for the Dynamics/Dataverse record write (mapping, column shape, normalisation). **Anything whose only impact is on the written record goes here as a TODO, not into `open-defects.md` as a defect** (user, 2026-08-19). A finding that is both gets its extraction half logged as a defect and its write half here.
 * `docs/ai/warranty-prompt-retry-plan.md` — living tracker for the staged work to land the two reverted `warranty` prompt edits (root cause, stage checklist A–D, experiment results, standing cautions). Read it before touching the narrative field prompts.
 * `CLAUDE.local.md` — local machine-specific notes. This file should be gitignored.
 * `.claude/rules/*.md` — optional focused rule files for Python, testing, security, Windows, or project-specific workflows.
