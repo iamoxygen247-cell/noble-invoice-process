@@ -18,6 +18,10 @@ Thumbs.db
 out/
 CLAUDE.local.md
 .claude/settings.local.json
+# Single-developer repo: the Claude permission allowlist is machine-local, not shared.
+# It accumulated session-scoped temp paths and machine paths twice (108cb9a, e794864);
+# untracked 2026-08-19 so it stops re-entering history.
+.claude/settings.json
 
 # Azurite local emulator artifacts
 __azurite_db*.json
