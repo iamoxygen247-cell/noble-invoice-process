@@ -133,7 +133,16 @@ new one. That is precisely what arm 0 was, and it is the only reason this was ca
 | **B** | Attribution standard recorded in `troubleshooting.md` | ☑ done | `ed9b045` |
 | **C** | Trigger experiment — scratch analyzer, nothing ships | ☑ **done 2026-08-19 — result: NO trigger exists** | n/a (scratch only) |
 | **D1** | Retry C4 character limits | ☐ **unblocked** by C — proceed under normal verification | |
-| **D2** | Retry warranty disclaimer wording | ☐ **unblocked** by C — but see the `surrey_water` caveat in §4 | |
+| **D2** | Retry warranty disclaimer wording | ☑ **done, pushed to prod 2026-08-19** — `surrey_water` did not reproduce (0/12 both arms, p = 1.000) | `9406364` |
+
+**Prod state verified after the D2 push (2026-08-19), against the live service rather than console
+output:** the `generalinvoice` analyzer (`createdAt` 23:15:59Z) diffs to **zero differences across
+all 39 fields** against the working-tree definition, with `warranty` at the edited 1490 characters;
+the Flex Consumption deployment package `released-package.zip` (23:16:45Z) contains `gates.py`,
+`field_policy.py`, `function_app.py`, `cu_client.py`, `ledger.py`, `diagnostics.py` and `host.json`
+**byte-identical to HEAD**. Analyzer went first, function 46 s later. Worth repeating after any prod
+push: the deployment blob *is* the deployed code on Flex, so hashing its contents against HEAD is a
+direct check, not an inference from a timestamp.
 
 ### What stage A actually shipped
 
