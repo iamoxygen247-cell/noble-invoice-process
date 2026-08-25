@@ -72,6 +72,7 @@ still carry the wrong value.
 | DV-4 | Normalise `vendor_name` / `service_address` before the write | data quality |
 | DV-5 | Narrative column headroom (ex-C4, closes stage D1) | mitigated, see below |
 | DV-6 | Refresh the stale `warranty` contract in `power-automate-design.html` | **now** — semantics changed tonight |
+| DV-7 | `account_number` is now written with an `Account No: ` label | **now** — column width + is the label wanted in the data at all |
 
 ---
 
@@ -201,6 +202,29 @@ No backfill. Anyone reading that column for reporting needs to know the cut-over
 
 The section's sizing rationale is stale too — it argues from a measured 403-character `warranty`,
 and the post-D2 maximum is 255.
+
+### DV-7 — `account_number` now carries an `Account No: ` label
+
+User requirement, 2026-08-24: a non-blank account number is written as `Account No: 123456`
+rather than `123456`. A blank one stays `""`. Applies to **both** buckets — municipal and
+commercial alike — and to `writeValues` only; `fields.account_number` keeps the raw read for the
+review UI. Shipped in `commercial-narrative-v10`, code-side in
+`field_policy.format_account_number`, no analyzer change.
+
+Three things to confirm on the Dynamics side:
+
+1. **Column width.** The label adds 12 characters. The longest account number in the corpus is
+   `7300-689280-0000` (16) → 28 labelled. Confirm the column is at least ~64 wide so nothing
+   truncates silently. Same question as DV-1, for this column specifically.
+2. **Is the label wanted in the data at all?** Baking a label into a stored value is
+   presentation-in-the-database. If the CRM form can render `Account No:` as a field label, that
+   is the cleaner home for it. Raised with the user before implementation and the requirement was
+   confirmed as stated — recorded here because unwinding it later is a data backfill, not a code
+   revert.
+3. **No backfill.** Rows written before this change hold bare account numbers, so the column now
+   holds both shapes. `PolicyVersion` in the ledger marks the boundary
+   (`commercial-narrative-v9` → `v10`). Anyone filtering or joining on that column needs the
+   cut-over date, exactly as with DV-6.
 
 ---
 

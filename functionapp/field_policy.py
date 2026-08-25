@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v9"
+POLICY_VERSION = "commercial-narrative-v10"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -1273,6 +1273,32 @@ def strip_trailing_date(value: Any) -> Any:
     return trimmed if trimmed and any(c.isdigit() for c in trimmed) else value
 
 
+# The written account number carries its own label (user requirement, 2026-08-24). Presentation
+# only: it is applied to the WRITE value alone, never to the resolution, so fields.account_number
+# and resolutions.account_number keep the identifier exactly as CU read it, and no gate can see
+# the label -- account_number has no format rule, evaluate_b4 reads the resolution rather than
+# the write value, and the PO-echo guard compares digits. Not bucket-conditional: municipal and
+# commercial bills are labelled alike.
+ACCOUNT_LABEL = "Account No: "
+# Anchored, so it only recognises a label the value already STARTS with. Distinct from
+# _ACCOUNT_LABEL, which searches the document text for evidence that a page names an account.
+_ACCOUNT_ALREADY_LABELLED = re.compile(r"(?i)^\s*(?:account\s*(?:number|no\.?|#)|acct\.?)\b")
+
+
+def format_account_number(value: Any) -> str:
+    """
+    The written account number, labelled: '123456' -> 'Account No: 123456'.
+
+    A blank account number stays blank -- a bare 'Account No: ' with nothing after it is
+    never written. A value that already opens with its own label (CU occasionally pulls a
+    label into a value) is returned as-is rather than doubled.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    return text if _ACCOUNT_ALREADY_LABELLED.match(text) else ACCOUNT_LABEL + text
+
+
 # How far a printed day count may sit from its own period span and still be believed:
 # 10 days, or 15% of the span, whichever is larger. Both bounds are pinned by real
 # documents. A metered count legitimately differs from the billing-period span because the
@@ -1676,6 +1702,13 @@ def build_write_values(
     for name in (PO_FINAL, ACCOUNT_FINAL):
         if write[name] is None or (isinstance(write[name], str) and write[name].strip() == ""):
             write[name] = ""
+
+    # ...and the account number is then labelled for the write (see format_account_number).
+    # Applied here rather than at the end of gates.evaluate because that function returns
+    # through _result in three places -- the B2 reject and the no-child review exit before
+    # any of the repairs run -- and all three emit writeValues. build_write_values is the
+    # one point every path passes through.
+    write[ACCOUNT_FINAL] = format_account_number(write[ACCOUNT_FINAL])
 
     # pst_amount is written as 0 when no PST is charged (most invoices are
     # service-only) or the twins resolved to N/A/empty -- Dynamics gets a number.

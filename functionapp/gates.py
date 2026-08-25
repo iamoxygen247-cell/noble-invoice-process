@@ -688,6 +688,12 @@ def evaluate(
     # Discarded only when the digits match the resolved PO *and* the page prints no account
     # label at all -- every corpus document with a genuine account number prints one, which
     # is what keeps a real account that coincides with a PO safe (field_policy).
+    #
+    # The write value reaching here is LABELLED ('Account No: 11022266' -- see
+    # field_policy.format_account_number); account_number_echoes_po strips every non-digit
+    # from both sides before comparing, so the label does not change its verdict, and the
+    # discard below writes "" rather than a bare label. Any future rule added here that
+    # inspects account_number must expect the labelled form.
     if field_policy.account_number_echoes_po(
             write_values[field_policy.ACCOUNT_FINAL],
             write_values[field_policy.PO_FINAL],

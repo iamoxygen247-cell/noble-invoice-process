@@ -2113,7 +2113,7 @@ def test_account_number_that_is_just_the_po():
         account_number_extract=fstr("11022266", 0.90),
     ), "Account number: 11022266\nJob # 11022266")
     check("a labelled account number is kept",
-          r["writeValues"]["account_number"] == "11022266",
+          r["writeValues"]["account_number"] == "Account No: 11022266",
           str(r["writeValues"].get("account_number")))
 
     echo = field_policy.account_number_echoes_po
@@ -2123,6 +2123,72 @@ def test_account_number_that_is_just_the_po():
     check("punctuation ignored when comparing", echo("#11022266", "11022266", "no label"))
     for label in ("Account Number: 5077636", "Acct. 5077636", "A/C 5077636", "Customer ID: 22-577"):
         check(f"{label!r} protects the field", not echo("11022266", "11022266", label))
+
+
+def test_account_number_label():
+    print("\n[gates: the written account_number carries an 'Account No: ' label]")
+
+    label = field_policy.format_account_number
+
+    # The helper itself.
+    check("a value is labelled", label("123456") == "Account No: 123456", label("123456"))
+    check("punctuation is kept as printed",
+          label("7300-689280-0000") == "Account No: 7300-689280-0000", label("7300-689280-0000"))
+    for blank in (None, "", "   "):
+        check(f"{blank!r} stays blank (never a bare label)", label(blank) == "", repr(label(blank)))
+    # CU occasionally pulls a printed label into the value; do not double it.
+    for already in ("Account No: 123456", "Account Number 123456", "acct. 123456"):
+        check(f"{already!r} is not doubled", label(already) == already, label(already))
+
+    # Municipal: labelled write value, and the label is invisible to routing -- the critical
+    # -field gate reads the resolution, not the write value, so this must still route happy.
+    r = ev(municipal_fields(account_number_extract=fstr("425096", 0.95)))
+    check("municipal writes the labelled value",
+          r["writeValues"]["account_number"] == "Account No: 425096",
+          str(r["writeValues"].get("account_number")))
+    check("municipal still routes happy (the label never gates)",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("fields.account_number keeps the raw read",
+          r["fields"]["account_number"]["value"] == "425096",
+          str(r["fields"].get("account_number")))
+
+    # Commercial: same label. The rule is not bucket-conditional -- account_number is
+    # informational here and critical on municipal, but both are written the same way.
+    r = ev(commercial_fields(account_number_extract=fstr("22-57740-63006", 0.91)))
+    check("commercial writes the labelled value too",
+          r["writeValues"]["account_number"] == "Account No: 22-57740-63006",
+          str(r["writeValues"].get("account_number")))
+    check("commercial fields.account_number keeps the raw read",
+          r["fields"]["account_number"]["value"] == "22-57740-63006",
+          str(r["fields"].get("account_number")))
+
+    # An absent account number is still "" -- the Dataverse TEXT contract, not a bare label.
+    fields = commercial_fields()
+    fields["account_number_extract"] = fstr("", None)
+    check("an absent account number stays ''",
+          ev(fields)["writeValues"]["account_number"] == "",
+          str(ev(fields)["writeValues"].get("account_number")))
+
+    # The PO-echo guard still fires on a labelled value: it compares digits, and its discard
+    # writes "" rather than a bare label.
+    r = ev_md(commercial_fields(
+        po_or_job_number_extract=fstr("11022266", 0.93),
+        account_number_extract=fstr("11022266", 0.90),
+    ), "NOBLE & ASSOCIATES PROPERTY MANAGEMENT # 11022266")
+    check("a labelled PO echo is still discarded",
+          r["writeValues"]["account_number"] == "",
+          str(r["writeValues"].get("account_number")))
+    check("digit comparison sees through the label",
+          field_policy.account_number_echoes_po("Account No: 11022266", "11022266", "no label"))
+
+    # Every gates.evaluate exit emits writeValues, including the two that return before any
+    # of the repairs run. The label is applied in build_write_values, which precedes all
+    # three, so the B2 reject carries it too.
+    r = ev(municipal_fields(account_number_extract=fstr("425096", 0.95)), category="other")
+    check("B2 reject still emits the labelled value",
+          r["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY
+          and r["writeValues"]["account_number"] == "Account No: 425096",
+          f'{r["routingDecision"]} / {r["writeValues"].get("account_number")}')
 
 
 def test_payment_due_date_corroboration_rescue():
@@ -2281,7 +2347,8 @@ def test_account_number_twin():
     # municipal confident extract -> happy; printed form (dashes kept) written; source = extract.
     r = ev(municipal_fields(account_number_extract=fstr("12345-001", 0.95)))
     check("municipal confident extract -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
-    check("printed form (dashes kept) written", r["writeValues"]["account_number"] == "12345-001",
+    check("printed form (dashes kept) written",
+          r["writeValues"]["account_number"] == "Account No: 12345-001",
           str(r["writeValues"].get("account_number")))
     check("account source = extract", r["resolutions"]["account_number"]["source"] == "extract",
           str(r["resolutions"].get("account_number")))
@@ -2297,7 +2364,8 @@ def test_account_number_twin():
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("account source = agreement", r["resolutions"]["account_number"]["source"] == "agreement",
           str(r["resolutions"].get("account_number")))
-    check("writes the literal extract value", r["writeValues"]["account_number"] == "123456789012",
+    check("writes the literal extract value",
+          r["writeValues"]["account_number"] == "Account No: 123456789012",
           str(r["writeValues"].get("account_number")))
 
     # municipal disagreeing low twins -> review + disagree advisory.
@@ -2331,7 +2399,8 @@ def test_account_number_twin():
     check("commercial low-conf account -> still happy (never blocks)",
           r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     check("commercial account written to writeValues",
-          r["writeValues"]["account_number"] == "A-778812", str(r["writeValues"].get("account_number")))
+          r["writeValues"]["account_number"] == "Account No: A-778812",
+          str(r["writeValues"].get("account_number")))
 
     # identifier agreement helper: letters+digits only, case-insensitive.
     agree = field_policy._identifier_values_agree

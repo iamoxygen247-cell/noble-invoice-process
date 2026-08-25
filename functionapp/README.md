@@ -73,13 +73,13 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v9",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v10",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
   "writeValues": { "vendor_name": "...", "invoice_date": "2026-05-01",
                    "payment_due_date": "2026-05-31", "amount_excluding_gst": 100.0,
-                   "account_number": "123456789012", "sub_bill_type": "repair",
+                   "account_number": "Account No: 123456789012", "sub_bill_type": "repair",
                    "billing_period_start_date": "2026-01-01",
                    "billing_period_end_date": "2026-03-31", "number_of_days": 83,
                    "diagnosis_solution": "Traced the leak to a hole in the membrane and made a temporary repair.",
@@ -323,7 +323,9 @@ connection (encrypted at rest, never in run history) rather than in the flow.
    - `HAPPY_PATH_CANDIDATE` → **Add a new row** to the Dataverse invoice table →
      on 201, update the ledger row (`Status=Written`, `DynamicsRecordId`).
      `writeValues` now includes `account_number` (required on municipal bills,
-     optional on commercial), `sub_bill_type` (gas / electric / water /
+     optional on commercial; since `commercial-narrative-v10` the written value
+     carries its own label — `"Account No: 123456"` on both bill types, `""`
+     when the bill prints none), `sub_bill_type` (gas / electric / water /
      business_license / service / repair / other), and the billing-period trio
      `billing_period_start_date` / `billing_period_end_date` (`YYYY-MM-DD` or
      `""`) and `number_of_days` (integer or `""`) for the tenant
