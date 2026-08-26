@@ -18,7 +18,7 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-19 (sha 9406364: stage D2 shipped — the warranty prompt edit and the D2-b billing-period fix are both live in prod, analyzer and function app verified at HEAD. See docs/ai/warranty-prompt-retry-plan.md).
+Last updated: 2026-08-26 (sha 23c36a9: the `po_or_job_number` prefix rule relaxed from `110`/`330` to `11`/`33`; analyzer and function app both verified live at HEAD. New item C5 records that no real document exercises the widened range. Previous watermark: 2026-08-19, sha 9406364 — stage D2, see docs/ai/warranty-prompt-retry-plan.md).
 
 ---
 

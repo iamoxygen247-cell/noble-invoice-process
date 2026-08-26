@@ -272,7 +272,9 @@ for ($i=1; $i -le 6 -and -not $k; $i++) {
 # 2. Real invoice -> expect HTTP 200 + a routingDecision, writes a ledger row
 .\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\trade1.pdf"
 
-# 3. 8-digit PO rule end-to-end: a non-8-digit PO should now route to REVIEW_B4_CRITICAL_FIELD
+# 3. PO rule end-to-end: expect po_or_job_number 33002358 -> subBillType "service"
+#    (verified 2026-08-26. NOTE: this file no longer exercises a PO *format violation* --
+#    CU extracts its PO cleanly, and the doc reviews on total_invoice_amount instead.)
 .\.venv\Scripts\python.exe scripts\test.py --base-url "https://&lt;HOST&gt;" --key "&lt;KEY&gt;" --file ".\samples\landscaping.pdf"
 
 # 4. Re-post the same source id -> alreadyProcessed:true (gate A1)

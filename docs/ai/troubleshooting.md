@@ -2427,3 +2427,134 @@ calling interpreter.
 **Reusable lesson.** "It is on PATH" is not the same as "it wins on PATH". Verify with
 `Get-Command <name> -All`, which lists every match in resolution order — a single `Get-Command`
 shows only the winner and would have hidden this for another two months.
+
+---
+
+## "az failed after 5 attempts - likely the Norton handshake reset (10054)" is often a lie
+
+**Symptoms (2026-08-26).** Every `az` command failed five times and ended with the profile
+wrapper's warning blaming Norton/10054. The actual error, printed above it on every attempt, was:
+
+```
+AADSTS50078: Presented multi-factor authentication has expired due to policies configured
+by your administrator, you must refresh your multi-factor authentication to access
+'797f4846-ba00-4fd7-ba43-dac1f8f63013'
+```
+
+**Cause.** The wrapper's warning is **unconditional** — it fires on any non-zero exit after its
+retry loop, whatever the cause:
+
+```powershell
+foreach ($attempt in 1..5) { ... }
+Write-Warning "az failed after 5 attempts - likely the Norton handshake reset (10054)."
+```
+
+The real fault was an expired MFA claim on the ARM scope (`797f4846-…` is the Azure Resource
+Manager app id). **Retrying cannot fix this** — each attempt re-presents the same stale token.
+
+**How to tell the two apart in one glance.** Compare the Trace/Correlation IDs and timestamps
+across the retries:
+
+- **Identical** across all attempts → a deterministic rejection from Entra (auth, policy, RBAC).
+  Retrying is pure waste.
+- **Different** each time → a genuine transport-level reset. Retrying is the right move.
+
+On 2026-08-26 all five attempts returned Trace ID `5b970c10-…`, Correlation ID `2fefe399-…` and
+timestamp `05:38:35Z` — one deterministic refusal echoed five times.
+
+**Fix.** Exactly what the AADSTS message says, then re-select the subscription (`az logout`
+clears it):
+
+```powershell
+az logout
+az login --tenant "<TENANT_ID>" --scope "https://management.core.windows.net//.default"
+az account set --subscription "<SUBSCRIPTION_ID>"
+az account show --query "{name:name, user:user.name}" -o table
+```
+
+`az login` is **interactive** — an agent cannot run it; hand it to the operator.
+
+**Reusable lesson.** Read the error the tool printed, not the summary the wrapper appended. A
+blanket "likely X" message is a guess written before the failure happened. Worth making the
+wrapper conditional so it only blames Norton when the output actually contains `10054`, and
+surfaces an `AADSTS…` code as itself.
+
+---
+
+## Verifying a Flex deploy when ARM is flapping and the package blob is unreadable
+
+**Symptoms (2026-08-26).** Confirming a function-app deploy took several dead ends:
+
+| Attempt | Result |
+|---|---|
+| stock `az` from a non-PowerShell shell | `CERTIFICATE_VERIFY_FAILED` (no profile ⇒ no truststore) |
+| shim by absolute path, `az functionapp show` | `10054` on 10 consecutive tries |
+| PowerShell wrapper, `az functionapp show` | `10054` |
+| `az storage blob list` on `function-deployments` | `AuthorizationPermissionMismatch` |
+| Python SDK + `AzureCliCredential` on the same container | `AuthorizationPermissionMismatch` |
+| **`az rest` single GET on `/deployments`** | **succeeded on attempt 4** |
+
+**Causes.** Three separate things, easily confused:
+
+1. **ARM was degraded while the CU data plane was perfectly healthy** — a live `get_analyzer`
+   call succeeded throughout. "The network is broken" was the wrong conclusion; only
+   `management.azure.com` was resetting.
+2. **`az functionapp show` makes extra calls.** The traceback shows `is_flex_functionapp` →
+   `get_raw_functionapp`, so it has more chances to be reset than a single request — and a reset
+   mid-response yields a **partial JSON object** with `name` present but `state`,
+   `lastModifiedTimeUtc` and `functionAppConfig` all null. That looks like a broken app; it is a
+   truncated payload. `az rest --method get` issues one request and is markedly more reliable.
+3. **The deployment blob is not readable by the operator.** `prod-current-at-9406364` recommends
+   hashing `released-package.zip` in `function-deployments` against HEAD. That storage is keyless
+   to the **managed identity** `id-invoice-processing-dev`; the signed-in user has no Blob Data
+   role, so the recipe returns `AuthorizationPermissionMismatch`. Do not chase it.
+
+**The check that works** — deployment history, one request, retried:
+
+```powershell
+$B = "https://management.azure.com/subscriptions/<SUB>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<APP>"
+az rest --method get --url "$B/deployments?api-version=2023-12-01" -o json
+```
+
+Read the newest record: `active: true` and `status: 4` (Kudu *Success*) with an `end_time`
+matching the deploy. That is a positive statement about the running build, unlike
+`lastModifiedTimeUtc`, which tracks **site config** and not code — on 2026-08-26 it still read
+`2026-08-20T13:14:27` hours after a successful deploy.
+
+**Reusable lesson.** When a cloud call fails, establish *which* endpoint is failing before
+concluding anything is broken — data plane and control plane fail independently. And prefer a
+single raw request over a convenience command when the transport is unreliable: fewer round trips
+means fewer chances to be reset, and no silent partial results.
+
+---
+
+## Scanning PDF byte streams for content is unsound — it invents values that are not on the page
+
+**Symptoms (2026-08-26).** Looking for a sample invoice carrying a PO outside the `110`/`330`
+range, a stdlib scan (zlib-decompress every `stream` object, regex for 8-digit `11`/`33` runs)
+reported **8 candidates across 6 documents**, including `33267673` in `bug_260504_0021.pdf`.
+
+**Cause.** The number is not on the page. That document is in the golden corpus, and its cached
+CU OCR contains exactly one such value:
+
+```
+<td>P.O. No.</td> ... <td>33001669</td>
+all 8-digit 11/33 runs in OCR: ['33001669']
+```
+
+`33267673` occurs **zero** times in the real text — it came from font tables, object metadata or
+xref data inside the PDF container. The scan was wrong in both directions: it invented
+`33267673` (false positive) and missed the true PO `33001669` (false negative, because printed
+text is routinely split across `TJ` array elements and never appears as one contiguous digit run).
+
+**Reusable lesson.** A PDF's bytes are not its text. Never treat a raw-stream regex as evidence
+about document content — decide with the **CU OCR markdown**, which is authoritative and already
+cached in `out/regress-cache/` for every corpus document (free, offline, no API calls):
+
+```python
+sys.path.insert(0, "functionapp"); import gates
+md = gates.collect_markdown(json.loads(cache_file.read_text(encoding="utf-8")))
+```
+
+If a real answer needs a proper parser, add one deliberately — do not substitute a heuristic and
+then reason from its output.
