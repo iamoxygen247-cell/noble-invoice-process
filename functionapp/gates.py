@@ -477,7 +477,7 @@ def evaluate(
     critical = field_policy.critical_fields(bucket)
 
     # PO rescue: when the twins yield no usable value (failed resolution, or a
-    # resolved value that breaks the 110/330 8-digit invariant and so is
+    # resolved value that breaks the 11/33 8-digit invariant and so is
     # guaranteed wrong), scan the OCR markdown for the number deterministically.
     # Exactly one distinct candidate -> auto-accept with an advisory (source
     # "ocr", confidence 1.0: the value is a pure function of the OCR text).
@@ -497,7 +497,7 @@ def evaluate(
                     f"(CU twins resolved to {po_value!r})"
                 )
                 # The rescued PO's prefix determines the commercial sub-type
-                # (330 service / 110 repair): refresh the resolved sub_bill_type
+                # (33 service / 11 repair): refresh the resolved sub_bill_type
                 # with the new final PO value.
                 sub_value, sub_confidence = parsed.get(field_policy.SUB_BILL_TYPE, (None, None))
                 write_values[field_policy.SUB_BILL_TYPE] = field_policy.resolve_sub_bill_type(

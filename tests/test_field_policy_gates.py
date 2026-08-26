@@ -235,11 +235,15 @@ def test_commercial_routing():
     r = ev(commercial_fields(total_invoice_amount_extract=fnum(105.0, 0.72)))
     check("conf == 0.72 fails", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
 
-    # po_or_job_number format: exactly 8 digits starting 110/330 (analyzer prompt + B4 gate)
+    # po_or_job_number format: exactly 8 digits starting 11/33 (analyzer prompt + B4 gate)
     r = ev(commercial_fields(po_or_job_number_extract=fstr("11024580", 0.95)))
-    check("commercial 110-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("commercial 11-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     r = ev(commercial_fields(po_or_job_number_extract=fstr("33001022", 0.95)))
-    check("commercial 330-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    check("commercial 33-prefixed PO -> happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    # third digit is not constrained: 11x/33x is as valid as 110/330.
+    r = ev(commercial_fields(po_or_job_number_extract=fstr("11524580", 0.95)))
+    check("commercial 11-prefixed PO, third digit != 0 -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
     r = ev(commercial_fields(po_or_job_number_extract=fstr("JOB-4471", 0.95)))
     check("commercial alphanumeric PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
     check("PO format review reason names the field",
@@ -249,7 +253,7 @@ def test_commercial_routing():
     r = ev(commercial_fields(po_or_job_number_extract=fstr("123456789", 0.95)))
     check("commercial 9-digit PO -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
     r = ev(commercial_fields(po_or_job_number_extract=fstr("12345678", 0.95)))
-    check("commercial 8-digit PO without 110/330 prefix -> review",
+    check("commercial 8-digit PO without 11/33 prefix -> review",
           r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
 
 
@@ -423,10 +427,13 @@ def test_response_shape():
 def test_field_format_rules():
     print("\n[field_policy: per-field format rules]")
     vr = field_policy.format_violation_reason
-    check("110-prefixed 8-digit po ok", vr("po_or_job_number", "11024580") is None)
-    check("330-prefixed 8-digit po ok", vr("po_or_job_number", "33001022") is None)
-    check("8-digit po without 110/330 prefix violates", vr("po_or_job_number", "12345678") is not None)
-    check("leading-zero 8-digit po violates (not 110/330)", vr("po_or_job_number", "00471234") is not None)
+    check("11-prefixed 8-digit po ok", vr("po_or_job_number", "11024580") is None)
+    check("33-prefixed 8-digit po ok", vr("po_or_job_number", "33001022") is None)
+    # only the first two digits are constrained; the third is free.
+    check("11-prefixed po with third digit != 0 ok", vr("po_or_job_number", "11524580") is None)
+    check("33-prefixed po with third digit != 0 ok", vr("po_or_job_number", "33512345") is None)
+    check("8-digit po without 11/33 prefix violates", vr("po_or_job_number", "12345678") is not None)
+    check("leading-zero 8-digit po violates (not 11/33)", vr("po_or_job_number", "00471234") is not None)
     check("7-digit po violates", vr("po_or_job_number", "1102458") is not None)
     check("9-digit po violates (0008's label artifact)", vr("po_or_job_number", "330001022") is not None)
     check("spaced po violates on the resolved value", vr("po_or_job_number", "1102 4580") is not None)
@@ -484,6 +491,12 @@ def test_find_po_candidates():
           find("11024580 5.00") == ["11024580"])
     check("two distinct candidates in order of appearance",
           find("Job# 11024580 and PO 33001022") == ["11024580", "33001022"])
+    check("third digit != 0 found (only 11/33 is constrained)",
+          find("Job# 11524580") == ["11524580"])
+    # the lookarounds are the sole defence now that the prefix is two digits:
+    # without them this 9-digit run truncates to a valid-looking 11524580.
+    check("9-digit run with a newly-valid 8-digit head rejected",
+          find("ref 115245801 x") == [])
     check("wrong prefix ignored", find("Invoice 12345678") == [])
     check("phone number ignored", find("call 604 330 1022 now") == [])
     check("10 contiguous digits ignored", find("GST 1102458012") == [])
@@ -2723,10 +2736,15 @@ def test_sub_bill_type():
     check("municipal unknown label -> other", resolve("municipal", "property_tax", 0.95, None) == "other")
     check("municipal empty label -> other", resolve("municipal", "", 0.95, None) == "other")
 
-    # commercial: the format-valid resolved PO's prefix decides (330 -> service,
-    # 110 -> repair); the classified label and its confidence are ignored.
-    check("commercial 330 PO -> service", resolve("commercial", None, None, "33001022") == "service")
-    check("commercial 110 PO -> repair", resolve("commercial", None, None, "11024580") == "repair")
+    # commercial: the format-valid resolved PO's first two digits decide
+    # (33 -> service, 11 -> repair); the third digit is not consulted, and the
+    # classified label and its confidence are ignored.
+    check("commercial 33 PO -> service", resolve("commercial", None, None, "33001022") == "service")
+    check("commercial 11 PO -> repair", resolve("commercial", None, None, "11024580") == "repair")
+    check("commercial 33 PO, third digit != 0 -> service",
+          resolve("commercial", None, None, "33512345") == "service")
+    check("commercial 11 PO, third digit != 0 -> repair",
+          resolve("commercial", None, None, "11524580") == "repair")
     check("commercial label ignored (repair label + 330 PO -> service)",
           resolve("commercial", "repair", 0.95, "33001022") == "service")
     check("commercial label ignored (gas label + 110 PO -> repair)",

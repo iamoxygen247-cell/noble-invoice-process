@@ -205,7 +205,7 @@ COMMERCIAL = "commercial"
 
 # sub_bill_type: informational sub-classification of bill_type. A commercial
 # bill derives it from the resolved po_or_job_number (Noble's numbering scheme:
-# a format-valid 330... PO is a service job, 110... a repair job); the classified
+# a format-valid 33... PO is a service job, 11... a repair job); the classified
 # label is ignored. A municipal bill resolves the classified label against its
 # own (stricter) confidence bar. CU's estimated confidence on classify fields is
 # noisy (+-0.3 on identical documents) while the label itself is stable, so a
@@ -250,11 +250,11 @@ def critical_fields(bucket: str) -> Tuple[str, ...]:
 # human hint). A *critical* field whose value fails its pattern is treated as a
 # critical-field failure by the B4 gate (routes to review). Empty/missing values
 # are handled by the gate's presence check, not here. po_or_job_number is an
-# 8-digit, all-numeric identifier that always starts with 110 or 330 (Noble's
+# 8-digit, all-numeric identifier that always starts with 11 or 33 (Noble's
 # PO/job numbering scheme) -- matched as text, never parsed as a number.
-_PO_EXACT = re.compile(r"(?:110|330)\d{5}")
+_PO_EXACT = re.compile(r"(?:11|33)\d{6}")
 FIELD_FORMATS: Dict[str, Tuple["re.Pattern[str]", str]] = {
-    "po_or_job_number": (_PO_EXACT, "exactly 8 digits starting with 110 or 330"),
+    "po_or_job_number": (_PO_EXACT, "exactly 8 digits starting with 11 or 33"),
 }
 
 
@@ -290,9 +290,10 @@ def resolve_sub_bill_type(
 
     A commercial bill ignores the classified label entirely: the sub-type is
     derived from the resolved po_or_job_number (Noble's numbering scheme encodes
-    it). A format-valid PO starting with 33 is a ``service`` job, one starting
-    with 11 a ``repair`` job. A missing or format-violating PO is guaranteed
-    wrong, so it never drives the sub-type -- the bill resolves to ``other``.
+    it in the first two digits). A format-valid PO starting with 33 is a
+    ``service`` job, one starting with 11 a ``repair`` job; the third digit is
+    not consulted. A missing or format-violating PO is guaranteed wrong, so it
+    never drives the sub-type -- the bill resolves to ``other``.
 
     A municipal bill resolves the classified label: it is trusted when it clears
     SUB_BILL_TYPE_THRESHOLD (stricter than the critical-field THRESHOLD) OR when
@@ -351,9 +352,12 @@ def demote_non_water_sub_type(sub_bill_type: Any, text: Optional[str]) -> Any:
     return sub_bill_type
 
 
-# Contiguous 8-digit 110/330 run not embedded in a longer digit run, so a
-# 9-digit artifact like 330001022 never yields a false 33000102.
-_PO_CONTIGUOUS = re.compile(r"(?<!\d)(?:110|330)\d{5}(?!\d)")
+# Contiguous 8-digit 11/33 run not embedded in a longer digit run, so a 9-digit
+# artifact like 330001022 never yields a false 33000102. The lookarounds are the
+# only thing enforcing the 8-digit length here: with the prefix relaxed to two
+# digits they are the sole defence against a longer run being truncated into a
+# valid-looking PO (115245801 -> 11524580), so do not drop them.
+_PO_CONTIGUOUS = re.compile(r"(?<!\d)(?:11|33)\d{6}(?!\d)")
 # Maximal run of digits separated by single spaces/tabs (OCR sometimes spaces
 # digits out, e.g. "1102 4580"). Matched as whole runs so adjacent numbers
 # ("11024580 5.00") are judged together and rejected, never merged into a hit.
@@ -362,7 +366,7 @@ _PO_SPACED_RUN = re.compile(r"\d(?:[ \t]?\d)*")
 
 def find_po_candidates(text: Optional[str]) -> List[str]:
     """Distinct PO/job-number candidates found in free document text, in order
-    of first appearance. A candidate is an 8-digit 110/330 number, either
+    of first appearance. A candidate is an 8-digit 11/33 number, either
     contiguous or with spaces/tabs between the digits (normalised to contiguous
     digits). Used to rescue a PO the analyzer missed from the OCR markdown."""
     if not text:

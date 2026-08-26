@@ -386,6 +386,35 @@ column size — size the three columns comfortably above the longest plausible v
 overshoot is stored rather than rejected. A code-side cap would also give a hard guarantee if
 the appetite for truncation ever changes.
 
+### C5. The relaxed `11`/`33` PO prefix has no real-document coverage
+
+**No Dataverse impact — a test-coverage gap, not a wrong value.**
+
+The `po_or_job_number` prefix rule was relaxed from `110`/`330` to `11`/`33` (third digit no
+longer constrained; length still exactly 8). Nothing in the repo exercises the newly-permitted
+range: every PO in `tests/pre-commit-test/*.expected.json`, in the test literals, and in the
+`out/regress-cache/` OCR text begins `110` or `330`, or is blank — `distinct 3-digit prefixes:
+['110', '330']`, 11 non-empty values.
+
+So the corpus and the suite prove **no regression** (the new rule is a strict superset, so a
+relaxation cannot invalidate anything previously valid), and the unit tests prove the *code*
+accepts the widened range — but they do so with **synthetic values** (`11524580`, `33512345`).
+Nothing proves a real new-prefix PO is extracted end-to-end, and the CU prompt half in
+particular is unverified against a real document.
+
+This is inherent to relaxing a constraint before the newly-permitted values exist, not an
+oversight. **Close it when the first invoice with a third-digit-≠0 PO arrives** by adding it as a
+permanent corpus anchor:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\regress.py --add ".\samples\<new-prefix>.pdf" --load-local-settings
+```
+
+Watch for one specific failure if it does not extract: both worked examples left in the two PO
+prompts (`11024580`, `33001022`) still have a third digit of `0`, so CU may generalise from the
+examples rather than the stated rule. The fix would be to add one third-digit-≠0 example — held
+back deliberately to keep the prompt diff minimal (see C4 on cross-field coupling).
+
 ---
 
 ## Resolved

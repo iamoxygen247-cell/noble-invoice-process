@@ -113,8 +113,9 @@ with a `B4 ` prefix.
 `subBillType` (also `writeValues.sub_bill_type`) is the resolved sub-classification
 of `billType` — informational only, it never gates routing. A commercial bill
 derives it from the resolved `po_or_job_number` (Noble's numbering scheme): a
-format-valid PO starting `330` → `service`, starting `110` → `repair` (an
-OCR-rescued PO counts); a missing or format-violating PO → `other`. The classified
+format-valid PO starting `33` → `service`, starting `11` → `repair` (only the
+first two digits are consulted; an OCR-rescued PO counts); a missing or
+format-violating PO → `other`. The classified
 label is ignored on commercial bills. A municipal bill resolves the classified
 `sub_bill_type` label — trusted when it clears its own confidence bar (0.80,
 stricter than the critical-field threshold) OR when the `sub_bill_type_generate`

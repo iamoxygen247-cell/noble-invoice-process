@@ -100,7 +100,7 @@ The guard's discard writes `""`, not a bare `"Account No: "`.
 
 ### 2.2 Format asymmetry — why the confusion goes one way only
 
-`po_or_job_number` has a **hard format rule**: exactly 8 digits, prefix `110` or `330`
+`po_or_job_number` has a **hard format rule**: exactly 8 digits, prefix `11` or `33`
 (`_PO_EXACT`). It is enforced at B4, and violating it is what triggers the OCR rescue.
 `account_number` has **no format rule at all** — letters, dashes and dots are all legal.
 
@@ -142,10 +142,10 @@ fields keep `null` — numeric columns reject `""`). They share a line of code, 
 
 ### 2.6 What is *not* related
 
-* `find_po_candidates` (`field_policy.py:363`) scans the OCR markdown for 8-digit 110/330
+* `find_po_candidates` (`field_policy.py:363`) scans the OCR markdown for 8-digit 11/33
   numbers. It never consults `account_number`.
-* `resolve_sub_bill_type` derives the commercial sub-type from the PO's prefix (`110` →
-  repair, `330` → service). `account_number` drives nothing downstream.
+* `resolve_sub_bill_type` derives the commercial sub-type from the PO's first two digits
+  (`11` → repair, `33` → service). `account_number` drives nothing downstream.
 * The invoice-number filename fallback, the billing-period derivation and the vendor
   rescues touch neither field.
 
