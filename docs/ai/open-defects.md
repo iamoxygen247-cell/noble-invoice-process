@@ -514,6 +514,59 @@ would route the invoice to review. Never observed in 63 reads, and invisible on 
 (already `REVIEW_B4_CRITICAL_FIELD` for its missing PO) — but on a happy-path document it would
 flip routing.
 
+> ### ⚠ The latent risk materialised the same day, in production
+>
+> The v11 post-deploy smoke test on **`property_burnaby`** — a *different* document, and one the
+> corpus expects to reach `HAPPY_PATH_CANDIDATE` — hit exactly this:
+>
+> ```
+> total_invoice_amount_extract  : null      (confidence 0.975, the absent-field placeholder)
+> total_invoice_amount_generate : 1858.69   at confidence 0.318
+> -> resolution FAILED -> B4 -> REVIEW_B4_CRITICAL_FIELD
+> ```
+>
+> So A7 is **not specific to `recommend_240124_0001`**, and it **does** flip routing on a document
+> that otherwise auto-writes. It degrades safely — review, never a wrong auto-write — but the
+> corpus asserts `HAPPY_PATH_CANDIDATE` for this document, so expect intermittent red here too.
+>
+> It also produced a **different total**: 1858.69 instead of the asserted 2428.69. That is the
+> grant-column effect below, not a second defect — with `extract` gone, the surviving generate
+> twin answered at 0.318, and a low-confidence answer on an ambiguous page picked a different
+> column.
+
+### A7b. Property tax notices print several equally-labelled "Amount due" figures
+
+**Decision recorded, no code written.** A BC property tax notice prints one amount per home-owner
+grant tier, all under an `Amount due` label:
+
+```
+Grant amount   A No Grant  |  B Grant: 570.00  |  C Grant: 845.00
+Amount due     $2,428.69   |  $1,858.69        |  $1,583.69
+```
+
+**3 of the 6 sampled notices are ambiguous this way** (`property_burnaby` 3 figures,
+`property_vancouver` and `property_north_van` 2 each). The other three print grants of `0.00`
+(`property_abbotsford`, `property_surrey`) or a single figure (`property_richmond`).
+
+**Rule (user, 2026-08-27): write the NO-GRANT amount, column A.** The grant requires the property
+to be the owner's principal residence, so managed rentals are not eligible. All six sidecars
+already assert column A, so no corpus change was needed.
+
+**Why no code repair was written.** Simulated a candidate repair — "on a `propertytax` bill whose
+page shows grant tiers, if the written total is not the largest amount-due figure, correct it" —
+across **3,094 cached reads**:
+
+| | |
+|---|---|
+| propertytax reads already writing column A | **18 / 18** |
+| reads the repair would fire on | **0 / 18** |
+| false positives on non-propertytax reads | **0 / 3076** |
+
+CU already picks column A whenever it answers normally. A repair that never fires is speculative
+code for a scenario the evidence says does not occur. **Revisit only if a column-B write is
+observed on a run where `total_invoice_amount_extract` returned a value** — the single observed
+case was an A7 dropout, above, not a considered column choice.
+
 ### C6. The router's `other` description contradicts `general_invoice` on three words
 
 **No Dataverse impact once B8 shipped — but it is why B8 has work to do at all.**
