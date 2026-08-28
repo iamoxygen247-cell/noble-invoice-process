@@ -18,6 +18,11 @@ Two modes:
                        JSON. This reproduces the Function's decision for that
                        run, and is the way to regression-test gates/field_policy
                        changes against real historical responses.
+                       On a run that was B2-rescued there are two raw blobs:
+                       -raw.json is the router response and replays to the
+                       pre-rescue REJECT, while -raw-rescue.json replays to the
+                       extraction behind the decision that was actually returned.
+                       Such rows are stamped RouterCategory='other' in the ledger.
 
 Not named inspect.py: that would shadow the stdlib module the Azure SDKs import.
 

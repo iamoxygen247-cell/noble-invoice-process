@@ -375,6 +375,98 @@ def test_handwriting_b2_nochild():
     check("no child extraction -> review", r["routingDecision"] == gates.REVIEW_NO_CHILD_EXTRACTION)
 
 
+# --- B2 rescue: a router 'other' verdict re-analyzed directly -----------------
+
+
+def router_only_other(markdown="City of Burnaby 2026 PROPERTY TAX NOTICE"):
+    """The real production shape of an 'other' verdict: CU binds no analyzer to
+    the category, so it chains no child and returns its own content only --
+    one segment, no fields. Verified against all 30 REJECT_B2_OTHER_CATEGORY
+    responses in the dev ledger (every one had contents=1, segments=['other'])."""
+    return {"contents": [{"segments": [{"category": "other"}], "markdown": markdown}]}
+
+
+def child_only_result(fields, category="general_invoice"):
+    """A response from calling the general-invoice analyzer directly: no router
+    segment, so no category to reject on. This is the shape regress.py feeds
+    evaluate(), and the shape the B2 rescue produces."""
+    content = {"analyzerId": "generalinvoice", "fields": fields}
+    if category is not None:
+        content["category"] = category
+    return {"contents": [content]}
+
+
+def test_b2_rescue():
+    print("\n[B2 rescue: router said other, re-analysis recovered fields]")
+    rejected = gates.evaluate(router_only_other(), THRESHOLD)
+    check("precondition: router other -> reject",
+          rejected["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY)
+    # 'fields' is never empty (every resolved final is injected, null or not), so
+    # analyzerUsed is what distinguishes "no child ran" from a real extraction.
+    check("precondition: reject ran no child analyzer",
+          rejected["analyzerUsed"] == "NOT FOUND", rejected["analyzerUsed"])
+    check("precondition: every reject field value is null",
+          all(e["value"] is None for e in rejected["fields"].values()))
+
+    # 1. rescue recovers fields -> the ordinary gates decide, so a clean
+    # extraction reaches happy path exactly like any other document
+    rescued = gates.evaluate(child_only_result(commercial_fields()), THRESHOLD)
+    check("precondition: direct re-analysis alone would be happy path",
+          rescued["routingDecision"] == gates.HAPPY_PATH_CANDIDATE)
+    out = gates.apply_b2_rescue(rejected, rescued)
+    check("a clean rescue reaches happy path",
+          out["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, out["routingDecision"])
+    check("rescue carries the recovered write values",
+          out["writeValues"]["total_invoice_amount"] == 105.0,
+          str(out["writeValues"].get("total_invoice_amount")))
+    check("rescue keeps the router's verdict visible", out["routerCategory"] == "other",
+          str(out["routerCategory"]))
+    check("a happy-path rescue adds no review reason",
+          out["reviewReasons"] == [], str(out["reviewReasons"]))
+    check("rescue notes itself in advisoryFlags",
+          any("B2 rescue" in a for a in out["advisoryFlags"]), str(out["advisoryFlags"]))
+
+    # 2. re-analysis recovered nothing -> the original reject is the floor.
+    # A near-blank scan is the real case: two of the audited rejects were 40
+    # characters of OCR ("NOBLE / PROFESSIONAL PROPERTY MANAGEMENT").
+    empty = gates.evaluate({"contents": []}, THRESHOLD)
+    check("precondition: empty re-analysis ran no child",
+          empty["analyzerUsed"] == "NOT FOUND")
+    check("no fields recovered -> reject unchanged",
+          gates.apply_b2_rescue(rejected, empty) == rejected)
+    check("None rescue -> reject unchanged", gates.apply_b2_rescue(rejected, {}) == rejected)
+
+    # 3. a rescue whose critical fields fail is caught by B4 on its own merits --
+    # this is what makes the forced downgrade unnecessary. A near-blank page (two
+    # of the audited rejects were 40 characters of OCR) lands here, not on the
+    # happy path, without the rescue having to demote anything.
+    weak = gates.evaluate(child_only_result(commercial_fields(
+        vendor_name_extract=fstr("", 0.10), vendor_name_generate=fstr("", 0.10))), THRESHOLD)
+    check("precondition: weak extraction would be B4 review",
+          weak["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD)
+    out = gates.apply_b2_rescue(rejected, weak)
+    check("a weak rescue is caught by B4, not auto-written",
+          out["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, out["routingDecision"])
+    check("the B4 reviewer summary is preserved untouched",
+          out["reviewReasons"] == weak["reviewReasons"], str(out["reviewReasons"]))
+    check("the rescue is still recorded as an advisory",
+          any("B2 rescue" in a for a in out["advisoryFlags"]), str(out["advisoryFlags"]))
+
+    # 4. the REAL rescue response has no 'category' on the child block (nothing
+    # routed to it), which left effectiveDocumentType at the "NOT FOUND" sentinel
+    # -- and that stamps the ledger's DocumentType column. Observed live on
+    # bug_260827 before the fix.
+    live_shape = gates.evaluate(child_only_result(commercial_fields(), category=None),
+                                THRESHOLD)
+    check("precondition: a real rescue response has no category",
+          live_shape["category"] == "NOT FOUND", live_shape["category"])
+    out = gates.apply_b2_rescue(rejected, live_shape)
+    check("rescue never stamps the NOT FOUND sentinel",
+          out["effectiveDocumentType"] == "general_invoice", out["effectiveDocumentType"])
+    check("rescue category is meaningful too", out["category"] == "general_invoice",
+          out["category"])
+
+
 # --- response shape: no removed blocks, write block present ------------------
 
 
@@ -2096,6 +2188,30 @@ def test_invoice_date_read_from_its_printed_label():
     check("two DIFFERENT labelled dates -> declines",
           find("Invoice date: May 25, 2026 ... Statement date: Jun 2, 2026") is None)
     check("an unlabelled date is not taken", find("May 25, 2026") is None)
+
+    # --- A6: 'Order Date' + unambiguous slashed dates (bug_260827) --------------
+    # The sales order prints 'Order Date: 08/27/2026' and no other issue-date label,
+    # so both twins fail and the date silently became today.
+    check("Order Date is read when nothing else names the issue date",
+          find("Order Date: 08/27/2026") == "2026-08-27", str(find("Order Date: 08/27/2026")))
+    check("day > 12 forces month/day order", find("Invoice Date: 08/27/2026") == "2026-08-27")
+    check("day-first is equally unambiguous", find("Invoice Date: 27/08/2026") == "2026-08-27")
+    check("BOTH components <= 12 stays refused (03/04 is Mar 4 or Apr 3)",
+          find("Invoice Date: 03/04/2026") is None)
+    check("both components > 12 is not a date", find("Invoice Date: 13/13/2026") is None)
+    check("two-digit year stays refused (the print-timestamp form)",
+          find("Order Date: 1/13/26") is None)
+    check("a slashed date followed by a clock time is a print timestamp",
+          find("Order Date: 08/27/2026 10:12AM") is None)
+    check("a print timestamp elsewhere on the page is still ignored",
+          find("Invoice Date: 2026-06-03\nPage printed 1/13/26 10:12AM") == "2026-06-03")
+    # Tier precedence: an invoice printing both means something different by 'Order
+    # Date', and tier two must not turn tier one's single hit into a decline.
+    check("Invoice Date wins over a different Order Date",
+          find("Invoice date: Jun 1, 2026 ... Order date: May 28, 2026") == "2026-06-01",
+          str(find("Invoice date: Jun 1, 2026 ... Order date: May 28, 2026")))
+    check("two DIFFERENT order dates decline rather than choose",
+          find("Order date: May 28, 2026 ... Order Date: Jun 2, 2026") is None)
 
 
 def test_account_number_that_is_just_the_po():

@@ -9,6 +9,9 @@ unit-testable offline without the Function host or any SDK installed.
 
 Gates implemented here (post-extraction, Stage B):
     B2   router/effective category == other          -> REJECT_B2_OTHER_CATEGORY
+         ...unless the caller re-analyzes the document with the general-invoice
+         analyzer and apply_b2_rescue() recovers fields, after which the ordinary
+         gates judge it (B4 -> review, otherwise happy path)
     B4   critical field (per bill_type bucket) missing/empty/low-confidence
                                                      -> REVIEW_B4_CRITICAL_FIELD
          written invoice_date after today            -> REVIEW_B4_CRITICAL_FIELD
@@ -1091,6 +1094,71 @@ def evaluate(
         fields, write_values, defaulted, review_reasons, advisory,
         is_handwritten_value, is_handwritten_conf, resolutions,
     )
+
+
+def apply_b2_rescue(original: Dict[str, Any], rescued: Dict[str, Any]) -> Dict[str, Any]:
+    """Combine a B2 reject with a direct re-analysis of the same document.
+
+    A router response categorised ``other`` chains no child analyzer, so the B2
+    reject carries no fields and a reviewer must re-key every value by hand. The
+    caller re-analyzes with the general-invoice analyzer and passes the second
+    decision here.
+
+    Pure: no I/O, no clock. The CU call lives in ``function_app`` so that
+    ``evaluate`` stays a pure function of a CU result -- which is what lets
+    ``diag.py --replay`` and the whole ``regress.py`` harness run offline.
+
+    The rescue can only improve an outcome: with no recovered fields the original
+    reject is returned unchanged.
+
+    A rescued document is then judged by the ordinary gates, exactly like any other
+    -- B4 decides, and a clean extraction reaches HAPPY_PATH_CANDIDATE. An earlier
+    version forced a review here on the grounds that the router had disagreed, but
+    that was measured to protect nothing: B4 already catches the shapes the router
+    rejects correctly (a near-blank page fails vendor_name, service_address and
+    total_invoice_amount on its own), so the downgrade only demoted documents whose
+    fields were all good. Provenance survives instead: routerCategory stays 'other',
+    an advisory records the rescue, and the ledger stamps RouterCategory so rescued
+    rows remain queryable.
+    """
+    # 'fields' is never empty -- _result injects every resolved final, null or not
+    # -- so it cannot tell a real extraction from an empty one. analyzerUsed is
+    # set only when find_child_content actually matched a block carrying fields.
+    if not rescued or rescued.get("analyzerUsed", "NOT FOUND") == "NOT FOUND":
+        return original
+
+    recovered = sum(
+        1 for entry in (rescued.get("fields") or {}).values()
+        if isinstance(entry, dict) and entry.get("value") not in (None, "")
+    )
+
+    out = dict(rescued)
+    # routingDecision is deliberately left as the rescued evaluation produced it.
+    # A direct re-analysis carries no router segment and the child block has no
+    # 'category' of its own, so evaluate() leaves both of these at "NOT FOUND".
+    # effectiveDocumentType stamps the ledger's DocumentType column, where that
+    # sentinel is meaningless -- a plain B2 reject stamps "other". The rescue ran
+    # the general-invoice analyzer and its fields drove bill_type, so that is what
+    # the pipeline effectively treated the document as.
+    recovered_category = rescued.get("category")
+    if not recovered_category or recovered_category == "NOT FOUND":
+        recovered_category = "general_invoice"
+    out["category"] = recovered_category
+    out["effectiveDocumentType"] = recovered_category
+    # Keep the router's verdict visible: the re-analysis bypassed the router, so
+    # its own routerCategory is 'NOT FOUND' and would erase why this ran at all.
+    out["routerCategory"] = original.get("routerCategory", "")
+    out["routerCategoryPath"] = original.get("routerCategoryPath", "")
+    # reviewReasons is left untouched: on a B4 review it is one reviewer-facing
+    # summary of the failing fields, and on a happy path it is empty. The rescue is
+    # not a field failure, so it belongs in advisoryFlags -- the informational
+    # channel that never gates.
+    out["advisoryFlags"] = list(rescued.get("advisoryFlags") or []) + [
+        f"B2 rescue: router said {original.get('routerCategory', 'other')!r}, "
+        f"re-analysis with the general-invoice analyzer recovered "
+        f"{recovered} field value(s)"
+    ]
+    return out
 
 
 def _result(

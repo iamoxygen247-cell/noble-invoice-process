@@ -104,6 +104,24 @@ them in code, so size the Dataverse columns with headroom (see the Phase-4 note 
 `REJECT_B2_OTHER_CATEGORY`, `REVIEW_NO_CHILD_EXTRACTION`. (`REVIEW_B3_HANDWRITTEN_OR_UNKNOWN`
 and `REVIEW_GST_MATH` were retired with the B3/GST gates.)
 
+**The B2 rescue.** A router category of `other` binds no child analyzer, so CU chains
+nothing and the reject carries no fields at all — a reviewer would re-key every value by
+hand. When that happens the Function makes a second analyze call straight to the
+general-invoice analyzer and re-runs the gates on the result, and the document is then
+judged **exactly like any other**: B4 decides, so a clean extraction reaches
+`HAPPY_PATH_CANDIDATE` and a weak one lands in `REVIEW_B4_CRITICAL_FIELD`. (An earlier
+version forced a review because the router had disagreed; that was measured to protect
+nothing, since B4 already catches the shapes the router rejects correctly.)
+
+A rescued decision is therefore indistinguishable from a normal one by `routingDecision`
+alone. Provenance lives in three places: `routerCategory` stays `other`, `advisoryFlags`
+records how many values were recovered, and the ledger stamps **`RouterCategory`** — query
+`RouterCategory eq 'other'` to find every rescued invoice.
+
+The rescue is best-effort: any failure, timeout, or re-analysis that recovers no fields
+leaves the original `REJECT_B2_OTHER_CATEGORY` untouched. It is given only the analyze
+budget left over from the first call, so two calls never exceed the single-call cap.
+
 On a `REVIEW_B4_CRITICAL_FIELD` decision, `reviewReasons` holds a **single
 reviewer-facing summary** naming every failing critical field — e.g.
 `vendor_name and po_or_job_number need attention`. The per-field diagnostics

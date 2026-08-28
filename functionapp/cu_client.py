@@ -110,12 +110,17 @@ def _as_dict(result: Any) -> Dict[str, Any]:
     return dict(result)
 
 
-def _poll_result(poller: Any) -> Dict[str, Any]:
+def _poll_result(poller: Any, timeout: Optional[float] = None) -> Dict[str, Any]:
     """Wait for the analyze LRO with a hard cap. LROPoller.wait(timeout) returns
     (without raising) when the timeout elapses before completion, so done() is
     the reliable signal; raise TimeoutError so the Function returns a clean 502
-    instead of hanging until the host kills the invocation."""
-    timeout = analyze_timeout_seconds()
+    instead of hanging until the host kills the invocation.
+
+    ``timeout`` overrides the configured cap. The B2 rescue passes the budget
+    left over from the first call so two analyses can never exceed the single-
+    call ceiling the Power Automate connector budget is sized against."""
+    if timeout is None:
+        timeout = analyze_timeout_seconds()
     poller.wait(timeout=timeout)
     if not poller.done():
         raise TimeoutError(
@@ -134,11 +139,21 @@ def _guess_content_type(file_name: Optional[str]) -> str:
     return "application/pdf"
 
 
-def analyze_binary(content_bytes: bytes, file_name: Optional[str] = None) -> Dict[str, Any]:
-    """Submit raw document bytes to the router analyzer and return the full result dict."""
+def analyze_binary(
+    content_bytes: bytes,
+    file_name: Optional[str] = None,
+    analyzer_id: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Submit raw document bytes to the router analyzer and return the full result dict.
+
+    ``analyzer_id`` overrides the router; the B2 rescue uses it to call the
+    general-invoice analyzer directly, because a router response categorised
+    ``other`` chains no child analyzer and so carries no fields at all."""
     client = _client()
     content_type = _guess_content_type(file_name)
-    analyzer_id = router_analyzer_id()
+    if analyzer_id is None:
+        analyzer_id = router_analyzer_id()
 
     # The installed SDK may or may not accept content_type; mirror step24's fallback.
     try:
@@ -152,7 +167,7 @@ def analyze_binary(content_bytes: bytes, file_name: Optional[str] = None) -> Dic
             analyzer_id=analyzer_id,
             binary_input=content_bytes,
         )
-    return _poll_result(poller)
+    return _poll_result(poller, timeout)
 
 
 def analyze_url(url: str) -> Dict[str, Any]:

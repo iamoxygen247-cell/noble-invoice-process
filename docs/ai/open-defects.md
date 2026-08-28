@@ -18,7 +18,7 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-26 (sha 23c36a9: the `po_or_job_number` prefix rule relaxed from `110`/`330` to `11`/`33`; analyzer and function app both verified live at HEAD. New item C5 records that no real document exercises the widened range. Previous watermark: 2026-08-19, sha 9406364 — stage D2, see docs/ai/warranty-prompt-retry-plan.md).
+Last updated: 2026-08-27 — **B8** (router `other` was a terminal reject; 26 of 30 such rejects were real payables) fixed code-side with the B2 rescue, no analyzer push. Its prompt-wording half is deferred as new item **C6**. Previous watermark: 2026-08-26 (sha 23c36a9: the `po_or_job_number` prefix rule relaxed from `110`/`330` to `11`/`33`; analyzer and function app both verified live at HEAD. New item C5 records that no real document exercises the widened range. Previous watermark: 2026-08-19, sha 9406364 — stage D2, see docs/ai/warranty-prompt-retry-plan.md).
 
 ---
 
@@ -415,12 +415,97 @@ prompts (`11024580`, `33001022`) still have a third digit of `0`, so CU may gene
 examples rather than the stated rule. The fix would be to add one third-digit-≠0 example — held
 back deliberately to keep the prompt diff minimal (see C4 on cross-field coupling).
 
+### A6. `invoice_date` silently defaults to today on an "Order Date" page — **FIXED 2026-08-27**
+
+**D1 — wrote a silently wrong value.** Same failure mode as A1, on a document shape the A1
+fix did not reach.
+
+`bug_260827` (Trail Appliances) prints its issue date as **`Order Date: 08/27/2026`** and no
+other issue-date label. Measured on the live analyzer, 2026-08-27:
+
+| Run | `invoice_date_extract` | `invoice_date_generate` | Outcome |
+|---|---|---|---|
+| direct re-analysis | `2026-08-27` (0.417) | `2026-08-27` (0.358) | passed by twin **agreement**, not defaulted |
+| local end-to-end | **`null`** (—) | `2026-08-27` (0.316) | resolution **failed** → **defaulted to today** |
+
+Both twins sit far below the 0.73 bar, so the field passes only when they happen to agree —
+a coin flip between the printed date and `date.today()`.
+
+**`field_policy.find_invoice_date_in_text` cannot rescue it, for two independent reasons:**
+`_INVOICE_DATE_LABEL` accepts only `invoice|billing|bill|statement|notice|issue` + "date", so
+**"Order Date" is not a recognised label**; and the printed form is **slashed** (`08/27/2026`),
+which the pattern deliberately refuses as ambiguous and print-timestamp-shaped. Adding `order`
+to the label list alone therefore fixes nothing — the slashed-date exclusion would still
+decline. Any fix has to decide whether a slashed date next to an *unambiguous* label is
+trustworthy, which is exactly the judgement that exclusion was added to avoid.
+
+**Why it was nearly invisible:** the document was processed on its own order date, so the
+defaulted value and the printed value were the same string. It is only detectable via
+`defaultedFields`, never by comparing the written date to the page. Every such document
+processed on any later day writes the processing date instead.
+
+**Corpus caution (resolved by the fix):** `regress.py --add` proposed `invoice_date:
+"2026-08-27"` as stable because all three replicates produced that string — some by reading it,
+some by defaulting to the same day. That was a **latent false-green assertion** that would have
+flipped red from 2026-08-28. The fix makes it genuinely stable (`source=printed_label`), so the
+assertion is now safe to keep. See troubleshooting.md → "A cached-green corpus hid three
+coin-flip assertions for weeks".
+
+**Fix.** `find_invoice_date_in_text` gained a **second tier** for `Order Date`, consulted only
+when no `invoice|billing|bill|statement|notice|issue` label matched anywhere — a separate tier,
+not another alternative, so it can never contribute a second candidate that makes tier one
+decline on an invoice printing both. And `_normalize_unambiguous_slashed` accepts a slashed date
+**only** where the day/month order is forced by the values (exactly one component > 12) and the
+year is four digits, which keeps the `1/13/26 10:12AM` print-timestamp form and every genuinely
+ambiguous form (`03/04/2026`) refused. `_normalize_date` is untouched, so nothing else in the
+pipeline changes.
+
+**Measured blast radius:** HEAD vs working tree over **3,018 stored CU responses** (regression
+cache + diagnostics + the B2 audit), on 856 of which the fallback returns a date — **5 answers
+changed, all 5 the Trail document**, every one `None → 2026-08-27`. On the reproduced failure
+condition (extract null, generate 0.316) HEAD gives `defaulted=YES` and the working tree gives
+`source=printed_label, defaulted=NO`.
+
+### C6. The router's `other` description contradicts `general_invoice` on three words
+
+**No Dataverse impact once B8 shipped — but it is why B8 has work to do at all.**
+
+`analyzers/create-router-analyzer.json` describes `other` as "contracts, account statements with
+no amount due, letters, **notices**, marketing", while `general_invoice` claims "government or
+municipal charge notices such as business license renewal fees, permit fees, and other
+**city-issued bills**". A *property tax notice* satisfies both sentences. Measured over the 30
+production rejects (2026-08-27, audit behind B8):
+
+| Word in `other` | Rejects whose OCR text contains it | The family it swallowed |
+|---|---|---|
+| `notices` | 22 | 21 municipal property tax notices |
+| `statements` | 13 | 3 TELUS statements (which *do* state an amount due) |
+| `contracts` | 5 | the Trail sales order, whose page 2 is a Terms and Conditions page |
+
+The precedent for the fix is in the file's own history: `d4d83c5` narrowed "statements" to
+"account statements **with no amount due**". The same qualification is owed to `notices`
+(→ notices that request no payment) and `contracts` (→ *unpriced* contracts and agreements), and
+"statements" needs tightening further since 3 still slipped through.
+
+**Deliberately deferred** (user, 2026-08-27: "A now, then B measured"). B8's rescue makes these
+documents extract, so the remaining cost is that 21 property tax notices per season land in the
+review queue instead of on the happy path. A router-prompt edit moves the classification surface
+that **all 1,019 happy-path documents** currently sit on, and the router has **zero** golden-corpus
+coverage — `regress.py` provisions `generalinvoicetest` and calls the child analyzer directly, so
+the router is never exercised. Do it under the protocol in troubleshooting.md → "Analyzer version
+is confounded with wall-clock time": scratch router (`invoicerouterscratch`), both arms rolled the
+same session, n ≥ 12 per arm, and the 2 confirmed near-blank rejects as the negative arm.
+
+**Corpus gap to close alongside it:** no property tax notice exists in
+`tests/pre-commit-test/` — the dominant misroute family has no coverage at all.
+
 ---
 
 ## Resolved
 
 | Defect | Fix |
 |---|---|
+| **B8** — a router category of `other` was a terminal reject, and **26 of the 30** such rejects in the dev ledger were real payables that extracted nothing. **Severity is re-keying, not data loss:** the SharePoint review-queue branch is live (user, 2026-08-27), and `REJECT_*` and `REVIEW_*` both route to it, so each of these reached a human — carrying 13 null fields to type in by hand. Audited 2026-08-27 over all 1,522 rows (30 rejects, 1.97%): **21 municipal property tax notices**, 3 TELUS statements, 1 insurance, 1 sales order (the reported `bug_260827` Trail Appliances doc); only 2 were correctly rejected (40 characters of OCR — a near-blank "NOBLE / PROFESSIONAL PROPERTY MANAGEMENT" cover sheet) and 2 are ambiguous. Not a label flip: 562 municipal bills routed fine, but the 2026-07-17 batch was **16 of 16** rejected. **Every misroute collides with a literal word in the router's `other` description** ("notices" ×22, "statements" ×13, "contracts" ×5) — and `general_invoice` simultaneously claims "municipal charge notices … city-issued bills", so the two descriptions contradict each other on exactly these documents | `gates.apply_b2_rescue` + `function_app._b2_rescue`: on `other`, re-analyze once with the general-invoice analyzer and re-run the gates; the document is then judged by the ordinary gates, so a clean extraction reaches `HAPPY_PATH_CANDIDATE` and a weak one lands in `REVIEW_B4_CRITICAL_FIELD`. Code-side, **no analyzer push**. Verified on the reported document: `REJECT` with 13 nulls → `HAPPY_PATH_CANDIDATE` with all five commercial critical fields passing. An interim version forced a review on the grounds that the router had disagreed; that was **measured to protect nothing** — B4 already catches the shapes the router rejects correctly (a near-blank page fails `vendor_name`, `service_address` and `total_invoice_amount` on its own), so the downgrade only demoted documents whose fields were all good (user, 2026-08-27: "let B4 decide"). Because a rescued row then looks like any other happy path, the ledger stamps **`RouterCategory`** — query `RouterCategory eq 'other'` to find them. Best-effort by contract — any failure, timeout, or empty re-analysis returns the original reject unchanged, and the second call is given only the *remaining* analyze budget so two calls can never exceed the single-call cap (ledger durations p50 13.4s / p95 52.3s / p99 83.6s against a 100s cap; the two-call path measured **live** on 2026-08-27 at 4.5s + 13.5s = **18.0s total**, and a normal invoice still makes exactly one call). **The prompt-wording half is deliberately NOT fixed here** — see C6 |
 | `vendor_name` took the dispatch service from a stylized-logo letterhead (`260629_0024`, correct only **2/12**) | `field_policy.vendor_domain_tiebreak` + rescue in `gates.evaluate`; routing now 12/12 on both the old and new analyzers. Code-side, no analyzer push needed |
 | `regress.py` / `test.py` / `diag.py` crashed with `UnicodeEncodeError` on a piped stdout once any field carried non-ASCII | `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` in all three entry points |
 | **B1** — a below-bar, generate-only `service_address` was written but routed to review, 28 times in 1,633 cached replicates across 5 documents | `field_policy.address_corroborated_by_span` + rescue in `gates.evaluate`: CU's own spans for the value must quote text naming the same place. Code-side, no analyzer push |

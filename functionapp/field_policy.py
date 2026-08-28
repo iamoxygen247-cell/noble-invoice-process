@@ -1388,12 +1388,51 @@ def account_number_echoes_po(account: Any, po: Any, text: str) -> bool:
 # may follow it. Deliberately excludes a bare "Date" (too common as a column header), "Due
 # Date", and "Billing period"; and excludes slashed dates, which are ambiguous and are the
 # form a page print timestamp takes (see _normalize_date, date_corroborated_in_text).
-_INVOICE_DATE_LABEL = re.compile(
-    r"(?i)\b(?:invoice|billing|bill|statement|notice|issue)\s*date\b\s*[:\-]?\s*"
+_DATE_FORMS = (
     rf"((?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}},?\s+\d{{4}}"
     r"|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+\d{4}"
-    r"|\d{4}-\d{1,2}-\d{1,2})"
+    r"|\d{4}-\d{1,2}-\d{1,2}"
+    # Slashed, four-digit year only, and not followed by a clock time. Accepted
+    # solely via _normalize_unambiguous_slashed, which refuses the ambiguous ones.
+    r"|\d{1,2}/\d{1,2}/\d{4}(?!\s*\d{1,2}:\d{2}))"
 )
+
+_INVOICE_DATE_LABEL = re.compile(
+    r"(?i)\b(?:invoice|billing|bill|statement|notice|issue)\s*date\b\s*[:\-]?\s*" + _DATE_FORMS
+)
+
+# Second tier, consulted only when no label above matched. A sales order or order
+# confirmation states its issue date as "Order Date" and nothing else (bug_260827),
+# but on an invoice that prints BOTH, the order date is not the issue date. Keeping
+# it in a separate tier means it can never add a second candidate to the first tier
+# and make it decline -- it only speaks where tier one is silent.
+_ORDER_DATE_LABEL = re.compile(r"(?i)\border\s*date\b\s*[:\-]?\s*" + _DATE_FORMS)
+
+
+def _normalize_unambiguous_slashed(text: str) -> Optional[str]:
+    """A slashed date as ISO, but ONLY where the day/month order is forced by the
+    values themselves.
+
+    ``_normalize_date`` refuses every slashed form on purpose -- 03/04/2026 is Mar 4
+    or Apr 3 and a wrong financial date is worse than defaulting -- and that stays
+    true everywhere else. This narrower reading applies only where the ambiguity does
+    not exist (exactly one of the first two components exceeds 12, so it can only be
+    the day) and only behind an explicit issue-date label. The four-digit year is
+    required, which also excludes the page print-timestamp form '1/13/26 10:12AM'
+    that motivated the original exclusion.
+    """
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", text.strip())
+    if match is None:
+        return None
+    first, second, year = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    first_is_day, second_is_day = first > 12, second > 12
+    if first_is_day == second_is_day:
+        return None  # both <= 12 -> ambiguous; both > 12 -> not a date
+    month, day = (second, first) if first_is_day else (first, second)
+    try:
+        return date(year, month, day).strftime(DATE_FORMAT)
+    except ValueError:
+        return None
 
 
 def find_invoice_date_in_text(text: str) -> Optional[str]:
@@ -1410,15 +1449,28 @@ def find_invoice_date_in_text(text: str) -> Optional[str]:
     'Billing period: May 1 - May 25, 2026', two meter-reading dates and two 2023 payment
     dates; only 'Billing date: May 25, 2026' names the issue date. Declines when the page
     carries more than one distinct labelled date, rather than choosing between them.
+
+    Two tiers. 'Order Date' is consulted only when no invoice/billing/statement/notice/
+    issue label matched anywhere, because a sales order states its issue date that way and
+    nothing else (bug_260827) while an invoice printing both means something different by
+    it. A separate tier -- rather than another alternative in the first pattern -- keeps it
+    from ever contributing a second candidate that would make tier one decline.
     """
     if not text:
         return None
-    found = []
-    for match in _INVOICE_DATE_LABEL.finditer(re.sub(r"[ \t]+", " ", text)):
-        normalized = _normalize_date(match.group(1))
-        if normalized is not None and normalized not in found:
-            found.append(normalized)
-    return found[0] if len(found) == 1 else None
+    flattened = re.sub(r"[ \t]+", " ", text)
+    for pattern in (_INVOICE_DATE_LABEL, _ORDER_DATE_LABEL):
+        found = []
+        for match in pattern.finditer(flattened):
+            raw = match.group(1)
+            normalized = _normalize_date(raw) or _normalize_unambiguous_slashed(raw)
+            if normalized is not None and normalized not in found:
+                found.append(normalized)
+        if len(found) == 1:
+            return found[0]
+        if found:
+            return None  # two different labelled dates: decline rather than choose
+    return None
 
 
 def normalize_written_text(value: Any) -> Any:

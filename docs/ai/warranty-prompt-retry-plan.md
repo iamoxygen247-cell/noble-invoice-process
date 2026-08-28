@@ -134,6 +134,7 @@ new one. That is precisely what arm 0 was, and it is the only reason this was ca
 | **C** | Trigger experiment — scratch analyzer, nothing ships | ☑ **done 2026-08-19 — result: NO trigger exists** | n/a (scratch only) |
 | **D1** | Retry C4 character limits | ☐ **unblocked** by C — proceed under normal verification | |
 | **D2** | Retry warranty disclaimer wording | ☑ **done, pushed to prod 2026-08-19** — `surrey_water` did not reproduce (0/12 both arms, p = 1.000) | `9406364` |
+| **D3** | "terms and/or expiration date only" — D2's rule fails on a generic T&C page (`bug_260827`, 2/3 replicates) | ☐ **drafted 2026-08-27, deliberately NOT applied** — see §4b | |
 
 **Prod state verified after the D2 push (2026-08-19), against the live service rather than console
 output:** the `generalinvoice` analyzer (`createdAt` 23:15:59Z) diffs to **zero differences across
@@ -386,6 +387,73 @@ guards were built the same day the defects appeared, which is why they landed in
 
 **Conclusion: the blast radius is one field, and it is fully guarded.** No action needed on the
 narrative fields.
+
+## 4b. Stage D3 — "terms and/or expiration date only" (drafted 2026-08-27, NOT applied)
+
+**Requirement (user, 2026-08-27):** *"warranty field should only has warranty terms and/or
+expiration date."*
+
+**This is not a new rule — it is D2's rule failing on a shape D2 did not anticipate.** The live
+description already ends *"an invoice whose only warranty wording is a disclaimer, limitation, or
+denial … must produce an empty string"*. It still returns disclaimer prose on `bug_260827` (the
+Trail Appliances sales order) on **2 of 3 replicates**, the third returning `""`.
+
+**Root cause — the description contradicts itself on a terms-and-conditions page.** Step 2 says
+*"look for … a manufacturer's warranty reference"*, which is precisely what a generic T&C page
+offers; step 3 says *"do not report any disclaimer"*. Trail's page 2 is both at once, and the model
+follows step 2. Nothing distinguishes a warranty that **states a term** from one that merely
+**mentions warranties exist**.
+
+**Measured over all 1,748 cached warranty reads (2026-08-27, 0 CU calls):**
+
+| | reads |
+|---|---|
+| non-empty | **120 / 1748 (6.9 %)** — D2 is broadly working |
+| …disclaimer language present | 39 |
+| …a concrete term / period / expiry present | 59 |
+| …both | 4 |
+| …generic coverage, no term | 26 |
+
+The 39 are **not** all blankable. The dominant shape welds a real term to a disclaimer:
+
+> *"Appliances come with manufacturers warranty; **no other warranty is expressed or implied**.
+> Includes a **1-year free warranty extension (January 17, 2026 – …)**"*
+
+Blanking those would destroy real data. **Decision (user, 2026-08-27): keep the term, drop the
+disclaimer.** Trail still resolves to `""` because it states no period anywhere.
+
+**The draft wording is held OUT of `analyzers/create-generalinvoice-analyzer.json` deliberately.**
+Editing that file changes its hash, which invalidates the whole `out/regress-cache/` and would
+force live CU calls to verify the *unrelated* B2-rescue code sitting in the same working tree — and
+would set up exactly the bundling §5 forbids. The proposed description (2242 chars, vs 1490 now and
+1742 for `diagnosis_solution`) adds:
+
+- a **hard requirement for a specific term, period, or expiration date** — absent one, return `""`,
+  with the two Trail phrasings quoted as negative examples;
+- an explicit **keep-the-term-drop-the-disclaimer** rule with the appliance value as a worked
+  before/after example;
+- unchanged: the municipal-bucket blank, the English-only rule, and the 400-character output cap
+  (raising that cap is **D1/C4**, a separate change — do not fold it in here).
+
+**Alternative considered — a minimal edit (user's suggestion, 2026-08-27):** qualify step 2's
+`"a manufacturer's warranty reference"` with *"around terms and expiration only"*. The targeting is
+correct — step 2 is the clause that contradicts step 3 — but as a **qualifier** it is likely too
+weak on its own, for two measured reasons. Step 2 lists three other invitations, and Trail's page 2
+separately discusses purchasing an **extended warranty**, which `"an extended warranty or service
+plan"` invites regardless of how the manufacturer clause is worded. And a qualifier narrows *where
+to look* without ever making a term **required**, which is the test that sends Trail to `""`. Built
+out as "variant A" (2067 chars, three lines changed) it is a viable smaller diff; the recommended
+wording above states the requirement as a positive rule in step 2 instead, because this document
+failed by following an affirmative instruction while ignoring the existing negative ones.
+
+**When it ships, per §5 and the stage-D protocol:** its own commit, no code alongside it → full
+**live** corpus pass (not `--all-cached`) → n ≥ 12 with a **concurrent control** (the current
+definition re-rolled the same session) → fetch the pushed definition back and compare its length →
+stamp → `create_analyzer.py --load-local-settings`. No function-app deploy: this changes no code.
+
+**Watch on the retry:** `warranty` is unasserted on every commercial sidecar, so the corpus will
+**not** catch a regression here — the same blind spot that let D2's gap reach production. Score the
+120 non-empty reads by hand, or assert `warranty` on one commercial document first.
 
 ## 5. Standing cautions
 

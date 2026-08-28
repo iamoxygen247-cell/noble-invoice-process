@@ -274,3 +274,148 @@ def test_cu_failure_then_immediate_retry_reprocesses(fake_table, fake_container,
     assert row["FailedStage"] == ""
     assert row["LastError"] == ""
     assert row["RawResultBlob"].endswith("-raw.json")
+
+
+# --- B2 rescue through the real HTTP route (integration) -------------------------
+# The unit tests cover apply_b2_rescue and _b2_rescue separately; these drive the
+# actual route so the wiring between them is exercised too.
+
+
+def router_only_other():
+    """Production shape of an 'other' verdict: CU binds no analyzer to the category,
+    so it chains no child and returns one segment with no fields."""
+    return {"contents": [{"segments": [{"category": "other"}],
+                          "markdown": "CITY OF BURNABY 2026 PROPERTY TAX NOTICE"}]}
+
+
+def child_only(fields):
+    return {"contents": [{"analyzerId": "generalinvoice",
+                          "category": "general_invoice", "fields": fields}]}
+
+
+@pytest.fixture
+def cu_stub_other_then(monkeypatch):
+    """First analyze call is the router ('other'); the second is the rescue."""
+    def make(second):
+        calls = []
+
+        def fake_binary(content, file_name=None, analyzer_id=None, timeout=None):
+            calls.append(analyzer_id)
+            if len(calls) == 1:
+                return router_only_other()
+            return second() if callable(second) else second
+
+        monkeypatch.setattr(cu_client, "analyze_binary", fake_binary)
+        return calls
+    return make
+
+
+def test_b2_rescue_route_recovers_fields(fake_table, fake_container, cu_stub_other_then):
+    calls = cu_stub_other_then(child_only(commercial_fields()))
+    resp = post(valid_body())
+    payload = as_json(resp)
+
+    assert resp.status_code == 200
+    # the ordinary gates decide: this extraction is clean, so it is a happy path
+    assert payload["routingDecision"] == gates.HAPPY_PATH_CANDIDATE
+    assert payload["routerCategory"] == "other", "the router's verdict must stay visible"
+    assert any("B2 rescue" in a for a in payload["advisoryFlags"])
+    assert payload["writeValues"]["total_invoice_amount"] == 105.0
+    # first call goes to the router (analyzer_id=None), second bypasses it
+    assert calls == [None, "generalinvoice"], calls
+
+    # three blobs now: the router response, the decision, and the re-analysis
+    names = sorted(fake_container.blobs)
+    assert len(names) == 3, names
+    assert any(n.endswith("-raw-rescue.json") for n in names)
+    raw = json.loads(fake_container.blobs[[n for n in names if n.endswith("-raw.json")][0]])
+    assert raw == router_only_other(), "-raw.json must still be the ROUTER response"
+
+    row = ledger_row(fake_table)
+    assert row["RoutingDecision"] == gates.HAPPY_PATH_CANDIDATE
+    assert row["Status"] == "Extracted"
+    assert row["FailedStage"] == ""
+    # A rescued row now looks like any other happy path, so RouterCategory is the
+    # only way to find these afterwards (RouterCategory eq 'other').
+    assert row["RouterCategory"] == "other", row.get("RouterCategory")
+
+
+def test_b2_rescue_unusable_response_keeps_the_reject(fake_table, fake_container,
+                                                      cu_stub_other_then):
+    """A rescue whose response yields no child fields leaves the reject standing.
+    Note this exercises the *no-fields floor* in apply_b2_rescue, not the exception
+    guard: gates.evaluate is defensive and returns REVIEW_NO_CHILD_EXTRACTION for
+    this shape rather than raising (probed over 11 malformed shapes, none raise)."""
+    cu_stub_other_then({"contents": "not-a-list-at-all"})
+    resp = post(valid_body())
+    payload = as_json(resp)
+
+    assert resp.status_code == 200
+    assert payload["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY
+    assert ledger_row(fake_table)["Status"] == "Extracted"
+    assert ledger_row(fake_table)["FailedStage"] == ""
+
+
+def test_b2_rescue_exception_does_not_become_a_500(fake_table, fake_container,
+                                                   monkeypatch, cu_stub_other_then):
+    """The exception guard itself. No known CU shape makes gates.evaluate raise, so
+    this forces one: without the try/except around the rescue's evaluate the error
+    reaches the outer handler, which returns 500 AND releases the A1 claim to
+    Failed -- strictly worse than the reject the rescue was meant to improve."""
+    cu_stub_other_then(child_only(commercial_fields()))
+    real_evaluate = gates.evaluate
+    seen = []
+
+    def flaky(full, *args, **kwargs):
+        seen.append(1)
+        if len(seen) == 2:            # the rescue's evaluate, not the router's
+            raise ValueError("unexpected CU shape")
+        return real_evaluate(full, *args, **kwargs)
+
+    monkeypatch.setattr(gates, "evaluate", flaky)
+    resp = post(valid_body())
+    payload = as_json(resp)
+
+    assert len(seen) == 2, "the rescue's evaluate was reached"
+    assert resp.status_code == 200, "a raising rescue must not become a 500"
+    assert payload["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY
+    row = ledger_row(fake_table)
+    assert row["Status"] == "Extracted", "the A1 claim must not be released"
+    assert row["FailedStage"] == ""
+
+
+def test_b2_rescue_cu_failure_keeps_the_reject(fake_table, fake_container, monkeypatch):
+    """Same floor when the second CU call itself raises."""
+    calls = []
+
+    def fake_binary(content, file_name=None, analyzer_id=None, timeout=None):
+        calls.append(analyzer_id)
+        if len(calls) == 1:
+            return router_only_other()
+        raise RuntimeError("CU exploded on the rescue")
+
+    monkeypatch.setattr(cu_client, "analyze_binary", fake_binary)
+    resp = post(valid_body())
+
+    assert resp.status_code == 200
+    assert as_json(resp)["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY
+    assert len(calls) == 2, "the rescue was attempted"
+    # only the two normal blobs -- no rescue blob when there is no rescue result
+    assert len(fake_container.blobs) == 2, sorted(fake_container.blobs)
+
+
+def test_non_other_documents_make_exactly_one_cu_call(fake_table, fake_container,
+                                                      monkeypatch):
+    """The rescue must not fire on the 1,019 happy-path documents."""
+    calls = []
+
+    def fake_binary(content, file_name=None, analyzer_id=None, timeout=None):
+        calls.append(analyzer_id)
+        return cu_result(commercial_fields())
+
+    monkeypatch.setattr(cu_client, "analyze_binary", fake_binary)
+    resp = post(valid_body())
+
+    assert as_json(resp)["routingDecision"] == gates.HAPPY_PATH_CANDIDATE
+    assert calls == [None], "no second CU call on a document the router accepted"
+    assert len(fake_container.blobs) == 2, "no rescue blob on a normal run"

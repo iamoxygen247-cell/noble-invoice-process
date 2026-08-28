@@ -124,6 +124,35 @@ def _field_threshold(body: dict) -> float:
     return field_policy.THRESHOLD
 
 
+# Below this many seconds of remaining analyze budget the B2 rescue is skipped:
+# measured CU durations on this pipeline are p50 13.4s / p95 52.3s, so a shorter
+# remainder is unlikely to complete and the original reject stands either way.
+B2_RESCUE_MIN_SECONDS = 20.0
+
+
+def _b2_rescue(content: bytes, file_name: str, analyzer_id: str,
+               cu_started: float) -> Optional[dict]:
+    """Re-analyze a document the router categorised 'other' with the general-invoice
+    analyzer, returning the raw CU result, or None if the rescue was skipped or failed.
+
+    Best-effort by contract: the original B2 reject is the floor, so every failure
+    path returns None rather than raising. The remaining analyze budget is passed
+    as the timeout, so the two calls together can never exceed the single-call cap
+    that Power Automate's ~120s connector budget is sized against.
+    """
+    remaining = cu_client.analyze_timeout_seconds() - (time.monotonic() - cu_started)
+    if remaining < B2_RESCUE_MIN_SECONDS:
+        logging.info("B2 rescue skipped: only %.1fs of analyze budget left", remaining)
+        return None
+    try:
+        return cu_client.analyze_binary(content, file_name, analyzer_id=analyzer_id,
+                                        timeout=remaining)
+    except Exception:
+        # A failed rescue must not fail the request: the caller keeps the B2 reject.
+        logging.warning("B2 rescue re-analysis failed; keeping the reject", exc_info=True)
+        return None
+
+
 def _decode_content(body: dict) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """
     Validate the transport inputs BEFORE any ledger write. Returns
@@ -300,8 +329,33 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
         # --- Gates / decision ------------------------------------------------
         result = gates.evaluate(full, field_threshold, general_analyzer_id, file_name=file_name)
 
+        # --- B2 rescue --------------------------------------------------------
+        # A router category of 'other' chains no child analyzer, so the reject
+        # carries no fields at all and a reviewer re-keys every value by hand.
+        # Re-analyze with the general-invoice analyzer directly; if that recovers
+        # fields the decision becomes a review (never an auto-write, since the
+        # router disagreed). Binary transport only -- the url path is ad-hoc
+        # testing, not production.
+        rescue_full = None
+        if result["routingDecision"] == gates.REJECT_B2_OTHER_CATEGORY and content is not None:
+            rescue_full = _b2_rescue(content, file_name, general_analyzer_id, cu_started)
+            if rescue_full is not None:
+                try:
+                    rescued = gates.evaluate(rescue_full, field_threshold,
+                                             general_analyzer_id, file_name=file_name)
+                    result = gates.apply_b2_rescue(result, rescued)
+                except Exception:
+                    # The reject is the floor. Without this guard a malformed
+                    # re-analysis would raise into the outer handler, turning a
+                    # 200 reject into a 500 that also releases the A1 claim --
+                    # strictly worse than the behaviour the rescue replaces.
+                    logging.warning("B2 rescue decision failed; keeping the reject",
+                                    exc_info=True)
+                # The second call is this invocation's CU cost either way.
+                cu_duration_ms = int((time.monotonic() - cu_started) * 1000)
+
         # --- Diagnostics sidecar: raw CU result + decision JSON (best-effort) -
-        blob_paths = diagnostics.save_run(source_id, full, result)
+        blob_paths = diagnostics.save_run(source_id, full, result, rescue_raw=rescue_full)
         raw_blob, decision_blob = blob_paths if blob_paths else ("", "")
 
         # --- Ledger: Extracted + decision + bill-type/policy stamps -----------
@@ -312,6 +366,11 @@ def process_invoice(req: func.HttpRequest) -> func.HttpResponse:
                 Status="Extracted",
                 RoutingDecision=result["routingDecision"],
                 DocumentType=result["effectiveDocumentType"],
+                # A rescued document is judged by the ordinary gates, so its
+                # RoutingDecision is indistinguishable from any other happy path.
+                # This keeps the router's own verdict on the row, which is the only
+                # way to find rescued invoices afterwards (RouterCategory eq 'other').
+                RouterCategory=result.get("routerCategory") or "",
                 BillType=result.get("billType") or "",
                 SubBillType=result.get("subBillType") or "",
                 PolicyBucket=result.get("policyBucket") or "",

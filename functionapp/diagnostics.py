@@ -11,6 +11,8 @@ Per run, two blobs under the row's RowKey prefix (timestamped, so re-uploads of
 the same SharePoint item keep a run history):
   {rk}/{yyyymmddThhmmssZ}-raw.json       full cu_client analyze result
   {rk}/{yyyymmddThhmmssZ}-decision.json  gates.evaluate result
+plus, only on a B2 rescue, a third:
+  {rk}/{yyyymmddThhmmssZ}-raw-rescue.json  the general-invoice re-analysis
 
 Best-effort by contract: save_run catches every exception, logs a warning, and
 returns None — a diagnostics outage must never fail invoice processing.
@@ -83,11 +85,17 @@ def save_run(
     source_id: str,
     raw_full: Dict[str, Any],
     decision: Dict[str, Any],
+    rescue_raw: Optional[Dict[str, Any]] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Persist one run's raw CU result and decision JSON. Returns
     (raw_blob_path, decision_blob_path), or None if anything failed — every
     exception is swallowed and logged so diagnostics can never fail the request.
+
+    ``rescue_raw`` is the second CU result from a B2 rescue, written alongside as
+    ``-raw-rescue.json``. ``-raw.json`` stays the router response so its meaning is
+    unchanged for every run; note that replaying it reproduces the *pre-rescue*
+    reject, and the rescue blob is the one behind the decision that was returned.
     """
     try:
         container = get_container_client()
@@ -99,6 +107,9 @@ def save_run(
         # on the timestamp; the later run's artifacts win rather than erroring.
         container.upload_blob(raw_path, _dump(raw_full), overwrite=True)
         container.upload_blob(decision_path, _dump(decision), overwrite=True)
+        if rescue_raw is not None:
+            container.upload_blob(f"{rk}/{stamp}-raw-rescue.json",
+                                  _dump(rescue_raw), overwrite=True)
         return raw_path, decision_path
     except Exception:
         logging.warning("Diagnostics blob write failed (processing continues)", exc_info=True)

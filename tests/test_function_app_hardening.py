@@ -27,6 +27,7 @@ import base64
 import json
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -505,3 +506,60 @@ def test_endpoint_normalizes_trailing_slash(monkeypatch):
 @pytest.mark.parametrize("harness", [pytest.param(verify_fn, id="verify_fn")])
 def test_harness_default_threshold_matches_policy(harness):
     assert harness.DEFAULT_FIELD_THRESHOLD == THRESHOLD
+
+
+# --- B2 rescue orchestration (budget + failure containment) ----------------------
+# The decision shaping is tested in test_field_policy_gates.test_b2_rescue; these
+# cover the I/O half: the original reject must be the floor on every failure path.
+
+
+def test_b2_rescue_skipped_when_budget_is_spent(monkeypatch):
+    """A first call that already burned the analyze budget must not start a second
+    one -- two calls together can never exceed the single-call cap that Power
+    Automate's ~120s connector budget is sized against."""
+    monkeypatch.setenv("AZURE_CU_TIMEOUT_SECONDS", "100")
+    calls = []
+    monkeypatch.setattr(cu_client, "analyze_binary",
+                        lambda *a, **k: calls.append(k) or {"contents": []})
+    # started 95s ago -> 5s left, under B2_RESCUE_MIN_SECONDS
+    started = time.monotonic() - 95.0
+    assert function_app._b2_rescue(PDF_BYTES, "x.pdf", "generalinvoice", started) is None
+    assert calls == [], "rescue must not call CU when the budget is spent"
+
+
+def test_b2_rescue_passes_only_the_remaining_budget(monkeypatch):
+    monkeypatch.setenv("AZURE_CU_TIMEOUT_SECONDS", "100")
+    seen = {}
+
+    def fake(content, file_name=None, analyzer_id=None, timeout=None):
+        seen.update(analyzer_id=analyzer_id, timeout=timeout)
+        return {"contents": [{"analyzerId": "generalinvoice", "fields": {}}]}
+
+    monkeypatch.setattr(cu_client, "analyze_binary", fake)
+    started = time.monotonic() - 30.0          # 70s left of the 100s cap
+    function_app._b2_rescue(PDF_BYTES, "x.pdf", "generalinvoice", started)
+    assert seen["analyzer_id"] == "generalinvoice", "rescue must bypass the router"
+    assert 60.0 < seen["timeout"] <= 70.0, seen["timeout"]
+
+
+def test_b2_rescue_swallows_cu_failure(monkeypatch):
+    """A failed rescue must never fail the request; the caller keeps the reject."""
+    monkeypatch.setenv("AZURE_CU_TIMEOUT_SECONDS", "100")
+
+    def boom(*a, **k):
+        raise RuntimeError("CU exploded")
+
+    monkeypatch.setattr(cu_client, "analyze_binary", boom)
+    assert function_app._b2_rescue(PDF_BYTES, "x.pdf", "generalinvoice",
+                                   time.monotonic()) is None
+
+
+def test_b2_rescue_swallows_cu_timeout(monkeypatch):
+    monkeypatch.setenv("AZURE_CU_TIMEOUT_SECONDS", "100")
+
+    def slow(*a, **k):
+        raise TimeoutError("did not complete within 70s")
+
+    monkeypatch.setattr(cu_client, "analyze_binary", slow)
+    assert function_app._b2_rescue(PDF_BYTES, "x.pdf", "generalinvoice",
+                                   time.monotonic()) is None

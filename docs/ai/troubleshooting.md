@@ -6,6 +6,43 @@ reusable and secret-free; machine-specific paths and account values belong in
 
 ---
 
+## Reading the dev ledger and diagnostics blobs from a local script
+
+**Verified 2026-08-27** while auditing the `REJECT_B2_OTHER_CATEGORY` rows. Three
+independent traps, in the order they bite:
+
+**1. `local.settings.json` points the ledger at Azurite, not at dev.**
+`ledger.get_table_client()` and `diagnostics.get_container_client()` both give
+`AZURE_TABLES_CONNECTION_STRING` **precedence** over `AZURE_STORAGE_ACCOUNT`, and the
+committed-workflow value of that variable is the local emulator. Seeding the environment
+from `functionapp/local.settings.json` therefore queries Azurite, finds nothing, and looks
+exactly like "the row does not exist". Unset it and set `AZURE_STORAGE_ACCOUNT` to target
+the real account. `scripts/create_analyzer.py --load-local-settings` only ever seeds
+`AZURE_CU_*`, so it does not have this problem — hand-rolled scripts do.
+
+**2. `truststore` injection does not cover `az`.** The documented wrapper
+(`import truststore; truststore.inject_into_ssl()`) fixes *this* process's SSL, so Table
+and Blob calls verify — but `DefaultAzureCredential` falls through to `AzureCliCredential`,
+which **shells out to `az`**, a separate process the injection cannot reach. It fails with
+`CERTIFICATE_VERIFY_FAILED` against `login.microsoftonline.com`. Fix: put the truststore
+shim directory **first on `$env:PATH` for that process** so the child `az` is the patched
+one (per `CLAUDE.local.md`, the persistent user-PATH entry never wins — machine PATH is
+composed first). Both fixes are needed together; neither alone is sufficient.
+
+**3. Table access does not imply Blob access.** Azure RBAC separates the data planes, and
+control-plane **Owner** grants neither. A user with `Storage Table Data Contributor` and
+`Owner` reads the ledger fine and then gets `AuthorizationPermissionMismatch` on
+`container.list_blobs`. Either add `Storage Blob Data Reader` (a role assignment — a change
+to cloud state), or, for a read-only diagnostic, use the account key via `az storage account
+keys list`, which changes nothing. Expect the `10054` reset on that call and retry — it took
+3 attempts once and 1 the next time.
+
+**Also:** `diag.py --source-id` builds `out_dir/<rowKey>/<blob>`, and the rowKeys here are
+~66 characters. Under a deep scratch directory that exceeds Windows `MAX_PATH` and fails
+with `FileNotFoundError` on write. Use a short `--out-dir` (the `out\diag` default is fine).
+
+---
+
 ## Verifying analyzer / prompt changes: the regression safety net
 
 **Why it exists:** every bug in `analyzers/create-generalinvoice-analyzer.json`
