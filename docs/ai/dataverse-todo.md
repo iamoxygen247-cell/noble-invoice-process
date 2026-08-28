@@ -203,6 +203,33 @@ No backfill. Anyone reading that column for reporting needs to know the cut-over
 The section's sizing rationale is stale too — it argues from a measured 403-character `warranty`,
 and the post-D2 maximum is 255.
 
+### DV-8 — `sub_bill_type` gains a new value, `propertytax`
+
+User requirement, 2026-08-27: *"property tax bills are considered municipal bills. sub_bill_type
+should be `propertytax`."* Shipped in `commercial-narrative-v11`. This reverses an explicit rule —
+both `sub_bill_type` prompts previously routed property tax to `other` in as many words — so the
+written value **changes for a document class that is already flowing through the pipeline**.
+
+Measured on a scratch analyzer, 2026-08-27: six tax notices (Abbotsford, Burnaby, Richmond,
+Surrey, Vancouver ×2) all classified `propertytax`, both twins agreeing at 0.858–0.892; controls
+held (`burnaby_water`→water, `business_license`→business_license, `bchydro`→electric). All six
+already reach `HAPPY_PATH_CANDIDATE` and auto-write today, so this changes a value in **live**
+records, not a latent one.
+
+**Column readiness is NOT a blocker (user, 2026-08-27):** asked whether the Dynamics
+`sub_bill_type` column is a choice set that would reject a new value, the user answered *"No need
+to worry about dynamics columns."* So the analyzer ships without a CRM-side change and the
+write-failure risk is accepted. Recorded because if property tax rows do start failing their row
+write after v11, this is the first thing to re-examine.
+
+Remaining, informational only:
+
+1. **Spelling.** `propertytax` is one word, deliberately as the user specified, and is
+   inconsistent with the existing `business_license`. Cheap to change now, expensive once records
+   carry it.
+2. **No backfill.** Property tax notices written before v11 carry `other`. Anyone reporting on
+   `sub_bill_type` needs the cut-over date, exactly as for DV-6.
+
 ### DV-7 — `account_number` now carries an `Account No: ` label
 
 User requirement, 2026-08-24: a non-blank account number is written as `Account No: 123456`

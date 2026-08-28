@@ -2849,8 +2849,24 @@ def test_sub_bill_type():
     check("municipal None confidence -> other", resolve("municipal", "gas", None, None) == "other")
     check("municipal repair (cross-bucket) -> other",
           resolve("municipal", "repair", 0.95, "11024580") == "other")
-    check("municipal unknown label -> other", resolve("municipal", "property_tax", 0.95, None) == "other")
+    check("municipal unknown label -> other", resolve("municipal", "parking_permit", 0.95, None) == "other")
     check("municipal empty label -> other", resolve("municipal", "", 0.95, None) == "other")
+
+    # propertytax: a municipal sub-type since commercial-narrative-v11. The label
+    # is one word -- the analyzer enum and MUNICIPAL_SUB_TYPES must agree exactly,
+    # so the underscored spelling is NOT a valid label and must fall to 'other'.
+    check("municipal propertytax at the bar -> propertytax",
+          resolve("municipal", "propertytax", 0.80, None) == "propertytax")
+    check("municipal propertytax below bar but twins agree -> propertytax",
+          resolve("municipal", "propertytax", 0.55, None, "propertytax") == "propertytax")
+    check("municipal propertytax below bar, no agreement -> other",
+          resolve("municipal", "propertytax", 0.55, None, "water") == "other")
+    check("the underscored spelling is not the label",
+          resolve("municipal", "property_tax", 0.95, None) == "other")
+    check("propertytax is in MUNICIPAL_SUB_TYPES",
+          field_policy.SUB_PROPERTY_TAX in field_policy.MUNICIPAL_SUB_TYPES)
+    check("a commercial bill is never propertytax (PO prefix decides)",
+          resolve("commercial", "propertytax", 0.99, "11024580") == "repair")
 
     # commercial: the format-valid resolved PO's first two digits decide
     # (33 -> service, 11 -> repair); the third digit is not consulted, and the

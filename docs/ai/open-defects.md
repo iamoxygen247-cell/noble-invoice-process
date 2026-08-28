@@ -466,6 +466,54 @@ changed, all 5 the Trail document**, every one `None → 2026-08-27`. On the rep
 condition (extract null, generate 0.316) HEAD gives `defaulted=YES` and the working tree gives
 `source=printed_label, defaulted=NO`.
 
+### A7. `total_invoice_amount_extract` intermittently returns no value at all — CU-side
+
+**No Dataverse impact — the written value is correct on every observed run.** Logged because the
+rate is now measured and the assertion that used to cover it has been dropped.
+
+On `recommend_240124_0001` (Cambie Roofing, totals printed only on page 2) the **extract** twin
+sometimes comes back with the field object present but **no `valueNumber` and no `spans`**:
+
+```
+NULL  "total_invoice_amount_extract": { "type": …, "confidence": 0.975 }
+GOOD  "total_invoice_amount_extract": { …, "valueNumber": 903,
+        "spans": [{"offset": 3503, "length": 7}], "source": "D(2,…)" }   <- page 2
+```
+
+Not an OCR failure: the markdown is **byte-identical** between null and good runs (`md_len` 3852,
+`903` present, 7 page markers), every other field extracts normally on the same run, and the
+generate twin returns 903. The `confidence: 0.975` on a null is the placeholder every absent field
+carries that run, not a field confidence.
+
+**Measured with a concurrent control, 2026-08-27** (n = 12 per arm, one scratch analyzer, same
+session, both arms' pushes verified by fetching the enum back):
+
+| arm | definition | null rate |
+|---|---|---|
+| 0 | HEAD — **no** `propertytax` (= the definition in production) | **2/12** |
+| 1 | working tree — **with** `propertytax` | **3/12** |
+
+Indistinguishable, so the `propertytax` edit is **exonerated**; pooled rate **5/24 ≈ 21 %**.
+
+**This is a CU regime shift, not a hidden coin flip.** The cache holds 62 clean reads of 63 across
+8 analyzer versions — at 21 % that run has probability ~10⁻⁶, so the old regime genuinely existed
+and the assertion was valid when written. Same shape as the municipal `vendor_name` step change of
+2026-08-18/19 (troubleshooting.md → "Analyzer version is confounded with wall-clock time"), and it
+surfaced only because changing the analyzer hash forced a fresh roll.
+
+**Why nothing was fixed in code:** twin redundancy did its job — extract dropped out, generate held,
+the resolution wrote 903. There is no defect on our side to repair.
+
+**Assertion dropped** (user-approved): `recommend_240124_0001.fields.total_invoice_amount_extract`.
+At 21 % it reddens ~50 % of 3-replicate runs, blocking commits through the pre-commit hook, while
+protecting nothing that `writeValues.total_invoice_amount` (63/63), `amount_excluding_gst`, and
+`total_invoice_amount_generate` (0 null in 63) do not already cover.
+
+**Latent risk to watch:** `total_invoice_amount` is base-critical. Both twins failing on one run
+would route the invoice to review. Never observed in 63 reads, and invisible on this document
+(already `REVIEW_B4_CRITICAL_FIELD` for its missing PO) — but on a happy-path document it would
+flip routing.
+
 ### C6. The router's `other` description contradicts `general_invoice` on three words
 
 **No Dataverse impact once B8 shipped — but it is why B8 has work to do at all.**
@@ -486,6 +534,25 @@ The precedent for the fix is in the file's own history: `d4d83c5` narrowed "stat
 "account statements **with no amount due**". The same qualification is owed to `notices`
 (→ notices that request no payment) and `contracts` (→ *unpriced* contracts and agreements), and
 "statements" needs tightening further since 3 still slipped through.
+
+> ### ⚠ 2026-08-27 — the word-collision hypothesis is NOT established
+>
+> Six property tax notices (Abbotsford, Burnaby, Richmond, Surrey, Vancouver ×2) were run
+> through the live router the same evening: **all six classified `general_invoice`**, none
+> was rejected, and all six reached `HAPPY_PATH_CANDIDATE`. One of them is the *same tax
+> bill* as the rejected `260603_0021` — identical folio `5395-6128-0065` and identical
+> printed amounts, a different scan of the same notice.
+>
+> So the document type is **not** inherently misrouted, and the word "notices" in the `other`
+> description is **not sufficient** to cause a reject. The 22-of-30 collision count above is a
+> real correlation but was over-read as causation — the same confounding error stage C
+> documents at length, committed again here. A time-based explanation (the 2026-07-17 batch
+> was 16 of 16 within three minutes) now fits the evidence better than a wording one.
+>
+> **Do not edit the router prompt on the strength of the collision table.** Establish first
+> whether a reject reproduces at all today: re-roll several of the 21 rejected notices at
+> n ≥ 12 against the current definition. If they classify `general_invoice` now, there is no
+> wording defect to fix and C6 should be closed as "CU regime, not prompt".
 
 **Deliberately deferred** (user, 2026-08-27: "A now, then B measured"). B8's rescue makes these
 documents extract, so the remaining cost is that 21 property tax notices per season land in the

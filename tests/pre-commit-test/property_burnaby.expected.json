@@ -1,0 +1,32 @@
+{
+  "note": "City of Burnaby 2026 PROPERTY TAX NOTICE, folio 5395-6128-0065. The FIRST property tax notice in the corpus, added with the `propertytax` sub_bill_type (commercial-narrative-v11). Until this document the corpus held no tax notice at all, so nothing could detect a regression on the family that accounted for 21 of the 26 misrouted payables in the 2026-08-27 B2 audit. || sub_bill_type 'propertytax' is the point of this anchor: measured on a scratch analyzer across all six sample tax notices (Abbotsford, Burnaby, Richmond, Surrey, Vancouver x2), both twins agreed at 0.858-0.892 on every one, while the controls held (burnaby_water->water, business_license->business_license, bchydro->electric). Before v11 both prompts routed property tax to 'other' by an explicit rule. || Values verified against the page: vendor 'City of Burnaby' from the letterhead; service_address '14E 6128 PATTERSON AVE' is the taxed parcel; total 2,428.69 is the largest printed figure and the balance owing (the page also prints 1,276.29 / 1,583.69 / 1,858.69, which are levy subtotals and grant-adjusted variants); payment_due_date from 'DUE DATE: Friday, July 3, 2026'; invoice_date from 'Mailing Date: May 29, 2026' (both twins, 0.782 / 0.683). account_number is the printed FOLIO / ROLL. || invoice_number 'property_burnaby' is the municipal filename fallback -- the notice prints no invoice number -- so it tracks this file's NAME; rename the PDF and this assertion must change with it. || Verifiable absences: gst_amount is null on both twins (a tax notice charges no GST, so amount_excluding_gst is absent too), no billing period is printed, and the five narrative fields are '' by design on the municipal bucket. || NOT asserted: invoice_description, measured UNSTABLE across 3 replicates ('2026 property tax notice.' twice, 'Annual property tax charges for 2026.' once). || NOT asserted either: the raw invoice_date twins. They were asserted briefly and measured UNSTABLE on the first live pass -- invoice_date_extract returned null on 1 of 3 reads. The RESOLVED writeValues.invoice_date is stable across all three (the generate twin is corroborated against the printed 'Mailing Date: May 29, 2026'), and that is the value that reaches Dynamics, so it is asserted and the noisy twins beneath it are not. Note 'Mailing Date' is NOT one of find_invoice_date_in_text's accepted labels, so the printed-label fallback cannot rescue this document if BOTH twins ever fail together.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Burnaby",
+      "service_address": "14E 6128 PATTERSON AVE",
+      "total_invoice_amount": 2428.69,
+      "invoice_date": "2026-05-29",
+      "payment_due_date": "2026-07-03",
+      "invoice_number": "property_burnaby",
+      "po_or_job_number": "",
+      "pst_amount": 0,
+      "account_number": "Account No: 5395-6128-0065",
+      "bill_type": "municipal",
+      "sub_bill_type": "propertytax",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": "",
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
+    },
+    "fields": {
+      "sub_bill_type": "propertytax",
+      "sub_bill_type_generate": "propertytax",
+      "total_invoice_amount_generate": 2428.69
+    }
+  }
+}

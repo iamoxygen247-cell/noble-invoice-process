@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v10"
+POLICY_VERSION = "commercial-narrative-v11"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -215,9 +215,11 @@ COMMERCIAL = "commercial"
 SUB_BILL_TYPE = "sub_bill_type"
 SUB_BILL_TYPE_GENERATE = "sub_bill_type_generate"
 SUB_BILL_TYPE_THRESHOLD = 0.80
-MUNICIPAL_SUB_TYPES: Tuple[str, ...] = ("gas", "electric", "water", "business_license")
+MUNICIPAL_SUB_TYPES: Tuple[str, ...] = ("gas", "electric", "water", "propertytax",
+                                        "business_license")
 SUB_SERVICE = "service"
 SUB_REPAIR = "repair"
+SUB_PROPERTY_TAX = "propertytax"
 SUB_OTHER = "other"
 
 
@@ -301,7 +303,7 @@ def resolve_sub_bill_type(
     independent reads corroborates a below-bar label, exactly like the twin
     agreement boost, because the estimated confidence is noisy while the label is
     stable. The generate twin only validates; it never supplies the label itself.
-    Only the municipal sub-types (gas/electric/water/business_license) are
+    Only the municipal sub-types (gas/electric/water/propertytax/business_license) are
     accepted; everything else (unconfirmed below-bar labels, unknown or
     cross-bucket labels) resolves to ``other``.
     """

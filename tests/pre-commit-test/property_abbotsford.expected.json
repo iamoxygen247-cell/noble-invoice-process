@@ -1,0 +1,32 @@
+{
+  "note": "One of six property tax notices added 2026-08-27 to give the `propertytax` sub_bill_type (commercial-narrative-v11) real coverage across municipalities -- before them the corpus held no tax notice at all, while that family accounted for 21 of the 26 misrouted payables in the B2 audit. sub_bill_type 'propertytax' is the assertion these documents exist for: measured 6/6 on a scratch analyzer, both twins agreeing at 0.858-0.892, with controls held (burnaby_water->water, business_license->business_license, bchydro->electric). City of Abbotsford 2026 PROPERTY TAX NOTICE. total 129,460.47 verified: printed 12x as '2026 TOTAL TAXES & OTHER CHARGES' and 'TOTAL OUTSTANDING TAXES', identical, so nothing is carried forward -- a genuinely large commercial parcel, not a mis-read. payment_due_date from 'DUE DATE: Thursday, July 2, 2026'. || invoice_date is deliberately NOT asserted: this page prints NO issue-date label at all (no Invoice/Billing/Statement/Notice/Issue Date), so build_write_values substitutes date.today() and the run wrote 2026-08-27. `regress.py --add` proposed it as 'stable' only because all three replicates ran on the same day -- a false green that would flip red tomorrow. The defaulting itself is the open A1/A6 defect class, not something this sidecar should lock in. payment_due_date IS asserted because the page prints it explicitly. || account_number NOT asserted: measured UNSTABLE across the three replicates, which disagreed on formatting only ('6170066209' twice, '61700-6620-9' once) -- same digits, so a cosmetic normalisation gap (open-defects class D2), not a wrong value.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Abbotsford",
+      "service_address": "33550 SOUTH FRASER WAY",
+      "total_invoice_amount": 129460.47,
+      "payment_due_date": "2026-07-02",
+      "invoice_number": "property_abbotsford",
+      "po_or_job_number": "",
+      "pst_amount": 0,
+      "bill_type": "municipal",
+      "sub_bill_type": "propertytax",
+      "invoice_description": "Annual property tax charges for 2026.",
+      "billing_period_start_date": "2026-01-01",
+      "billing_period_end_date": "2026-12-31",
+      "number_of_days": "",
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 129460.47,
+      "total_invoice_amount_generate": 129460.47,
+      "sub_bill_type": "propertytax",
+      "sub_bill_type_generate": "propertytax"
+    }
+  }
+}

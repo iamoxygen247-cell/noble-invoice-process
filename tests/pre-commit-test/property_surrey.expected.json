@@ -1,0 +1,33 @@
+{
+  "note": "One of six property tax notices added 2026-08-27 to give the `propertytax` sub_bill_type (commercial-narrative-v11) real coverage across municipalities -- before them the corpus held no tax notice at all, while that family accounted for 21 of the 26 misrouted payables in the B2 audit. sub_bill_type 'propertytax' is the assertion these documents exist for: measured 6/6 on a scratch analyzer, both twins agreeing at 0.858-0.892, with controls held (burnaby_water->water, business_license->business_license, bchydro->electric). City of Surrey 2026 PROPERTY TAX NOTICE. total 1,773.36 verified as 'AMOUNT DUE JULY 2, 2026', printed 6x. Do NOT 'correct' this to the larger 11,700.24 on the page: that is 'TOTAL 2026 CITY TAXES & OTHER CHARGES' before the home owner grant, and this owner is on a monthly pre-authorized withdrawal plan, so the outstanding balance is the smaller figure. payment_due_date from 'DUE DATE: July 2, 2026'. || invoice_date is deliberately NOT asserted: this page prints NO issue-date label at all (no Invoice/Billing/Statement/Notice/Issue Date), so build_write_values substitutes date.today() and the run wrote 2026-08-27. `regress.py --add` proposed it as 'stable' only because all three replicates ran on the same day -- a false green that would flip red tomorrow. The defaulting itself is the open A1/A6 defect class, not something this sidecar should lock in. payment_due_date IS asserted because the page prints it explicitly. ",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Surrey",
+      "service_address": "2790 167 ST SURREY BC V3Z 0A9",
+      "total_invoice_amount": 1773.36,
+      "payment_due_date": "2026-07-02",
+      "invoice_number": "property_surrey",
+      "po_or_job_number": "",
+      "pst_amount": 0,
+      "account_number": "Account No: 5244-50502-6",
+      "bill_type": "municipal",
+      "sub_bill_type": "propertytax",
+      "invoice_description": "Annual property tax charges for 2026.",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "2026-12-31",
+      "number_of_days": "",
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 1773.36,
+      "total_invoice_amount_generate": 1773.36,
+      "sub_bill_type": "propertytax",
+      "sub_bill_type_generate": "propertytax"
+    }
+  }
+}

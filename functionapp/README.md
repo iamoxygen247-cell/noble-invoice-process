@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v10",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v11",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -140,9 +140,11 @@ stricter than the critical-field threshold) OR when the `sub_bill_type_generate`
 reasoning twin returns the same label (CU's estimated confidence on classify
 fields is noisy on identical documents; two independent reads agreeing are not) —
 accepting `gas`, `electric`, `water` (includes sewer/stormwater and combined city
-utility bills), or `business_license` (city-issued business licence/permit
-renewals). Everything else — unconfirmed below-bar labels, unknown or
-cross-bucket labels, property tax — resolves to `other`.
+utility bills), `propertytax` (an annual municipal levy on a parcel — folio or
+roll number, assessed values, general/school/regional levy lines), or
+`business_license` (city-issued business licence/permit renewals). Everything
+else — unconfirmed below-bar labels, unknown or cross-bucket labels, bylaw and
+activity permit renewals — resolves to `other`.
 
 `vendor_name` twin resolution: the two spellings name the same vendor when they are
 equal after normalisation (casing, punctuation and a trailing legal suffix are
@@ -345,7 +347,7 @@ connection (encrypted at rest, never in run history) rather than in the flow.
      optional on commercial; since `commercial-narrative-v10` the written value
      carries its own label — `"Account No: 123456"` on both bill types, `""`
      when the bill prints none), `sub_bill_type` (gas / electric / water /
-     business_license / service / repair / other), and the billing-period trio
+     propertytax / business_license / service / repair / other), and the billing-period trio
      `billing_period_start_date` / `billing_period_end_date` (`YYYY-MM-DD` or
      `""`) and `number_of_days` (integer or `""`) for the tenant
      utility-sharing calculation — map each to the matching Dataverse column.
