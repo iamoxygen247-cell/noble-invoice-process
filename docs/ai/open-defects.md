@@ -649,7 +649,7 @@ most legitimately absent — so the signal is the *variance*, not the count.
 | `bchydro` both `invoice_date` twins null | 1/12 | today substituted (A8); assertion dropped |
 | `260629_0010.bill_type` null | 2 / 3,202 (0.1%) | bucket falls back to commercial — **correct on every read** |
 
-**Why `bill_type` cannot recover.** It is the **only classify field in the schema without a
+**Why `bill_type` has no second read.** It is the **only classify field in the schema without a
 generate twin** — `sub_bill_type` has `sub_bill_type_generate`, `is_handwritten` has
 `is_handwritten_generate`, `bill_type` has nothing. The field that selects the policy bucket is the
 one field with no second read to fall back on. `resolve_bucket(None)` → `commercial` is the

@@ -100,7 +100,17 @@ def _sha12(data: bytes) -> str:
 
 
 def _analyzer_hash(analyzer_file: pathlib.Path) -> str:
-    return _sha12(analyzer_file.read_bytes())
+    """Content hash of an analyzer definition, INDEPENDENT of line endings.
+
+    The raw bytes are not usable as a cache key. .gitattributes declares `* text=auto
+    eol=lf`, so git rewrites this file to LF on every checkout, stash, or discard --
+    while a Windows editor (or any Python write with newline=None) puts CRLF back. The
+    two forms differ by ~230 bytes on this file, so hashing the raw bytes flipped the
+    key between two values for a definition that never changed, silently orphaning the
+    cache and forcing a full 108-call re-roll. That happened three times on 2026-08-28,
+    once costing a pre-commit timeout mid-commit. Normalising to LF first makes the key
+    depend on the definition, which is the thing that actually changes behaviour."""
+    return _sha12(analyzer_file.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def _cache_path(analyzer_hash: str, pdf_hash: str, replicate: int) -> pathlib.Path:
