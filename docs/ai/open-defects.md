@@ -664,6 +664,30 @@ utility bill. Zero occurrences in 3,202 reads; every observed null was on a comm
 already proven for the other two classify fields. Not scheduled — 0.1% with a correct fail-safe
 does not warrant an analyzer change.
 
+### A10. `payment_due_date` ignores a printed `NET<n>` payment term — **OPEN**
+
+**D2 — writes an approximate value where an exact one is derivable.** When a document prints no
+calendar due date, `payment_due_date` falls back to **today + 30** (`build_write_values`). That is
+today + 30, *not* `invoice_date` + 30 — the two coincide only when a document happens to be
+processed on its own issue date.
+
+`bug_260827` (Trail Appliances) prints `Order Date: 08/27/2026` and `Payment Terms: NET30`, and no
+due date. The business-correct answer is derivable and exact — 2026-09-26 — but the pipeline writes
+the run date + 30, which drifts one day further from correct for every day the document sits
+unprocessed. Same class as the `payment_due_date` corroboration fix (9c8b283), which found the +30
+default writing ~8-day-late dates unseen.
+
+**Rate:** unmeasured across the corpus; 1 of 36 documents prints a `NET<n>` term with no due date.
+Measure before building — the fix is only worth it if the pattern is common in production.
+
+**Fix shape:** read `Payment Terms: NET<n>` off the OCR text and derive
+`payment_due_date = invoice_date + n` when no due date is printed and `invoice_date` itself was not
+defaulted. Code-side, no analyzer change; the guard against compounding two defaults matters.
+
+**How it surfaced:** the `bug_260827` sidecar asserted the defaulted 2026-09-26 with a note claiming
+it was `invoice_date + 30` and therefore stable. That claim was wrong about the code, the assertion
+tracked the run date, and the corpus went red on 2026-08-28. Assertion dropped; see that sidecar.
+
 ### ~~C6.~~ CLOSED 2026-08-27 — the router's `other` wording is not the defect
 
 **Closed without change (user, 2026-08-27).** The premise did not survive measurement. Six property
