@@ -29,3 +29,10 @@ __blobstorage__/
 __queuestorage__/
 AzuriteConfig
 
+
+# Local-only documents. Anything in docs/gitignore/ stays on this machine: working
+# plans, drafts, one-off analyses -- deliverables that are useful now but should not
+# enter history. Tracked docs continue to live directly under docs/ and docs/ai/.
+# (The folder itself is not tracked, so a fresh clone will not have it; create it with
+#  mkdir docs/gitignore when you need it.)
+docs/gitignore/
