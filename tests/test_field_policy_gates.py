@@ -2270,6 +2270,64 @@ def test_invoice_number_that_is_just_the_account():
           str(r["advisoryFlags"]))
 
 
+def test_bill_type_absent_defaults_to_commercial():
+    print("\n[gates: bill_type CU could not classify defaults to commercial]")
+    dflt = field_policy.default_bill_type
+
+    # CU intermittently returns the field object carrying only type+confidence -- no value,
+    # no spans (defect A9). bill_type is the ONLY classify field with no generate twin, so
+    # there is no second read, and its 0.837 is a shared placeholder rather than a score.
+    check("a null label defaults to commercial", dflt(None) == field_policy.COMMERCIAL)
+    check("an empty string defaults to commercial", dflt("") == field_policy.COMMERCIAL)
+    check("whitespace counts as absent", dflt("   ") == field_policy.COMMERCIAL)
+
+    # A real read is NEVER overwritten, in either direction.
+    check("a present commercial label is left alone", dflt("commercial") is None)
+    check("a present municipal label is left alone", dflt("municipal") is None)
+    check("an unexpected label is left alone", dflt("garbage") is None)
+
+    # The write-side rule must agree with resolve_bucket's fail-safe for every input that
+    # reaches it -- that agreement is the whole point: the record then states the bucket
+    # the pipeline actually applied.
+    for absent in (None, "", "   "):
+        check(f"write value matches the resolved bucket for {absent!r}",
+              dflt(absent) == field_policy.resolve_bucket(absent))
+
+    # End to end on a commercial bill: write value, defaultedFields and advisory all agree,
+    # and routing is untouched.
+    empty_classify = {"type": "string", "confidence": 0.837}   # the A9 shape, verbatim
+    r = ev(commercial_fields(bill_type=empty_classify))
+    check("writeValues.bill_type is commercial, not null",
+          r["writeValues"]["bill_type"] == "commercial", repr(r["writeValues"]["bill_type"]))
+    check("the substitution is recorded in defaultedFields",
+          "bill_type" in r["defaultedFields"], str(r["defaultedFields"]))
+    check("the substitution is surfaced as an advisory",
+          any("bill_type" in a and "defaulted" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("routing is unchanged by the substitution",
+          r["routingDecision"] == "HAPPY_PATH_CANDIDATE", r["routingDecision"])
+    check("the policy bucket is still commercial", r["policyBucket"] == "commercial")
+
+    # A MUNICIPAL bill whose bill_type drops out is also written 'commercial' -- that is the
+    # accepted trade of this rule, and it is what the pipeline genuinely did: resolve_bucket
+    # had already put it in the commercial bucket. The safety net is that the commercial
+    # bucket makes po_or_job_number critical, which a utility bill cannot satisfy, so the
+    # document routes to REVIEW rather than auto-writing, and defaultedFields marks the
+    # label as substituted so a reviewer can tell it was never read.
+    m = ev(municipal_fields(bill_type=empty_classify))
+    check("a municipal dropout is written commercial (the bucket applied)",
+          m["writeValues"]["bill_type"] == "commercial", repr(m["writeValues"]["bill_type"]))
+    check("and is marked substituted, not read",
+          "bill_type" in m["defaultedFields"], str(m["defaultedFields"]))
+    check("and still routes to review rather than auto-writing",
+          m["routingDecision"] == "REVIEW_B4_CRITICAL_FIELD", m["routingDecision"])
+
+    # Regression guard: an ordinary read is untouched by any of this.
+    n = ev(commercial_fields())
+    check("an ordinary read keeps its label", n["writeValues"]["bill_type"] == "commercial")
+    check("and is not marked defaulted", "bill_type" not in n["defaultedFields"])
+
+
 def test_account_number_that_is_just_the_po():
     print("\n[gates: a PO/job number echoed into account_number is discarded]")
 

@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v14"
+POLICY_VERSION = "commercial-narrative-v15"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -221,6 +221,7 @@ SUB_SERVICE = "service"
 SUB_REPAIR = "repair"
 SUB_PROPERTY_TAX = "propertytax"
 SUB_OTHER = "other"
+BILL_TYPE = "bill_type"
 
 
 # --- bucket resolution -------------------------------------------------------
@@ -237,6 +238,34 @@ def resolve_bucket(bill_type_value: Optional[str]) -> str:
     field-presence inference (no other field is consulted).
     """
     return MUNICIPAL if (bill_type_value or "").strip().lower() == MUNICIPAL else COMMERCIAL
+
+
+def default_bill_type(bill_type_value: Any) -> Optional[str]:
+    """
+    The ``bill_type`` to WRITE when CU could not classify the document: ``commercial``
+    when the label is absent or empty, else None (a real read is never overwritten).
+
+    This is the write-side twin of ``resolve_bucket``'s fail-safe, and deliberately the
+    same rule: an absent label already resolves to the ``commercial`` bucket and the
+    pipeline goes on to apply commercial rules to the document. Until now the written
+    value stayed null, so the RECORD disagreed with the policy that was actually applied
+    -- Dynamics was told no bill type was determined when one had been. Writing the
+    bucket makes the two agree.
+
+    ``bill_type`` is the one classify field in the schema with no generate twin
+    (``sub_bill_type`` and ``is_handwritten`` both have one), so when CU returns the A9
+    empty shape -- the field object present carrying only ``type`` and ``confidence``, no
+    value and no spans -- there is no second read to fall back on and no confidence worth
+    consulting (the 0.837 it carries is a shared placeholder, not a score for this field).
+
+    This CANNOT change any routing decision. The policy bucket is derived from the parsed
+    CU response, never re-read from the write values, so substituting here records the
+    bucket rather than choosing it. The caller lists the field in ``defaultedFields`` and
+    raises an advisory, so a substituted label is always distinguishable from a read one.
+    """
+    if bill_type_value is not None and str(bill_type_value).strip() != "":
+        return None
+    return COMMERCIAL
 
 
 def critical_fields(bucket: str) -> Tuple[str, ...]:

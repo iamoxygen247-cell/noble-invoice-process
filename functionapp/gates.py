@@ -457,6 +457,24 @@ def evaluate(
             advisory.append(_final[3])
     write_values, defaulted = field_policy.build_write_values(parsed, field_threshold)
 
+    # bill_type absent from the CU response (defect A9): write the bucket that was actually
+    # applied instead of null. `bucket` above already resolved to commercial via the same
+    # fail-safe, so this records the decision rather than making one -- it cannot change
+    # routing, because the bucket is derived from `parsed` and never re-read from
+    # write_values. Placed immediately after build_write_values and BEFORE the B2 and
+    # no-child early returns, so every path that emits writeValues gets it -- the same
+    # reasoning that moved account formatting into build_write_values. Audited three ways
+    # like the invoice_number filename fallback: the write value, defaultedFields, and an
+    # advisory, so a substituted label is never mistaken for a read one.
+    bill_type_fallback = field_policy.default_bill_type(bill_type_value)
+    if bill_type_fallback is not None:
+        write_values[field_policy.BILL_TYPE] = bill_type_fallback
+        defaulted.append(field_policy.BILL_TYPE)
+        advisory.append(
+            f"bill_type was absent from the CU response; defaulted to "
+            f"{bill_type_fallback!r}, the bucket the pipeline applied"
+        )
+
     # B2 - category 'other' is a hard reject (no auto-write, no extraction trust).
     if str(display_category).lower() == "other" or str(router_category).lower() == "other":
         return _result(

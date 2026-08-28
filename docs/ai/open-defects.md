@@ -660,9 +660,32 @@ commercial bucket — stricter critical fields (so almost certainly review, the 
 also the narrative fields would **not** be blanked, writing diagnosis/recommendation text onto a
 utility bill. Zero occurrences in 3,202 reads; every observed null was on a commercial document.
 
-**Fix shape if it ever justifies one:** add a `bill_type_generate` reasoning twin, the pattern
-already proven for the other two classify fields. Not scheduled — 0.1% with a correct fail-safe
-does not warrant an analyzer change.
+**FIXED 2026-08-28 (the write value), code-side.** `field_policy.default_bill_type` writes
+`commercial` whenever CU returns no label, matching `resolve_bucket`'s fail-safe exactly, and
+`gates.evaluate` records it in `defaultedFields` with an advisory. Requirement (user, 2026-08-28):
+*if CU cannot classify `bill_type` and returns none or empty string, the default is `commercial`.*
+Measured over 3,232 cached reads replayed against HEAD as a separate process: **1 write value
+changes, 0 routing decisions change, 0 other fields move.** It cannot change routing because the
+bucket is derived from the parsed response and never re-read from the write values — the default
+records the decision rather than making one.
+
+A narrower first cut, recovering only when `sub_bill_type_generate` named a commercial sub-type,
+was **rejected as under-specified**: it left the label null when that twin was also empty (1 of the
+3 observed dropouts), when it said `other`, or when it named a municipal sub-type. The accepted
+trade of the simpler rule is that a *municipal* bill whose label drops out is written `commercial`
+— which is what the pipeline actually applied — and the commercial bucket then makes
+`po_or_job_number` critical, so that bill routes to review rather than auto-writing.
+
+**A `bill_type_generate` twin was REJECTED as the fix.** Modelled on `sub_bill_type_generate` it is
+validation-only ("never supplies the label itself") and so cannot help when the label is *absent*;
+made authoritative it must be able to answer `municipal`, which creates the first path into the
+relaxed bucket. Adding a 40th field also carries the measured cross-field coupling risk.
+
+**Still open: escalation.** A dropout that recovers nothing keeps the null label and is contained
+only by the commercial fail-safe. Making `bill_type` critical was measured and **rejected for now**:
+519 of 3,231 populated reads (16%, min confidence 0.346) sit below the 0.73 bar, so an ordinary
+critical-field check would route ~16% of ALL documents to review. It would need a presence-only
+critical variant, measured separately.
 
 ### A10. `payment_due_date` ignores a printed `NET<n>` payment term — **OPEN**
 
@@ -687,6 +710,46 @@ defaulted. Code-side, no analyzer change; the guard against compounding two defa
 **How it surfaced:** the `bug_260827` sidecar asserted the defaulted 2026-09-26 with a note claiming
 it was `invoice_date + 30` and therefore stable. That claim was wrong about the code, the assertion
 tracked the run date, and the corpus went red on 2026-08-28. Assertion dropped; see that sidecar.
+
+### A11. `total_invoice_amount` has no rule for home-owner-grant columns — **OPEN**
+
+**D3 — costs a false review, does not corrupt a value.** Every BC property tax notice prints the
+same three-column grant layout: **no grant / regular grant / senior-additional grant**, each with
+its own total. The business answer is always **column A (no grant)** — the user's decision when the
+six notices were added. The analyzer prompt never says so. Both `total_invoice_amount` twins cover
+carried-forward balances, deposits, GST reconciliation and handwritten dollars/cents sub-columns;
+every "column" mention is about the sub-column case. **Grants are not mentioned at all.**
+
+On five of the six notices this is harmless — they print no `Amount due` row (the extract twin
+anchors on `TOTAL TAXES PAYABLE` / `TOTAL TAXES DUE`), or they print one whose three columns are
+the same number (`property_surrey`, extract confidence 0.882 flat).
+
+`property_burnaby` is the exception and shows the cost:
+
+| document | prints an `Amount due` row | figures in it | extract-twin dropouts |
+|---|---|---|---|
+| abbotsford / north_van / richmond / vancouver | no | — | 0/6 each |
+| surrey | yes | 3, all identical | 0/6 |
+| **burnaby** | **yes** | **3, all different** | **3/6** |
+
+`Amount due` is the strongest cue for the field, and on burnaby it points at
+`$2,428.69 / $1,858.69 / $1,583.69`. The *extract* twin must emit a span naming one figure; with
+three equally-labelled candidates and no rule to choose, it anchors weakly (0.415–0.609, the lowest
+of the six) or returns the A9 empty shape outright.
+
+**Why that matters more than it looks.** None of these six notices reliably clears the 0.73 bar on
+confidence alone — `property_richmond` passes at extract 0.415 / generate 0.341, carried purely by
+the **agreement boost**. Losing the extract twin removes that boost, leaving a lone generate twin
+that swings 0.316–0.746. One read in six lands below the bar and routes to review.
+
+The written value is correct (2428.69) on **every** observed read, so this costs a false review,
+never a wrong write. `property_burnaby.routingDecision` is no longer asserted for this reason.
+
+**Fix shape:** name the grant columns in both `total_invoice_amount` twins — on a property tax
+notice showing no-grant / regular-grant / senior columns, return the **no-grant** figure. Analyzer
+prompt change, so it needs the full protocol: scratch analyzer, n ≥ 12 per arm with a concurrent
+control, all six notices plus non-tax controls. Restore the burnaby `routingDecision` assertion if
+the extract twin then anchors reliably. **Do not bundle with an unrelated prompt edit.**
 
 ### ~~C6.~~ CLOSED 2026-08-27 — the router's `other` wording is not the defect
 

@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v14",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v15",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -127,6 +127,22 @@ reviewer-facing summary** naming every failing critical field — e.g.
 `vendor_name and po_or_job_number need attention`. The per-field diagnostics
 (confidence values, which twin failed, format hints) are in `advisoryFlags`
 with a `B4 ` prefix.
+
+`billType` is the classified label, and the policy bucket is derived from it —
+anything that is not literally `municipal` resolves to the stricter `commercial`
+bucket. CU intermittently returns this field with **no value at all** (defect A9);
+it is the only classify field in the schema with no generate twin, so there is no
+second read to fall back on, and its `0.837` is a shared placeholder rather than a
+score for this field. When that happens the bucket still resolves to `commercial`, but
+the *written* value used to be `null` — so the record said no bill type was determined
+while the pipeline had applied commercial rules. The write value now **defaults to
+`commercial`** to match, listed in `defaultedFields` with an advisory, so a substituted
+label is always distinguishable from a read one. This cannot change routing: the bucket
+is derived from the parsed CU response and never re-read from the write values, so the
+default records the decision rather than making it. A *municipal* bill whose `bill_type`
+drops out is therefore also written `commercial` — which is genuinely what the pipeline
+applied — and the commercial bucket then makes `po_or_job_number` critical, which a
+utility bill cannot satisfy, so it routes to review rather than auto-writing.
 
 `subBillType` (also `writeValues.sub_bill_type`) is the resolved sub-classification
 of `billType` — informational only, it never gates routing. A commercial bill
