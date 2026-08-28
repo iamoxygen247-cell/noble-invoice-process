@@ -18,7 +18,14 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-27 — **B8** (router `other` was a terminal reject; 26 of 30 such rejects were real payables) fixed code-side with the B2 rescue, no analyzer push. Its prompt-wording half is deferred as new item **C6**. Previous watermark: 2026-08-26 (sha 23c36a9: the `po_or_job_number` prefix rule relaxed from `110`/`330` to `11`/`33`; analyzer and function app both verified live at HEAD. New item C5 records that no real document exercises the widened range. Previous watermark: 2026-08-19, sha 9406364 — stage D2, see docs/ai/warranty-prompt-retry-plan.md).
+Last updated: 2026-08-27 (later) — **A8** fixed: `invoice_date` no longer defaults to today on
+documents that print no issue date (`business_license` had done so on 121/121 reads). **C6 closed**
+without change — six property tax notices classify correctly on the live router, so the `other`
+wording is not the defect. The **B8 backfill of 25 historical rejects is closed unstarted**: the
+PDFs are only in SharePoint (Graph returns 403 on files), the review queue is live so they were
+already re-keyed by hand, and the ledger cannot say which reached Dynamics — so reprocessing risked
+duplicate records for no certain gain. `out/b2-backfill-list.csv` retains the work list if it is
+ever revived. Previous watermark: **B8** (router `other` was a terminal reject; 26 of 30 such rejects were real payables) fixed code-side with the B2 rescue, no analyzer push. Its prompt-wording half is deferred as new item **C6**. Previous watermark: 2026-08-26 (sha 23c36a9: the `po_or_job_number` prefix rule relaxed from `110`/`330` to `11`/`33`; analyzer and function app both verified live at HEAD. New item C5 records that no real document exercises the widened range. Previous watermark: 2026-08-19, sha 9406364 — stage D2, see docs/ai/warranty-prompt-retry-plan.md).
 
 ---
 
@@ -567,7 +574,55 @@ code for a scenario the evidence says does not occur. **Revisit only if a column
 observed on a run where `total_invoice_amount_extract` returned a value** — the single observed
 case was an A7 dropout, above, not a considered column choice.
 
-### C6. The router's `other` description contradicts `general_invoice` on three words
+### A8. `invoice_date` was written as TODAY on documents that print no issue date — **FIXED 2026-08-27**
+
+**D1 — wrote a silently wrong value, unreviewed.** The residual half of A1: that fix reads the date
+off a printed *label*, so it can do nothing for a page that prints no issue date at all.
+
+Measured over 3,094 cached reads, documents that wrote `date.today()` on **every** read:
+
+| document | reads | what the page prints |
+|---|---|---|
+| `business_license` | **121 / 121** | due date + penalty dates only |
+| `property_abbotsford` | 3 / 3 | `DUE DATE`, `PENALTY DATE` — no issue date |
+| `property_richmond` | 3 / 3 | due date only |
+| `property_surrey` | 3 / 3 | due date only |
+
+Four more defaulted occasionally (1–15 of 60–161 reads) through twin dropout. `business_license`
+had been doing this since long before the property tax notices existed; it was invisible because
+`invoice_date` is not critical, so it auto-wrote, and today's date looks plausible whenever the run
+happens to fall on a believable day.
+
+**Fix:** `build_write_values` now writes `""` rather than `now_pst` when `invoice_date` resolves to
+nothing usable, still recording the field in `defaultedFields`. This is the rule the billing-period
+dates already followed ("NEVER defaulted — blank when absent"). `payment_due_date` is untouched: it
+defaults to today + 30 **independently**, never `invoice_date` + 30. `invoice_date_in_future("")`
+is `False`, so the future-date gate is unaffected, and no sidecar asserted `invoice_date` on any of
+the four documents. `POLICY_VERSION` → `commercial-narrative-v12`.
+
+**Measured blast radius** (HEAD vs working tree over all 3,094 cached reads): **8 documents, 151
+reads, `invoice_date` the ONLY field that changed, routing unchanged on every single read.**
+
+### ~~C6.~~ CLOSED 2026-08-27 — the router's `other` wording is not the defect
+
+**Closed without change (user, 2026-08-27).** The premise did not survive measurement. Six property
+tax notices from five municipalities were run through the live router: **all six classified
+`general_invoice`**, none rejected, all reaching happy path — and one of them is the *same tax bill*
+as the rejected `260603_0021` (identical folio `5395-6128-0065`, identical printed amounts).
+
+So the word "notices" in the `other` description is **not sufficient** to cause a reject, and the
+22-of-30 collision count was a real correlation over-read as causation — the same confounding error
+stage C documents. The 2026-07-17 batch (16 of 16 within three minutes) fits a CU regime effect far
+better than a wording one. The B2 rescue makes these documents extract regardless, so there is no
+remaining cost to justify editing a prompt that all 1,019 happy-path documents depend on and that
+has no golden-corpus coverage.
+
+**Reopen only on evidence:** re-roll several of the 21 rejected notices at n ≥ 12 against the
+current definition and show that a reject still reproduces.
+
+**Original analysis retained below for the record.**
+
+### C6 (original analysis, superseded). The router's `other` description contradicts `general_invoice` on three words
 
 **No Dataverse impact once B8 shipped — but it is why B8 has work to do at all.**
 

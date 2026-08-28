@@ -167,7 +167,7 @@ def test_date_defaulting_and_derivation():
         payment_due_date=fdate("2026-05-31", 0.40),
     ))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("missing invoice_date -> today (PST)", wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("missing invoice_date -> blank, never today", wv["invoice_date"] == "", wv["invoice_date"])
     check("low-conf payment_due_date -> today+30", wv["payment_due_date"] == DUE_30, wv["payment_due_date"])
     check("both dates recorded as defaulted",
           set(defaulted) == {"invoice_date", "payment_due_date"}, str(defaulted))
@@ -186,8 +186,8 @@ def test_date_defaulting_and_derivation():
     # ambiguous numeric date treated as unparseable -> defaulted (safer than wrong guess)
     parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate("03/04/2026", 0.95)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("ambiguous numeric date -> defaulted to today",
-          wv["invoice_date"] == TODAY and "invoice_date" in defaulted, wv["invoice_date"])
+    check("ambiguous numeric date -> blank, recorded as defaulted",
+          wv["invoice_date"] == "" and "invoice_date" in defaulted, wv["invoice_date"])
 
     # municipal with no GST -> amount_excluding_gst is None (not an error)
     parsed = gates.parse_fields(municipal_fields())
@@ -2675,7 +2675,7 @@ def test_invoice_number_filename_fallback():
 
 
 def test_invoice_date_twin_and_future_gate():
-    print("\n[gates: invoice_date twin -- defaults to today, future date routes to review]")
+    print("\n[gates: invoice_date twin -- defaults to blank, future date routes to review]")
 
     # THE BUG: a correct date whose extract confidence lands under the bar used to be
     # replaced by today's date. Two agreeing sub-threshold twins now keep it.
@@ -2702,11 +2702,11 @@ def test_invoice_date_twin_and_future_gate():
 
     # Extract absent -> the generate twin may NOT carry the field on its own, however
     # confident it is (observed: the reasoning twin answering with a page-footer print
-    # timestamp at 0.82 on a bill that prints no issue date). Today is written instead.
+    # timestamp at 0.82 on a bill that prints no issue date). Blank is written instead.
     parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate(None, None),
                                                   invoice_date_generate=fdate("2026-05-01", 0.90)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("ungrounded generate-only date is refused", wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("ungrounded generate-only date is refused", wv["invoice_date"] == "", wv["invoice_date"])
     check("refused generate -> defaulted", "invoice_date" in defaulted, str(defaulted))
     check("invoice_date is in NO_GENERATE_RESCUE",
           "invoice_date" in field_policy.NO_GENERATE_RESCUE,
@@ -2785,7 +2785,7 @@ def test_invoice_date_twin_and_future_gate():
           any("invoice_date_extract/invoice_date_generate disagree" in a for a in r["advisoryFlags"]),
           str(r["advisoryFlags"]))
 
-    # Both twins below the bar and disagreeing -> today, recorded as defaulted. Still
+    # Both twins below the bar and disagreeing -> blank, recorded as defaulted. Still
     # happy path: invoice_date is not a critical field.
     r = ev(commercial_fields(invoice_date_extract=fdate("2026-05-01", 0.40),
                              invoice_date_generate=fdate("2026-05-31", 0.40)))
@@ -2794,13 +2794,18 @@ def test_invoice_date_twin_and_future_gate():
     check("unresolved twins -> defaulted", "invoice_date" in r["defaultedFields"],
           str(r["defaultedFields"]))
 
-    # Both twins absent -> today (the agreed fallback).
+    # Both twins absent -> blank. Substituting today filed such documents under a
+    # wrong date unreviewed (business_license did so on 121 of 121 cached reads);
+    # an absent date is now absent.
     fields = commercial_fields()
     del fields["invoice_date_extract"]
     parsed = gates.parse_fields(fields)
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("no invoice date at all -> today (PST)", wv["invoice_date"] == TODAY, wv["invoice_date"])
-    check("today substitution recorded", "invoice_date" in defaulted, str(defaulted))
+    check("no invoice date at all -> blank", wv["invoice_date"] == "", wv["invoice_date"])
+    check("blank substitution still recorded as defaulted",
+          "invoice_date" in defaulted, str(defaulted))
+    check("payment_due_date is untouched by the invoice_date change",
+          wv["payment_due_date"] == "2026-05-31", wv["payment_due_date"])
 
     # An invoice dated after today goes to a human, with the read value left intact.
     r = ev(commercial_fields(invoice_date_extract=fdate("2099-12-31", 0.95)))

@@ -73,7 +73,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v11",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v12",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -170,8 +170,15 @@ overwritten.
 `invoice_date` is an extract + generate twin resolved like `vendor_name` (agreement
 boost included: two sub-threshold twins naming the same calendar day pass, with
 `resolutions.invoice_date.source` = `"agreement"`). Only when the twins resolve to
-nothing usable — absent, unparseable, or below the bar and disagreeing — does the
-write value fall back to **today (PST)**, recorded in `defaultedFields`. Unlike the
+nothing usable — absent, unparseable, or below the bar and disagreeing — is the
+write value left **blank (`""`)**, recorded in `defaultedFields`. It was `today (PST)`
+before `commercial-narrative-v12`: some documents print no issue date anywhere (a city
+business licence, several property tax notices — only a due date and penalty dates), so
+today's date was written to Dynamics unreviewed, and looked plausible whenever the run
+happened to fall on a believable day. `business_license` did this on 121 of 121 cached
+reads. An absent date is now absent, matching the rule the billing-period dates already
+follow. `payment_due_date` is unaffected — it defaults to today + 30 independently,
+never `invoice_date` + 30. Unlike the
 other twins, a confident generate value does not rescue an *absent* extract here
 (`field_policy.NO_GENERATE_RESCUE`): with no extract span behind it the reasoning
 twin has been seen answering with a page-footer print timestamp. It is accepted only
@@ -184,7 +191,8 @@ date **after today** (America/Vancouver) routes the run to
 `REVIEW_B4_CRITICAL_FIELD` — a future issue date is either a misread or a document
 that shouldn't be paid yet — with the extracted date written unchanged so the
 reviewer sees what the document said. `invoice_date` is otherwise never critical: an
-unresolved one defaults quietly and does not trigger review.
+unresolved one is blanked quietly and does not trigger review — which is exactly why
+writing a wrong date there was invisible.
 
 Billing-period fields (municipal utility bills): `billing_period_start_date`,
 `billing_period_end_date`, and `number_of_days` feed the tenant utility-sharing

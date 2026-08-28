@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v11"
+POLICY_VERSION = "commercial-narrative-v12"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -1692,8 +1692,8 @@ def build_write_values(
 
     Returns ``(write_values, defaulted_fields)`` where:
         * date fields are normalised to YYYY-MM-DD; if empty/unparseable or not
-          reliable they are replaced (invoice_date -> today PST,
-          payment_due_date -> today + 30 PST) and the field name is recorded in
+          reliable they are replaced (invoice_date -> "" (blank), payment_due_date
+          -> today + 30 PST) and the field name is recorded in
           ``defaulted_fields`` for the ledger. "Reliable" is the twin resolution
           for invoice_date (so two agreeing sub-threshold twins keep the printed
           date) and confidence >= threshold for payment_due_date;
@@ -1712,7 +1712,15 @@ def build_write_values(
     """
     now_pst = _now_pacific(now)
     default_for = {
-        "invoice_date": now_pst.strftime(DATE_FORMAT),
+        # Blank, NOT today. Some documents print no issue date anywhere -- a city
+        # business licence and several property tax notices carry only a due date
+        # and penalty dates -- and substituting today filed them under a date that
+        # is simply wrong, unreviewed, because invoice_date is not critical. It was
+        # invisible whenever the run happened to fall on a plausible day. An absent
+        # date is now absent, which is the rule the billing-period dates already
+        # follow. payment_due_date is unaffected: it defaults to today + 30
+        # independently, never invoice_date + 30.
+        "invoice_date": "",
         "payment_due_date": (now_pst + timedelta(days=DUE_DATE_DEFAULT_DAYS)).strftime(DATE_FORMAT),
     }
 
