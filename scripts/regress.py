@@ -238,7 +238,18 @@ def _values_equal(expected: Any, actual: Any, field: Optional[str] = None) -> bo
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         return abs(float(expected) - float(actual)) <= MONEY_TOLERANCE
     if field == "vendor_name" and isinstance(expected, str) and isinstance(actual, str):
-        return _strip_vendor_suffix(expected) == _strip_vendor_suffix(actual)
+        # Case-insensitive as well as suffix-insensitive (user, 2026-08-27). The twins
+        # return the correct vendor but flip between title case and upper case on the same
+        # document -- 'City of Abbotsford' vs 'CITY OF ABBOTSFORD', 'District of West
+        # Vancouver' vs 'DISTRICT OF WEST VANCOUVER' -- which is the known B6a inconsistency
+        # that dataverse-todo DV-4 owns (normalise the written name), not a wrong value.
+        # Comparing case-sensitively made a base-critical assertion flap, and dropping the
+        # assertion to avoid that would have been strictly worse: vendor_name is never
+        # dropped from a sidecar. Folding case here keeps the assertion doing its real job --
+        # catching the WRONG vendor -- while ignoring a difference the pipeline does not
+        # promise. A genuine casing fix belongs in build_write_values, not here.
+        return (_strip_vendor_suffix(expected).casefold()
+                == _strip_vendor_suffix(actual).casefold())
     return expected == actual
 
 

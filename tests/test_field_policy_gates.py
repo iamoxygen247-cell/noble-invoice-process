@@ -167,7 +167,8 @@ def test_date_defaulting_and_derivation():
         payment_due_date=fdate("2026-05-31", 0.40),
     ))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("missing invoice_date -> blank, never today", wv["invoice_date"] == "", wv["invoice_date"])
+    check("missing invoice_date -> today (PST)",
+          wv["invoice_date"] == TODAY, wv["invoice_date"])
     check("low-conf payment_due_date -> today+30", wv["payment_due_date"] == DUE_30, wv["payment_due_date"])
     check("both dates recorded as defaulted",
           set(defaulted) == {"invoice_date", "payment_due_date"}, str(defaulted))
@@ -186,8 +187,20 @@ def test_date_defaulting_and_derivation():
     # ambiguous numeric date treated as unparseable -> defaulted (safer than wrong guess)
     parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate("03/04/2026", 0.95)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("ambiguous numeric date -> blank, recorded as defaulted",
-          wv["invoice_date"] == "" and "invoice_date" in defaulted, wv["invoice_date"])
+    check("ambiguous numeric date -> defaulted to today",
+          wv["invoice_date"] == TODAY and "invoice_date" in defaulted, wv["invoice_date"])
+
+    # The today-fallback applies to BOTH buckets (user, 2026-08-27). A municipal variant
+    # that wrote "" instead was tried and reverted before it shipped: several municipal
+    # documents print no issue date at all, but a blank date is not more useful downstream
+    # than an approximate one, so today is substituted everywhere and recorded in
+    # defaultedFields so the reviewer can see it was not read from the page.
+    parsed = gates.parse_fields(municipal_fields(invoice_date_extract=fdate(None, None)))
+    wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
+    check("municipal defaults to today as well, not blank",
+          wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("municipal substitution is recorded as defaulted",
+          "invoice_date" in defaulted, str(defaulted))
 
     # municipal with no GST -> amount_excluding_gst is None (not an error)
     parsed = gates.parse_fields(municipal_fields())
@@ -2214,6 +2227,49 @@ def test_invoice_date_read_from_its_printed_label():
           find("Order date: May 28, 2026 ... Order Date: Jun 2, 2026") is None)
 
 
+def test_invoice_number_that_is_just_the_account():
+    print("\n[gates: an account/folio number echoed into invoice_number is discarded]")
+    echoes = field_policy.invoice_number_echoes_account
+
+    # property_surrey prints only 'FOLIO/ROLL NUMBER 5244-50502-6' -- no invoice number at
+    # all -- and the generate twin fills invoice_number with the folio on 2 reads in 6.
+    FOLIO_PAGE = ("2026 PROPERTY TAX NOTICE\nFOLIO/ROLL NUMBER\n5244-50502-6\n"
+                  "JURISDICTION 326 ROLL# 5244-50502-6")
+    check("folio echoed into invoice_number is caught",
+          echoes("5244-50502-6", "Account No: 5244-50502-6", FOLIO_PAGE))
+    check("the labelled account form does not change the verdict",
+          echoes("5244-50502-6", "5244-50502-6", FOLIO_PAGE))
+
+    # The label test is what protects a genuine invoice number. diag_260414_0028 prints
+    # 'Invoice #:' and ALSO carries the same digits in account_number on some reads. An
+    # earlier draft of the label pattern ended in a word-boundary escape, which cannot match
+    # "#:" (non-word followed by non-word), so it discarded the CORRECT invoice number on
+    # that document. Each printed form below is a regression guard for that.
+    for label in ("Invoice #: 1714548", "Invoice #1714548", "INVOICE NO. 1714548",
+                  "Bill Number 1714548", "Statement No: 1714548"):
+        check(f"a printed label protects the value: {label!r}",
+              not echoes("1714548", "Account No: 1714548", label))
+
+    check("no echo when the digits differ",
+          not echoes("999", "Account No: 5244-50502-6", FOLIO_PAGE))
+    check("no echo when invoice_number is empty",
+          not echoes("", "Account No: 5244-50502-6", FOLIO_PAGE))
+    check("no echo when account_number is empty", not echoes("5244-50502-6", "", FOLIO_PAGE))
+
+    # End to end: discarding the echo must let the municipal filename fallback take over,
+    # so the bill still carries an invoice number rather than a blank.
+    r = ev_md(municipal_fields(invoice_number_extract=fstr(None, None),
+                              invoice_number_generate=fstr("5244-50502-6", 0.95),
+                              account_number_extract=fstr("5244-50502-6", 0.95)),
+              FOLIO_PAGE, file_name="property_surrey.pdf")
+    check("discarded echo falls back to the filename",
+          r["writeValues"]["invoice_number"] == "property_surrey",
+          str(r["writeValues"].get("invoice_number")))
+    check("the discard is surfaced as an advisory",
+          any("discarded" in a and "invoice_number" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+
 def test_account_number_that_is_just_the_po():
     print("\n[gates: a PO/job number echoed into account_number is discarded]")
 
@@ -2675,7 +2731,7 @@ def test_invoice_number_filename_fallback():
 
 
 def test_invoice_date_twin_and_future_gate():
-    print("\n[gates: invoice_date twin -- defaults to blank, future date routes to review]")
+    print("\n[gates: invoice_date twin -- defaults to today, future date routes to review]")
 
     # THE BUG: a correct date whose extract confidence lands under the bar used to be
     # replaced by today's date. Two agreeing sub-threshold twins now keep it.
@@ -2702,11 +2758,11 @@ def test_invoice_date_twin_and_future_gate():
 
     # Extract absent -> the generate twin may NOT carry the field on its own, however
     # confident it is (observed: the reasoning twin answering with a page-footer print
-    # timestamp at 0.82 on a bill that prints no issue date). Blank is written instead.
+    # timestamp at 0.82 on a bill that prints no issue date). Today is written instead.
     parsed = gates.parse_fields(commercial_fields(invoice_date_extract=fdate(None, None),
                                                   invoice_date_generate=fdate("2026-05-01", 0.90)))
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("ungrounded generate-only date is refused", wv["invoice_date"] == "", wv["invoice_date"])
+    check("ungrounded generate-only date is refused", wv["invoice_date"] == TODAY, wv["invoice_date"])
     check("refused generate -> defaulted", "invoice_date" in defaulted, str(defaulted))
     check("invoice_date is in NO_GENERATE_RESCUE",
           "invoice_date" in field_policy.NO_GENERATE_RESCUE,
@@ -2785,7 +2841,7 @@ def test_invoice_date_twin_and_future_gate():
           any("invoice_date_extract/invoice_date_generate disagree" in a for a in r["advisoryFlags"]),
           str(r["advisoryFlags"]))
 
-    # Both twins below the bar and disagreeing -> blank, recorded as defaulted. Still
+    # Both twins below the bar and disagreeing -> today, recorded as defaulted. Still
     # happy path: invoice_date is not a critical field.
     r = ev(commercial_fields(invoice_date_extract=fdate("2026-05-01", 0.40),
                              invoice_date_generate=fdate("2026-05-31", 0.40)))
@@ -2794,18 +2850,13 @@ def test_invoice_date_twin_and_future_gate():
     check("unresolved twins -> defaulted", "invoice_date" in r["defaultedFields"],
           str(r["defaultedFields"]))
 
-    # Both twins absent -> blank. Substituting today filed such documents under a
-    # wrong date unreviewed (business_license did so on 121 of 121 cached reads);
-    # an absent date is now absent.
+    # Both twins absent -> today (the agreed fallback, both buckets).
     fields = commercial_fields()
     del fields["invoice_date_extract"]
     parsed = gates.parse_fields(fields)
     wv, defaulted = field_policy.build_write_values(parsed, THRESHOLD, now=FIXED_NOW)
-    check("no invoice date at all -> blank", wv["invoice_date"] == "", wv["invoice_date"])
-    check("blank substitution still recorded as defaulted",
-          "invoice_date" in defaulted, str(defaulted))
-    check("payment_due_date is untouched by the invoice_date change",
-          wv["payment_due_date"] == "2026-05-31", wv["payment_due_date"])
+    check("no invoice date at all -> today (PST)", wv["invoice_date"] == TODAY, wv["invoice_date"])
+    check("today substitution recorded", "invoice_date" in defaulted, str(defaulted))
 
     # An invoice dated after today goes to a human, with the read value left intact.
     r = ev(commercial_fields(invoice_date_extract=fdate("2099-12-31", 0.95)))

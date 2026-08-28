@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v12"
+POLICY_VERSION = "commercial-narrative-v14"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -1386,6 +1386,46 @@ def account_number_echoes_po(account: Any, po: Any, text: str) -> bool:
     return not _ACCOUNT_LABEL.search(text or "")
 
 
+# A label that names a document's own invoice/bill number. Its ABSENCE is what separates a
+# genuine invoice number that happens to match an account from an account/folio number
+# echoed into the field.
+# NOTE the deliberate absence of a trailing word-boundary escape: the commonest printed form is
+# "Invoice #:" and "#" followed by ":" is non-word to non-word, so a trailing
+# boundary never matches there. An earlier draft had one and discarded the correct
+# invoice number on diag_260414_0028, which prints exactly that label.
+_INVOICE_NUMBER_LABEL = re.compile(
+    r"(?i)\b(?:invoice|bill|statement)\s*(?:number|nbr|no\.?|#)"
+)
+
+
+def invoice_number_echoes_account(invoice: Any, account: Any, text: str) -> bool:
+    """
+    True when ``invoice_number`` is nothing but the account/folio number repeated, on a
+    document that prints no invoice-number label at all.
+
+    A property tax notice carries no invoice number: `property_surrey` prints only
+    'FOLIO/ROLL NUMBER 5244-50502-6', which is already `account_number`. The extract twin
+    correctly returns nothing on every read, but the generate twin fills the field with the
+    folio on 2 reads in 6 -- the "generate twin invents a missing field" pattern -- and that
+    invented value then beats the municipal filename fallback, so the invoice is filed under
+    a number that is really its account.
+
+    Exact mirror of ``account_number_echoes_po``, including why both conditions are needed:
+    the digits must match the resolved account number, and the page must print no
+    invoice-number label. That second test protects a genuine invoice number that coincides
+    with an account. Measured by replaying ``gates.evaluate`` over every cached read: 2
+    fires, both on property_surrey and both correct, and 0 false positives in 3,310 reads
+    spanning 33 analyzer versions. A later ``--force`` re-roll overwrote those 2 reads, so
+    the live corpus no longer reproduces the echo on demand; the deterministic coverage is
+    ``test_invoice_number_that_is_just_the_account``.
+    """
+    invoice_digits = re.sub(r"\D", "", str(invoice)) if invoice is not None else ""
+    account_digits = re.sub(r"\D", "", str(account)) if account is not None else ""
+    if not invoice_digits or invoice_digits != account_digits:
+        return False
+    return not _INVOICE_NUMBER_LABEL.search(text or "")
+
+
 # A label that names the date the document was ISSUED, and the unambiguous date forms that
 # may follow it. Deliberately excludes a bare "Date" (too common as a column header), "Due
 # Date", and "Billing period"; and excludes slashed dates, which are ambiguous and are the
@@ -1692,8 +1732,8 @@ def build_write_values(
 
     Returns ``(write_values, defaulted_fields)`` where:
         * date fields are normalised to YYYY-MM-DD; if empty/unparseable or not
-          reliable they are replaced (invoice_date -> "" (blank), payment_due_date
-          -> today + 30 PST) and the field name is recorded in
+          reliable they are replaced (invoice_date -> today PST,
+          payment_due_date -> today + 30 PST) and the field name is recorded in
           ``defaulted_fields`` for the ledger. "Reliable" is the twin resolution
           for invoice_date (so two agreeing sub-threshold twins keep the printed
           date) and confidence >= threshold for payment_due_date;
@@ -1712,15 +1752,7 @@ def build_write_values(
     """
     now_pst = _now_pacific(now)
     default_for = {
-        # Blank, NOT today. Some documents print no issue date anywhere -- a city
-        # business licence and several property tax notices carry only a due date
-        # and penalty dates -- and substituting today filed them under a date that
-        # is simply wrong, unreviewed, because invoice_date is not critical. It was
-        # invisible whenever the run happened to fall on a plausible day. An absent
-        # date is now absent, which is the rule the billing-period dates already
-        # follow. payment_due_date is unaffected: it defaults to today + 30
-        # independently, never invoice_date + 30.
-        "invoice_date": "",
+        "invoice_date": now_pst.strftime(DATE_FORMAT),
         "payment_due_date": (now_pst + timedelta(days=DUE_DATE_DEFAULT_DAYS)).strftime(DATE_FORMAT),
     }
 

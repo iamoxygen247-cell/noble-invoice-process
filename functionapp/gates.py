@@ -523,6 +523,28 @@ def evaluate(
     # rescue (source "filename", confidence 1.0). A present-but-low-confidence
     # value is never overwritten -- that still routes to review -- and with no
     # usable filename the field fails exactly as before.
+    # An account/folio number echoed into invoice_number. A property tax notice prints no
+    # invoice number at all -- property_surrey carries only 'FOLIO/ROLL NUMBER 5244-50502-6',
+    # which is already account_number -- yet the generate twin fills the field with it on 2
+    # reads in 6, and that invented value then beats the municipal filename fallback. Mirror
+    # of the A5 account/PO guard, and placed BEFORE the fallback so the filename can take
+    # over once the echo is discarded. Measured by replaying gates.evaluate over every
+    # cached read: 2 fires, both on property_surrey and both correct, and 0 false positives
+    # in 3,310 reads spanning 33 analyzer versions. A later --force re-roll overwrote those
+    # 2 reads, so the live corpus no longer reproduces the echo on demand -- the
+    # deterministic coverage is test_invoice_number_that_is_just_the_account.
+    if field_policy.invoice_number_echoes_account(
+            write_values[field_policy.INVOICE_FINAL],
+            write_values[field_policy.ACCOUNT_FINAL],
+            collect_markdown(full)):
+        echoed_invoice = write_values[field_policy.INVOICE_FINAL]
+        resolutions[field_policy.INVOICE_FINAL] = (None, 0.0, False, None, "account_echo_rejected")
+        write_values[field_policy.INVOICE_FINAL] = ""
+        advisory.append(
+            f"invoice_number {echoed_invoice!r} discarded: it is the account/folio number "
+            "repeated and the document prints no invoice number"
+        )
+
     if field_policy.INVOICE_FINAL in critical:
         inv_value, _inv_conf, inv_passed, _inv_note, _inv_source = resolutions[field_policy.INVOICE_FINAL]
         if not inv_passed and is_empty_value(inv_value):

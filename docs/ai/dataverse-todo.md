@@ -203,18 +203,12 @@ No backfill. Anyone reading that column for reporting needs to know the cut-over
 The section's sizing rationale is stale too — it argues from a measured 403-character `warranty`,
 and the post-D2 maximum is 255.
 
-### DV-9 — `invoice_date` can now be written blank
+### ~~DV-9~~ — WITHDRAWN 2026-08-27
 
-Since `commercial-narrative-v12` an invoice_date that resolves to nothing is written as `""`
-instead of `date.today()`. Documents that print no issue date anywhere — a city business licence,
-several property tax notices — previously wrote today's date into the CRM date column, unreviewed
-and wrong; they now write blank and are listed in `defaultedFields`.
-
-Confirm the Dynamics `invoice_date` column accepts an empty value. **Low risk:** the billing-period
-date columns already receive `""` on most invoices through the same code path and the write is
-live, so blank on a date column is an established pattern here rather than a new one. The field
-remains non-critical, so these rows still auto-write — they simply carry no date now instead of a
-false one. No backfill: rows written before v13 carry the processing date.
+`invoice_date` is **not** written blank after all. Two variants were written and both reverted
+before shipping (blank everywhere, then blank on municipal only); the user's decision is that a
+blank invoice date always becomes **today's date, in both buckets**. The CRM date column therefore
+sees no change and needs no action. See open-defects A8 for the measurement that prompted it.
 
 ### DV-8 — `sub_bill_type` gains a new value, `propertytax`
 

@@ -18,8 +18,12 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-27 (later) — **A8** fixed: `invoice_date` no longer defaults to today on
-documents that print no issue date (`business_license` had done so on 121/121 reads). **C6 closed**
+Last updated: 2026-08-27 (later) — **A8 closed as accepted behaviour, not a defect**: a blank
+`invoice_date` always becomes today's date, in **both** buckets (user). Two attempts to change that
+— blank everywhere (`v12`, committed as 11a530c), then blank on municipal only (`v13`, never
+committed) — were **reverted**; neither reached production. The shipped version is `v14`. The measurement is kept because it is useful:
+`business_license` writes today's date on 121/121 cached reads and three of the six property tax
+notices print no issue date at all. **C6 closed**
 without change — six property tax notices classify correctly on the live router, so the `other`
 wording is not the defect. The **B8 backfill of 25 historical rejects is closed unstarted**: the
 PDFs are only in SharePoint (Graph returns 403 on files), the review queue is live so they were
@@ -574,10 +578,11 @@ code for a scenario the evidence says does not occur. **Revisit only if a column
 observed on a run where `total_invoice_amount_extract` returned a value** — the single observed
 case was an A7 dropout, above, not a considered column choice.
 
-### A8. `invoice_date` was written as TODAY on documents that print no issue date — **FIXED 2026-08-27**
+### A8. `invoice_date` is written as TODAY on documents that print no issue date — **CLOSED, accepted behaviour**
 
-**D1 — wrote a silently wrong value, unreviewed.** The residual half of A1: that fix reads the date
-off a printed *label*, so it can do nothing for a page that prints no issue date at all.
+**Not a defect — recorded because the measurement is useful.** The residual half of A1: that fix
+reads the date off a printed *label*, so it can do nothing for a page that prints no issue date at
+all. Those documents fall back to today, which is the agreed behaviour.
 
 Measured over 3,094 cached reads, documents that wrote `date.today()` on **every** read:
 
@@ -593,15 +598,71 @@ had been doing this since long before the property tax notices existed; it was i
 `invoice_date` is not critical, so it auto-wrote, and today's date looks plausible whenever the run
 happens to fall on a believable day.
 
-**Fix:** `build_write_values` now writes `""` rather than `now_pst` when `invoice_date` resolves to
-nothing usable, still recording the field in `defaultedFields`. This is the rule the billing-period
-dates already followed ("NEVER defaulted — blank when absent"). `payment_due_date` is untouched: it
-defaults to today + 30 **independently**, never `invoice_date` + 30. `invoice_date_in_future("")`
-is `False`, so the future-date gate is unaffected, and no sidecar asserted `invoice_date` on any of
-the four documents. `POLICY_VERSION` → `commercial-narrative-v12`.
+> ### ⚠ CLOSED — NOT A DEFECT (user, 2026-08-27)
+>
+> **The today-substitution is the intended behaviour, for both buckets.** Two changes were
+> written and both reverted before shipping: first blanking `invoice_date` everywhere
+> (`commercial-narrative-v12`, committed as 11a530c), then blanking it on the municipal bucket
+> only while keeping today on commercial (`v13`, never committed). The user's decision on seeing both: *"when invoice date is
+> blank, it should always be today's date for both commercial bill type and municipal bill
+> type."*
+>
+> The measurement below stands and is worth keeping — `business_license` really does write
+> today's date on 121 of 121 cached reads, and three of the six property tax notices print no
+> issue date at all — but that is now a **known and accepted** property of the pipeline, not a
+> defect. `defaultedFields` is the signal: it names `invoice_date` on every such run, so a
+> reviewer can always tell a substituted date from a read one.
+>
+> **Do not "fix" this again without a fresh decision.** Neither reverted version ever reached
+> production. `v12` is in git history (11a530c, reverted); `v13` was never committed. The version
+> numbers are not reused — the revert ships as `v14` so one `POLICY_VERSION` never means two
+> different behaviours in the ledger.
 
 **Measured blast radius** (HEAD vs working tree over all 3,094 cached reads): **8 documents, 151
 reads, `invoice_date` the ONLY field that changed, routing unchanged on every single read.**
+
+### A9. CU intermittently returns a *set* of fields with no value — one cause, three symptoms
+
+**Not a defect in our code.** Three separate instabilities chased this session turned out to be
+the same CU behaviour, which is worth recording once rather than three times.
+
+CU sometimes returns a field object carrying only `type` and `confidence` — **no value, no
+spans** — and the affected fields vary run to run. On `260629_0010` the empty set grew and shrank
+across three consecutive reads of the same bytes:
+
+| read | fields with no value | `bill_type` | empty-field confidences |
+|---|---|---|---|
+| r0 | 19 / 39 | **NULL** | `{0.876: 6, 0.975: 2, 0.837: 11}` |
+| r1 | 17 / 39 | **NULL** | `{0.876: 6, 0.975: 2, 0.837: 9}` |
+| r2 | 14 / 39 | ok | `{0.876: 6, 0.975: 2, 0.837: 6}` |
+
+The empty fields share a handful of placeholder confidences (they are **not** per-field scores),
+and the `0.837` group is the one that varies. `bill_type` carries 0.837, so it was swept into a
+widening set CU declined to populate. Empty fields are normal — median 15 of 39 across 108 reads,
+most legitimately absent — so the signal is the *variance*, not the count.
+
+**The three symptoms, all measured with concurrent controls:**
+
+| symptom | rate | consequence |
+|---|---|---|
+| `total_invoice_amount_extract` null (**A7**) | 5/24 pooled | generate twin covers it; routing flips only if generate is also sub-bar |
+| `bchydro` both `invoice_date` twins null | 1/12 | today substituted (A8); assertion dropped |
+| `260629_0010.bill_type` null | 2 / 3,202 (0.1%) | bucket falls back to commercial — **correct on every read** |
+
+**Why `bill_type` cannot recover.** It is the **only classify field in the schema without a
+generate twin** — `sub_bill_type` has `sub_bill_type_generate`, `is_handwritten` has
+`is_handwritten_generate`, `bill_type` has nothing. The field that selects the policy bucket is the
+one field with no second read to fall back on. `resolve_bucket(None)` → `commercial` is the
+fail-safe that contains it, and it held on all three reads above.
+
+**The latent risk, never observed:** a null on a genuinely *municipal* bill would put it in the
+commercial bucket — stricter critical fields (so almost certainly review, the safe direction) but
+also the narrative fields would **not** be blanked, writing diagnosis/recommendation text onto a
+utility bill. Zero occurrences in 3,202 reads; every observed null was on a commercial document.
+
+**Fix shape if it ever justifies one:** add a `bill_type_generate` reasoning twin, the pattern
+already proven for the other two classify fields. Not scheduled — 0.1% with a correct fail-safe
+does not warrant an analyzer change.
 
 ### ~~C6.~~ CLOSED 2026-08-27 — the router's `other` wording is not the defect
 
