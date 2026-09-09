@@ -1645,6 +1645,11 @@ ACCOUNT_LABEL = "Account No: "
 # Anchored, so it only recognises a label the value already STARTS with. Distinct from
 # _ACCOUNT_LABEL, which searches the document text for evidence that a page names an account.
 _ACCOUNT_ALREADY_LABELLED = re.compile(r"(?i)^\s*(?:account\s*(?:number|no\.?|#)|acct\.?)\b")
+# The same label, plus the abbreviating period and the ':' / '#' / '-' separator that follow
+# it. strip_account_label needs all of that gone, not just the words -- see its docstring.
+_ACCOUNT_LABEL_PREFIX = re.compile(
+    r"(?i)^\s*(?:account\s*(?:number|no|#)|acct)\b\.?\s*[:#-]?\s*"
+)
 
 
 def format_account_number(value: Any) -> str:
@@ -1659,6 +1664,26 @@ def format_account_number(value: Any) -> str:
     if not text:
         return ""
     return text if _ACCOUNT_ALREADY_LABELLED.match(text) else ACCOUNT_LABEL + text
+
+
+def strip_account_label(value: Any) -> str:
+    """The bare account number, with any leading 'Account No: ' style label removed.
+
+    A PROPERTY TAX notice writes account_number unlabelled (user requirement, 2026-09-09,
+    scoped to sub_bill_type == 'propertytax' and nothing else). On that family the value is
+    the folio -- the identifier an owner quotes verbatim to the municipality -- so the label
+    is noise. Every other bill, municipal or commercial, keeps it via format_account_number.
+
+    Recognises the same label forms that format_account_number refuses to double, so a label
+    CU pulled into the value is stripped as well as one this module added -- plus the
+    separator that follows it, which _ACCOUNT_ALREADY_LABELLED does not cover because it only
+    has to answer "is this already labelled?". Stripping the label alone left 'acct. 123456'
+    as '. 123456' (caught by test_account_number_label), hence the explicit trailing group.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    return _ACCOUNT_LABEL_PREFIX.sub("", text).strip()
 
 
 # How far a printed day count may sit from its own period span and still be believed:
@@ -2161,7 +2186,9 @@ def build_write_values(
         if write[name] is None or (isinstance(write[name], str) and write[name].strip() == ""):
             write[name] = ""
 
-    # ...and the account number is then labelled for the write (see format_account_number).
+    # ...and the account number is then labelled for the write (see format_account_number),
+    # EXCEPT on a property tax notice, where the label is stripped again further down once
+    # sub_bill_type is known -- see the propertytax branch after the folio substitution.
     # Applied here rather than at the end of gates.evaluate because that function returns
     # through _result in three places -- the B2 reject and the no-child review exit before
     # any of the repairs run -- and all three emit writeValues. build_write_values is the
@@ -2257,6 +2284,19 @@ def build_write_values(
     )
     if folio_for_account is not None:
         write[ACCOUNT_FINAL] = format_account_number(folio_for_account)
+
+    # ...and on a property tax notice that account number is written BARE -- no
+    # 'Account No: ' label (user requirement, 2026-09-09, this family ONLY; every other
+    # municipal bill and every commercial invoice keeps the label). Applied here, last,
+    # because it is the single point after BOTH routes that can set the field: the blanket
+    # labelling above and the folio substitution just before. Deciding the written form in
+    # one place is what keeps the two routes from disagreeing about it.
+    #
+    # Nothing downstream depends on the label: account_number_echoes_po and
+    # invoice_number_echoes_account both reduce their arguments to digits before comparing,
+    # so an unlabelled value gives an identical verdict.
+    if isinstance(write[SUB_BILL_TYPE], str) and write[SUB_BILL_TYPE].strip().lower() == "propertytax":
+        write[ACCOUNT_FINAL] = strip_account_label(write[ACCOUNT_FINAL])
 
     # The narrative fields describe service/supply work, which a municipal utility
     # bill does not report -- a water bill has nothing diagnosed, nothing recommended

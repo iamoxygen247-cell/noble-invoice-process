@@ -312,6 +312,28 @@ Three things to confirm on the Dynamics side:
    (`commercial-narrative-v9` → `v10`). Anyone filtering or joining on that column needs the
    cut-over date, exactly as with DV-6.
 
+> **Amended 2026-09-09 — the label is now scoped, and point 2 above is half-answered.** User
+> requirement: **property tax notices write `account_number` BARE**, with no `Account No: `
+> prefix. Every other bill keeps the label — every other municipal sub-type (water, gas, electric,
+> business licence) and every commercial invoice. Implemented in
+> `field_policy.strip_account_label`, applied in `build_write_values` after both routes that can
+> set the field (the blanket labelling and the folio substitution), gated on
+> `sub_bill_type == "propertytax"` alone.
+>
+> Verified across 312 cached reads: **120 propertytax reads bare, 132 other reads labelled, 0
+> violations** in either direction.
+>
+> **What this means for the column, and it is now worse than before:** it holds *three* shapes —
+> pre-v10 bare, v10+ labelled, and v20+ bare again on tax notices only. `PolicyVersion` alone no
+> longer identifies the shape, because two different policy versions write bare values for
+> different reasons; a consumer has to read `sub_bill_type` as well. If anything downstream
+> parses or strips that prefix, it must tolerate its absence rather than assume it.
+>
+> Nothing else changed: `fields.account_number` still carries the raw read for the review UI, and
+> both echo guards (`account_number_echoes_po`, `invoice_number_echoes_account`) compare
+> digits-only, so their verdicts are identical on either shape — confirmed by reading both
+> implementations, not assumed.
+
 ### DV-11 — `folio_number` is a new `WRITE_FIELDS` entry
 
 User requirement, 2026-09-09: capture the **folio / roll number** on property tax notices, with

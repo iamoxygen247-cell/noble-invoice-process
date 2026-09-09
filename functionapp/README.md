@@ -371,7 +371,9 @@ connection (encrypted at rest, never in run history) rather than in the flow.
      `writeValues` now includes `account_number` (required on municipal bills,
      optional on commercial; since `commercial-narrative-v10` the written value
      carries its own label — `"Account No: 123456"` on both bill types, `""`
-     when the bill prints none), `sub_bill_type` (gas / electric / water /
+     when the bill prints none, **except on a property tax notice, which since
+     `commercial-narrative-v20` writes it bare — `"328-314-00-0"` — because
+     there the value is the folio**), `sub_bill_type` (gas / electric / water /
      propertytax / business_license / service / repair / other), and the billing-period trio
      `billing_period_start_date` / `billing_period_end_date` (`YYYY-MM-DD` or
      `""`) and `number_of_days` (integer or `""`) for the tenant

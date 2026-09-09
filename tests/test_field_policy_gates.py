@@ -2447,8 +2447,9 @@ def test_account_number_label():
           r["fields"]["account_number"]["value"] == "425096",
           str(r["fields"].get("account_number")))
 
-    # Commercial: same label. The rule is not bucket-conditional -- account_number is
-    # informational here and critical on municipal, but both are written the same way.
+    # Commercial: same label. The rule is not BUCKET-conditional -- account_number is
+    # informational here and critical on municipal, but both are written the same way. It is
+    # sub-type conditional in exactly one place: propertytax, covered below.
     r = ev(commercial_fields(account_number_extract=fstr("22-57740-63006", 0.91)))
     check("commercial writes the labelled value too",
           r["writeValues"]["account_number"] == "Account No: 22-57740-63006",
@@ -2456,6 +2457,42 @@ def test_account_number_label():
     check("commercial fields.account_number keeps the raw read",
           r["fields"]["account_number"]["value"] == "22-57740-63006",
           str(r["fields"].get("account_number")))
+
+    # The ONE exception (user, 2026-09-09): a property tax notice writes it BARE.
+    strip = field_policy.strip_account_label
+    check("the helper strips a label", strip("Account No: 123456") == "123456",
+          strip("Account No: 123456"))
+    check("other label spellings are stripped",
+          strip("Account Number 123456") == "123456" and strip("acct. 123456") == "123456",
+          f"{strip('Account Number 123456')!r} / {strip('acct. 123456')!r}")
+    check("an unlabelled value is unchanged",
+          strip("7300-689280-0000") == "7300-689280-0000", strip("7300-689280-0000"))
+    check("punctuation inside the number survives",
+          strip("Account No: 000592.002") == "000592.002", strip("Account No: 000592.002"))
+    for blank in (None, "", "   "):
+        check(f"{blank!r} stays blank", strip(blank) == "", repr(strip(blank)))
+
+    r = ev(municipal_fields(
+        sub_bill_type=fstr("propertytax", 0.9), sub_bill_type_generate=fstr("propertytax", 0.9),
+        invoice_number_extract=fstr("2026 PROPERTY TAX", 0.9),
+        account_number_extract=fstr("000592.002", 0.95),
+        folio_number_extract=fstr("000592.002", 0.97),
+        folio_number_generate=fstr("000592.002", 0.88),
+    ))
+    check("a property tax notice writes account_number bare",
+          r["writeValues"]["account_number"] == "000592.002",
+          str(r["writeValues"].get("account_number")))
+    check("a property tax notice still routes happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # ...and a municipal bill that is NOT propertytax keeps the label. This is the scope line.
+    r = ev(municipal_fields(
+        sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9),
+        account_number_extract=fstr("000592.002", 0.95),
+    ))
+    check("a water bill keeps the label",
+          r["writeValues"]["account_number"] == "Account No: 000592.002",
+          str(r["writeValues"].get("account_number")))
 
     # An absent account number is still "" -- the Dataverse TEXT contract, not a bare label.
     fields = commercial_fields()
@@ -3925,13 +3962,14 @@ def test_propertytax_account_number_comes_from_the_folio():
         folio_number_generate=fstr("1987-9000-7", 0.85),
     )
 
-    # property_north_van_district: the notice prints BOTH, and the folio wins.
+    # property_north_van_district: the notice prints BOTH, and the folio wins. On a property
+    # tax notice the value is written BARE -- no 'Account No: ' label (user, 2026-09-09).
     r = ev(municipal_fields(**dict(tax, account_number_extract=fstr("100198790007", 0.95))))
     check("the folio replaces a differing printed account number",
-          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+          r["writeValues"]["account_number"] == "1987-9000-7",
           str(r["writeValues"].get("account_number")))
-    check("the label is applied once, not twice",
-          r["writeValues"]["account_number"].count("Account No:") == 1,
+    check("no 'Account No: ' label on a property tax notice",
+          "Account No" not in r["writeValues"]["account_number"],
           str(r["writeValues"].get("account_number")))
     check("folio_number itself keeps the bare value",
           r["writeValues"]["folio_number"] == "1987-9000-7",
@@ -3940,7 +3978,14 @@ def test_propertytax_account_number_comes_from_the_folio():
     # The 16-of-20 case: the two already agree, so this is a no-op.
     r = ev(municipal_fields(**dict(tax, account_number_extract=fstr("1987-9000-7", 0.95))))
     check("a no-op when the two already agree",
-          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+          r["writeValues"]["account_number"] == "1987-9000-7",
+          str(r["writeValues"].get("account_number")))
+
+    # A label CU pulled into the value itself is stripped too, not just one this module added.
+    r = ev(municipal_fields(**dict(
+        tax, account_number_extract=fstr("Account No: 1987-9000-7", 0.95))))
+    check("a label CU returned inside the value is stripped as well",
+          r["writeValues"]["account_number"] == "1987-9000-7",
           str(r["writeValues"].get("account_number")))
 
     # A water bill on the same shape keeps its own account number and writes no folio.
@@ -3972,8 +4017,8 @@ def test_propertytax_account_number_comes_from_the_folio():
     check("the account resolution names the folio as its source",
           r["resolutions"]["account_number"]["source"] == "propertytax_folio",
           str(r["resolutions"].get("account_number")))
-    check("the rescued account number is written",
-          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+    check("the rescued account number is written, unlabelled",
+          r["writeValues"]["account_number"] == "1987-9000-7",
           str(r["writeValues"].get("account_number")))
     check("the rescue is advised, so a reviewer can see it fired",
           any("taken from folio_number" in a for a in r["advisoryFlags"]),
