@@ -73,6 +73,7 @@ still carry the wrong value.
 | DV-5 | Narrative column headroom (ex-C4, closes stage D1) | mitigated, see below |
 | DV-6 | Refresh the stale `warranty` contract in `power-automate-design.html` | **now** — semantics changed tonight |
 | DV-7 | `account_number` is now written with an `Account No: ` label | **now** — column width + is the label wanted in the data at all |
+| DV-10 | Telecom bills (Telus, Rogers/Shaw) now write `bill_type = municipal` | **informational** — value change in a live column, no backfill |
 
 ---
 
@@ -210,6 +211,57 @@ before shipping (blank everywhere, then blank on municipal only); the user's dec
 blank invoice date always becomes **today's date, in both buckets**. The CRM date column therefore
 sees no change and needs no action. See open-defects A8 for the measurement that prompted it.
 
+### DV-10 — Telecom bills change bucket: `bill_type` goes `commercial` → `municipal`
+
+User requirement, 2026-09-08: *"If you see vendor name is Roger Business, Shaw or Telus, please
+classify the invoice as Municipal bill."* Shipped in `commercial-narrative-v16`, code-side in
+`field_policy.vendor_bill_type_override` — the analyzer was **not** touched, so there was no prod
+analyzer push. Like DV-8, this changes written values for a document class **already flowing
+through the pipeline**, so it is recorded here rather than as a defect.
+
+Measured on the two corpus anchors, 5 replicates each: CU classified both `commercial` on 5/5
+(the `bill_type` prompt lists *"private telecom, internet, and phone companies"* as commercial in
+as many words), and the override flipped both on 5/5.
+
+**Five columns change. No backfill** — records written before the cut-over carry the old values,
+and anyone reporting on these columns needs the cut-over date:
+
+1. **`bill_type`** — `commercial` → `municipal` for Telus and Rogers/Shaw invoices.
+2. **The five narrative columns** (`diagnosis_solution`, `diagnosis_solution_zh_hant`,
+   `recommendation`, `recommendation_zh_hant`, `warranty`) are now force-blanked for these
+   vendors, because `build_write_values` blanks them for the municipal bucket. This is a
+   *correction*, not a loss: before the change the generate twins were inventing phone-service
+   prose on these bills (`diagnosis_solution` was unstable across replicates on both documents).
+   Historical telecom rows may therefore contain invented narrative text.
+3. **`invoice_number`** now carries the SharePoint filename fallback on these bills
+   (`260825_telus`, `260901_rogers`), because the municipal bucket makes `invoice_number`
+   critical. Under the old commercial bucket the column was written empty. `defaultedFields`
+   names it, so a defaulted value stays distinguishable from a read one.
+4. **`sub_bill_type`** keeps the value `other` but by a different route — the commercial rule
+   derives it from the PO prefix, the municipal rule from the classified label. Measured `other`
+   on 5/5 both ways, so no visible change today; it would diverge if CU ever labelled a telecom
+   bill with a municipal sub-type.
+5. **`routingDecision`**, indirectly: the Rogers bill moves `REVIEW_B4_CRITICAL_FIELD` →
+   `HAPPY_PATH_CANDIDATE` (the municipal bucket drops the `po_or_job_number` + `gst_amount`
+   requirements a telecom bill can never satisfy), so telecom invoices begin auto-writing where
+   they previously queued for review. This is the point of the change, but it means the row
+   volume into Dynamics goes up.
+
+**Column readiness is not a blocker**, on the same standing decision recorded under DV-8 (*"No
+need to worry about dynamics columns"*, user 2026-08-27): `municipal` is an existing `bill_type`
+value, not a new one, so a choice set would already accept it.
+
+**Sub-item — `docs/power-automate-design.html` is now incomplete** (the DV-6 pattern, but a
+widening rather than a reversal). Two passages explain municipal behaviour by example and those
+examples no longer cover the class:
+
+* the narrative blanking is described as *"always `""` on a municipal bill (a water or hydro bill
+  diagnoses nothing…)"* — telecom bills now join that set;
+* the invoice-number default is described as *"A municipal bill carried no invoice number, so the
+  Function defaulted it from `fileName`"* — still true, now also reached by telecom bills.
+
+Neither is wrong; both would mislead a reader trying to predict which documents blank narratives.
+
 ### DV-8 — `sub_bill_type` gains a new value, `propertytax`
 
 User requirement, 2026-08-27: *"property tax bills are considered municipal bills. sub_bill_type
@@ -259,6 +311,67 @@ Three things to confirm on the Dynamics side:
    holds both shapes. `PolicyVersion` in the ledger marks the boundary
    (`commercial-narrative-v9` → `v10`). Anyone filtering or joining on that column needs the
    cut-over date, exactly as with DV-6.
+
+### DV-11 — `folio_number` is a new `WRITE_FIELDS` entry
+
+User requirement, 2026-09-09: capture the **folio / roll number** on property tax notices, with
+the extract + generate twin treatment, and make it a **critical field on those notices only**.
+Shipped in `commercial-narrative-v20` — new `folio_number_extract` / `folio_number_generate`
+fields in the analyzer, `field_policy.FOLIO_FINAL` in `WRITE_FIELDS`, and
+`field_policy.PROPERTYTAX_DELTA` in `critical_fields`. **This one needs an analyzer push as well
+as a function deploy** (order matters: analyzer first, or the field returns null for every
+invoice).
+
+Four things to settle on the Dynamics side:
+
+1. **A new column is required.** `writeValues` now carries a 22nd key. If the flow maps fields
+   explicitly, `folio_number` is dropped silently until the mapping is added; if it maps
+   dynamically, the write fails on an unknown column. Confirm which, before the deploy.
+2. **It is now IDENTICAL to `account_number` on every property tax notice — decided 2026-09-09.**
+   The `account_number` prompt already listed `Folio, Folio Number, Folio No., or Roll Number`
+   among its labels, so the two fields already agreed on 16 of the 20 notices. The user then
+   required that where a notice prints **both**, the folio wins — implemented code-side in
+   `field_policy.propertytax_account_from_folio` (municipal + `propertytax` only; 11 reads, 4
+   documents). So on a tax notice the two columns now always carry the same value.
+
+   **Amended 2026-09-09 after the live re-roll:** the substitution now also drives the *review*
+   decision, not just the written value. It first changed only `write[account_number]`, leaving
+   `evaluate_b4` to judge the account twins the folio had replaced — so when CU returned no
+   `account_number` at all (blank field entry) while the folio came back at 0.875–0.988 from the
+   same span, the notice went to a human even though the record was correct. `gates.evaluate` now
+   sets `resolutions[account_number]` to the folio's value and confidence with
+   `source="propertytax_folio"`. The bar is unchanged: the folio must still pass its own
+   resolution. **For the Dataverse write nothing changes** — the same value was always written;
+   what changed is how often a tax notice reaches the flow without a human touching it first.
+
+   **Two consequences to settle before Phase 4:**
+
+   * **The displaced values were the notices' own labelled account numbers.** `property_ubc` wrote
+     `RPT-1088-2731` (its eTaxBC account) and `property_north_van_district` wrote `100198790007` —
+     which that stub explicitly labels as the number to use for **ONLINE BANKING**. If anything
+     downstream pays, matches or reconciles from `account_number`, it now holds a property
+     identifier the bank does not recognise. Raised with the user before implementation and
+     confirmed as stated; recorded here because reversing it later is a data backfill, not a code
+     revert. The displaced values are preserved in each sidecar's note.
+   * **Redundancy.** Two Dataverse columns holding one value on this document family. Either is
+     safe to map; mapping both stores it twice.
+
+   `account_number`'s **prompt** was deliberately left untouched, so the 18 existing
+   `account_number` assertions on other documents did not move.
+3. **Width and shape.** Values observed run to 16 characters (`631000816.058`,
+   `23-0122-012-000`) and keep dashes, dots and leading zeros — so the column must be **text,
+   not numeric**: `0025.100` and `095016.000` lose meaning as numbers.
+4. **Empty on every other document, enforced in code.** Non-tax invoices write `""`, not null
+   (same treatment as `po_or_job_number` and `account_number`). `build_write_values` blanks the
+   field whenever the resolved `sub_bill_type` is not `propertytax`, because CU returned a value
+   anyway on four non-tax documents — three municipal **water** bills that genuinely print a folio
+   (`delta_water` prints `FOLIO: 163-061-00-0`), and `260521_0024`, which invented the word
+   `COMPLEX`. See A13g. Confirm the column is nullable-or-empty-safe.
+
+5. **`number_of_days` is no longer asserted on property tax notices** (user, 2026-09-09: the flow
+   does not consume it for that family). The field is still written — this changed the corpus's
+   assertions, not the record. Its observed value on a tax notice flips between `""` and the
+   period-derived `365`, so anything consuming it for property tax should treat it as unreliable.
 
 ---
 

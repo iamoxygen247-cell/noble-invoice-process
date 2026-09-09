@@ -93,6 +93,9 @@ FIELD_PRINT_ORDER = [
     "account_number",
     "account_number_extract",
     "account_number_generate",
+    "folio_number",
+    "folio_number_extract",
+    "folio_number_generate",
     "bill_type",
     "sub_bill_type",
     "sub_bill_type_generate",
@@ -111,8 +114,38 @@ FIELD_PRINT_ORDER = [
 # --- value / confidence extraction (0 and False are NOT missing) -------------
 
 
+# CU represents an absent value as a JSON null, but it sometimes returns the four-character
+# STRING "null" instead. Seen since 2026-07-30 on vendor_dba_name_generate -- harmless there,
+# because that field is in neither WRITE_FIELDS nor TWIN_FIELDS, so it is never resolved or
+# written -- and after the GPT-5.5 upgrade on invoice_number_extract, where it is not harmless.
+# A non-empty string is a PRESENT value to every downstream check (is_empty_value below,
+# _field_passes and resolve_twin's presence test in field_policy), so it silently defeats the
+# municipal invoice-number filename fallback: a clean utility bill that prints no invoice number
+# routes to REVIEW_B4_CRITICAL_FIELD instead of auto-writing, carrying the literal "null" in
+# writeValues. Measured 14 times across 5 corpus documents, confidence 0.213-0.668 -- always
+# below the bar, so it fails the field rather than auto-writing the junk.
+#
+# So this is a latent defect the model upgrade exposed, not one it created. Normalised here, at
+# the single boundary every consumer reads a CU value through, so the rest of the pipeline
+# behaves exactly as it does when the model returns a real null -- rather than teaching four
+# separate empty-checks about a model quirk. Only this exact token is caught: "nullify" is
+# untouched, and so are a genuine 0 / False / 0.0 (see the section header above).
+#
+# Deliberately just "null": it is the only sentinel string observed across all 3,574 cached
+# reads. A new one should surface as a corpus failure, not be silently absorbed.
+_CU_NULL_SENTINELS = frozenset({"null"})
+
+
+def _denull(value: Any) -> Any:
+    """A CU value, with the literal string sentinel mapped to a real None."""
+    if isinstance(value, str) and value.strip().lower() in _CU_NULL_SENTINELS:
+        return None
+    return value
+
+
 def get_value(field_data: Any) -> Any:
-    """Return the value from a CU field object without treating 0 or False as missing."""
+    """Return the value from a CU field object without treating 0 or False as missing.
+    A literal "null" string is normalised to None -- see _denull."""
     if not isinstance(field_data, dict):
         return None
 
@@ -129,11 +162,11 @@ def get_value(field_data: Any) -> Any:
     )
     for key in value_keys:
         if key in field_data:
-            return field_data[key]
+            return _denull(field_data[key])
 
     for key, value in field_data.items():
         if key.lower().startswith("value"):
-            return value
+            return _denull(value)
 
     return None
 
@@ -444,6 +477,31 @@ def evaluate(
     is_handwritten_value, is_handwritten_conf = resolve_is_handwritten(fields)
 
     advisory = evaluate_b6(fields)
+
+    # A billing period whose two EXTRACT twins collapsed onto one date, dropped before either
+    # consumer resolves -- both resolutions below and build_write_values re-resolve from this
+    # same dict, so a repair applied to only one of them would disagree with the other.
+    #
+    # It has to happen here rather than being repaired downstream, because by then the damage
+    # is done: the collapsed end wins the twin resolution (on merit at 0.921, or through
+    # resolve_twin's `elif e_present` tail at 0.415), which blocks the correct generate value
+    # -- abbotsford_water's meter reading date at 0.904 -- and the span guard in evaluate_b4
+    # then derives the start from the WRONG end, giving 2026-04-01 - 60 = 2026-01-31 instead
+    # of 2026-03-01. Dropping both twins hands the field to the generate rescue and the day
+    # count, which already produce the right answer on the reads where CU returns nothing.
+    collapsed = field_policy.billing_period_extracts_collapsed(
+        parsed.get(field_policy.BILLING_START_EXTRACT, (None, None))[0],
+        parsed.get(field_policy.BILLING_END_EXTRACT, (None, None))[0],
+    )
+    if collapsed is not None:
+        parsed[field_policy.BILLING_START_EXTRACT] = (None, None)
+        parsed[field_policy.BILLING_END_EXTRACT] = (None, None)
+        advisory.append(
+            f"billing_period extract twins both returned {collapsed}, which is one date and "
+            "not a range: discarded, so the period resolves from the generate twin and the "
+            "day count"
+        )
+
     # Resolved finals (value, effective confidence, passed, note, source) for every twin
     # field, keyed by final name. Threaded into _result so the response exposes each final
     # as its fields.<name> entry plus a slim resolution block -- the single source of truth
@@ -455,6 +513,50 @@ def evaluate(
     for _final in resolutions.values():
         if _final[3]:
             advisory.append(_final[3])
+
+    # Noble books its telecom/cable accounts (Telus, Rogers) as municipal -- a booking
+    # policy no classifier can read off the page. The analyzer prompt in fact says the
+    # opposite in as many words ("private telecom, internet, and phone companies" are
+    # listed as commercial), and both samples were measured classifying 'commercial' on
+    # 5 of 5 replicates, so this is decided in code rather than by editing that prompt:
+    # a prompt edit would have to contradict an explicit clause, and it perturbs the
+    # unrelated fields CU extracts from the same document (same reasoning as
+    # demote_non_water_sub_type).
+    #
+    # Overriding the LABEL here, not the bucket, keeps every consumer consistent:
+    # build_write_values re-derives the bucket from `parsed`, so the critical-field set,
+    # sub_bill_type, the narrative blanking and the written bill_type all follow from
+    # this one assignment. Placed after the twin resolution (the vendor must be resolved)
+    # and before build_write_values, its first consumer. The three later municipal-only
+    # repairs cannot feed back into it: municipal_payee_override and
+    # municipal_name_with_prefix need a printed "City of X", and licence_location_address
+    # a 'Locations' table column, none of which a telecom bill has.
+    # The resolved vendor AND both raw twins are consulted, because the tiebreak between
+    # them is a coin flip this rule must not inherit: 260901_rogers resolves to
+    # 'Shaw Cablesystems' (extract, flat 0.785) while its generate twin reads a bare
+    # 'Shaw' that reached 0.725 on 1 replicate in 5, and a bare 'Shaw' is deliberately
+    # NOT in the allowlist. See field_policy.vendor_bill_type_override.
+    vendor_candidates = (
+        resolutions[field_policy.VENDOR_FINAL][0],
+        parsed.get(field_policy.VENDOR_EXTRACT, (None, None))[0],
+        parsed.get(field_policy.VENDOR_GENERATE, (None, None))[0],
+    )
+    override = field_policy.vendor_bill_type_override(*vendor_candidates)
+    if override is not None and override != bill_type_value:
+        matched = next(
+            v for v in vendor_candidates if field_policy.vendor_bill_type_override(v)
+        )
+        parsed[field_policy.BILL_TYPE] = (
+            override, parsed.get(field_policy.BILL_TYPE, (None, None))[1]
+        )
+        advisory.append(
+            f"bill_type set to {override!r} from the vendor: {matched!r} is one of "
+            f"Noble's telecom accounts, which are booked as municipal "
+            f"(CU classified it {bill_type_value!r})"
+        )
+        bill_type_value = override
+        bucket = field_policy.resolve_bucket(override)
+
     write_values, defaulted = field_policy.build_write_values(parsed, field_threshold)
 
     # bill_type absent from the CU response (defect A9): write the bucket that was actually
@@ -494,8 +596,13 @@ def evaluate(
             is_handwritten_value, is_handwritten_conf, resolutions,
         )
 
-    # B4 - critical fields for the resolved bucket.
-    critical = field_policy.critical_fields(bucket)
+    # B4 - critical fields for the resolved bucket, plus folio_number on a property tax
+    # notice. The sub-type comes from write_values, which is the same resolved label the
+    # written record carries, so the critical set and the record can never disagree about
+    # what kind of bill this is.
+    critical = field_policy.critical_fields(
+        bucket, write_values.get(field_policy.SUB_BILL_TYPE)
+    )
 
     # PO rescue: when the twins yield no usable value (failed resolution, or a
     # resolved value that breaks the 11/33 8-digit invariant and so is
@@ -749,6 +856,44 @@ def evaluate(
             "document prints no account number"
         )
 
+    # On a property tax notice the folio supplies account_number (build_write_values, per the
+    # 2026-09-09 requirement) -- so point the account RESOLUTION at the folio too, and let B4
+    # judge the value that is actually written instead of the account twins it replaced.
+    #
+    # Without this the record is correct and the notice still reviews: CU returns no
+    # account_number at all on roughly 1 read in 6 of property_delta and property_west_vancouver
+    # (a blank field entry, confidence but no value) while folio_number comes back at
+    # 0.875-0.988 from the SAME span on the same read. The gate saw the blank twins, not the
+    # folio that had already replaced them, and sent a complete correct record to a human.
+    #
+    # Not a relaxation of the bar: propertytax_account_from_folio returns None unless the folio
+    # resolution itself PASSED, so a missing or weak folio still fails B4 exactly as before.
+    # Computed here, after the PO-echo discard above, because that is the last rule that can
+    # change account_number -- the gate must judge the final value, not an intermediate one.
+    _folio_account = field_policy.propertytax_account_from_folio(
+        bucket,
+        write_values.get(field_policy.SUB_BILL_TYPE),
+        write_values.get(field_policy.FOLIO_FINAL),
+        resolutions[field_policy.FOLIO_FINAL][2],
+    )
+    if _folio_account is not None:
+        _account_before = resolutions[field_policy.ACCOUNT_FINAL]
+        resolutions[field_policy.ACCOUNT_FINAL] = (
+            write_values[field_policy.ACCOUNT_FINAL],
+            resolutions[field_policy.FOLIO_FINAL][1],
+            True,
+            None,
+            "propertytax_folio",
+        )
+        if not _account_before[2]:
+            advisory.append(
+                "account_number resolution taken from folio_number "
+                f"({write_values[field_policy.ACCOUNT_FINAL]!r} at "
+                f"{resolutions[field_policy.FOLIO_FINAL][1]:.3f}): the account twins resolved "
+                f"{_account_before[0]!r} and did not pass, and on a property tax notice the "
+                "folio is the account identifier"
+            )
+
     # Domain-corroborated vendor rescue. When a vendor's name is printed only as a stylized
     # logo, vendor_name_extract is steered by its own prompt ("read clearly printed text ...
     # rather than a stylized logo") toward whatever plain text sits in the letterhead -- on
@@ -762,6 +907,30 @@ def evaluate(
     # field) and exactly ONE side matches a printed domain. Neither matching (municipal bills,
     # where "City of Vancouver" never matches "vancouver") or both matching leaves the existing
     # resolution untouched, so this can only ever fire where the field was already unreliable.
+    # A commercial vendor whose generate twin truncated the printed name. The twins AGREE by
+    # containment, so this cannot collide with the domain tiebreak below, which fires only when
+    # they DISAGREE -- the two are mutually exclusive by construction and order does not matter.
+    # Commercial only: unscoped this rewrites the municipal gas bills, where the short registry
+    # spelling is the wanted one. See field_policy.commercial_printed_vendor_name.
+    if bucket == field_policy.COMMERCIAL:
+        printed_vendor = field_policy.commercial_printed_vendor_name(
+            parsed.get(field_policy.VENDOR_EXTRACT, (None, None))[0],
+            parsed.get(field_policy.VENDOR_GENERATE, (None, None))[0],
+            write_values[field_policy.VENDOR_FINAL],
+        )
+        if printed_vendor is not None:
+            flat_printed = " ".join(str(printed_vendor).split())
+            displaced_short = write_values[field_policy.VENDOR_FINAL]
+            resolutions[field_policy.VENDOR_FINAL] = (
+                printed_vendor, resolutions[field_policy.VENDOR_FINAL][1], True, None,
+                "commercial_printed_name",
+            )
+            write_values[field_policy.VENDOR_FINAL] = flat_printed
+            advisory.append(
+                f"vendor_name {flat_printed!r} kept over {displaced_short!r}: the generate twin "
+                "dropped two or more words of the name printed on the invoice"
+            )
+
     vendor_value, vendor_conf = resolutions[field_policy.VENDOR_FINAL][:2]
     winner = field_policy.vendor_domain_tiebreak(
         parsed.get(field_policy.VENDOR_EXTRACT, (None, None))[0],
@@ -798,6 +967,64 @@ def evaluate(
     # prints "By mail to Burnaby Revenue Services"; on 1 read in 12 both twins take the city's
     # accounts-receivable department from there, agree (one is a tail of the other), and write
     # it. The page also states who the cheque is payable to, which is the biller naming itself.
+    # A property tax notice whose issuer is printed only as a logo, so the extract twin took
+    # plain text from elsewhere on the page. Gated on the classification, which is independent
+    # of the vendor slip, and placed BEFORE the two repairs below so municipal_name_with_prefix
+    # still runs after it.
+    #
+    # It fires in TWO regimes, because the wrong value reaches the write two different ways,
+    # and each regime carries the guard that suits it:
+    #   * the resolution FAILED -- property_vancouver's extract reads 'Property Tax Office' at
+    #     0.666, below the bar, and resolve_twin's `elif e_present` tail writes it anyway.
+    #     No confidence test here: there is no trustworthy value to protect, and the printed
+    #     municipal name the predicate insists on is better than a field that failed.
+    #   * the resolution PASSED but the twins DISAGREE -- property_Vancouver2 reads the same
+    #     wrong string at 0.745, which clears the bar, so `elif e_pass` takes it on merit and
+    #     it AUTO-WRITES. Gating on failure alone missed this one, which is how it was found.
+    #     Here the extract IS credible, so the generate must be at least as confident before
+    #     it displaces it (0.778 vs 0.745 on that read). Without that test the rule would
+    #     overwrite a confident correct extract -- a 0.95 'City of Surrey' losing to a 0.778
+    #     'City of Vancouver' merely because the page happens to print the latter.
+    # Twins that AGREE are never touched: agreement is the corroboration this whole pipeline
+    # rests on, and overriding it would discard the generate twin's casing normalisation.
+    # Measured over all 60 cached propertytax reads: 1 read changes, and 0 reads outside
+    # propertytax are even candidates.
+    _vendor_passed = resolutions[field_policy.VENDOR_FINAL][2]
+    _v_extract, _v_extract_conf = parsed.get(field_policy.VENDOR_EXTRACT, (None, None))
+    _v_generate, _v_generate_conf = parsed.get(field_policy.VENDOR_GENERATE, (None, None))
+    _vendor_generate_wins = (
+        not field_policy.vendor_twins_agree(_v_extract, _v_generate)
+        and (_v_generate_conf or 0.0) >= (_v_extract_conf or 0.0)
+    )
+    if bucket == field_policy.MUNICIPAL and (not _vendor_passed or _vendor_generate_wins):
+        bill_label, bill_conf = parsed.get(field_policy.BILL_TYPE, (None, None))
+        sub_extract, sub_extract_conf = parsed.get(field_policy.SUB_BILL_TYPE, (None, None))
+        sub_generate, sub_generate_conf = parsed.get(
+            field_policy.SUB_BILL_TYPE_GENERATE, (None, None)
+        )
+        if (bill_label == field_policy.MUNICIPAL
+                and (bill_conf or 0.0) >= field_threshold
+                and sub_extract == "propertytax"
+                and (sub_extract_conf or 0.0) >= field_policy.SUB_BILL_TYPE_THRESHOLD
+                and sub_generate == "propertytax"
+                and (sub_generate_conf or 0.0) >= field_policy.SUB_BILL_TYPE_THRESHOLD):
+            rescued = field_policy.propertytax_vendor_rescue(
+                parsed.get(field_policy.VENDOR_GENERATE, (None, None))[0],
+                collect_markdown(full),
+            )
+            if rescued is not None:
+                displaced_vendor = write_values[field_policy.VENDOR_FINAL]
+                resolutions[field_policy.VENDOR_FINAL] = (
+                    rescued, resolutions[field_policy.VENDOR_FINAL][1], True, None,
+                    "propertytax_vendor_rescue",
+                )
+                write_values[field_policy.VENDOR_FINAL] = rescued
+                advisory.append(
+                    f"vendor_name {rescued!r} taken from the generate twin, replacing "
+                    f"{displaced_vendor!r}: this is a property tax notice and the municipality "
+                    "is printed on the page"
+                )
+
     if bucket == field_policy.MUNICIPAL:
         payee = field_policy.municipal_payee_override(
             write_values[field_policy.VENDOR_FINAL], collect_markdown(full)
@@ -922,9 +1149,26 @@ def evaluate(
     # is cleared rather than written, so the doc goes to a human instead of to Dynamics with
     # the paying party's address in it. Runs before B4 so a rescued address prevents the
     # critical-field review route and a cleared one causes it.
-    sa_val = resolutions[field_policy.SERVICE_ADDRESS_FINAL][0]
+    #   dup    -- A15: the extract twin returns the Bill To address itself, but at a
+    #             confidence under the bar, on a document that has no service block. The
+    #             "never overwrite a present address" rule then keeps the unconfident copy and
+    #             the doc reviews, while an identical, CONFIDENT copy sits unused in
+    #             bill_to_address. Measured 1 read in 103 on bug_260629_0012 across 18
+    #             analyzer definitions -- and the read where CU found MORE is the one that
+    #             reviews, which is backwards. Rescued only when the two values name the same
+    #             place, so a genuine service address that merely reads low is still never
+    #             overwritten by a different Bill To address; that case keeps reviewing.
+    sa_val, sa_conf, sa_passed = resolutions[field_policy.SERVICE_ADDRESS_FINAL][:3]
     sa_is_office = field_policy.is_noble_office_address(sa_val)
-    if is_empty_value(sa_val) or sa_is_office:
+    sa_unconfident_duplicate = (
+        not sa_passed
+        and not is_empty_value(sa_val)
+        and not sa_is_office
+        and field_policy.address_values_agree(
+            sa_val, resolutions[field_policy.BILL_TO_ADDRESS_FINAL][0]
+        )
+    )
+    if is_empty_value(sa_val) or sa_is_office or sa_unconfident_duplicate:
         bt_val, bt_conf, bt_passed, _bt_note, _bt_source = (
             resolutions[field_policy.BILL_TO_ADDRESS_FINAL]
         )
@@ -938,6 +1182,12 @@ def evaluate(
                     f"service_address replaced from the Bill To block: {bt_val!r} "
                     f"(the SHIP TO block is Noble's own office {sa_val!r}, not a "
                     "serviced property)"
+                )
+            elif sa_unconfident_duplicate:
+                advisory.append(
+                    "service_address promoted from the Bill To block: the service_address "
+                    f"twins returned the same address at {sa_conf:.3f}, below the bar, while "
+                    f"bill_to_address reads it at {bt_conf:.3f} (A15)"
                 )
             else:
                 advisory.append(

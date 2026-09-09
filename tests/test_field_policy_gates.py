@@ -987,6 +987,58 @@ def test_bill_to_address_backfills_empty_service_address():
           str(r["resolutions"].get("service_address")))
 
 
+def test_a15_unconfident_duplicate_of_the_bill_to_is_promoted():
+    """A15: an UNCONFIDENT service_address that is the Bill To address itself loses to the
+    confident copy. On bug_260629_0012 (no service block) the extract twin returns the Bill To
+    address at 0.399 on about 1 read in 103; the old rule kept that copy and reviewed, while
+    bill_to_address held the identical string at 0.897."""
+    print("\n[gates: A15 -- an unconfident duplicate of the Bill To is promoted]")
+
+    ADDR = "#307-7480 Gilbert Road, Richmond BC"
+
+    # Same address, service_address under the bar, Bill To confident -> promoted, no review.
+    r = ev(commercial_fields(
+        service_address_extract=fstr(ADDR, 0.399),
+        bill_to_address_extract=fstr(ADDR, 0.897),
+    ))
+    check("unconfident duplicate + confident Bill To -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("promoted from the Bill To (source bill_to_fallback)",
+          r["resolutions"]["service_address"]["source"] == "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("A15 advisory names the rule",
+          any("(A15)" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # The constraint the user set: never when the address is Noble's own office. Here BOTH the
+    # service_address and the Bill To are the office, so there is no serviced property on the
+    # page at all -- the value must be discarded and a human must see it, exactly as before.
+    OFFICE = "155 - 13988 Maycrest Way, Richmond, BC V6V 3C3"
+    r = ev(commercial_fields(
+        service_address_extract=fstr(OFFICE, 0.50),
+        bill_to_address_extract=fstr(OFFICE, 0.95),
+    ))
+    check("office address is NOT promoted even as a matching duplicate",
+          r["resolutions"]["service_address"]["source"] != "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("office duplicate still routes to review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("office address is never written",
+          not r["writeValues"].get("service_address"),
+          str(r["writeValues"].get("service_address")))
+
+    # A DIFFERENT low-confidence address is still never overwritten -- that read found a real
+    # place and must keep reviewing. (Also covered above; pinned here against the A15 change.)
+    r = ev(commercial_fields(
+        service_address_extract=fstr("999 Real Site St, Vancouver BC", 0.50),
+        bill_to_address_extract=fstr(ADDR, 0.95),
+    ))
+    check("a different low-confidence address is not replaced by the Bill To",
+          r["writeValues"]["service_address"] == "999 Real Site St, Vancouver BC",
+          str(r["writeValues"].get("service_address")))
+    check("a different low-confidence address still reviews",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+
 def test_noble_office_service_address_is_never_written():
     print("\n[gates: a service_address that is Noble's own office is never written]")
 
@@ -3325,6 +3377,625 @@ def test_commercial_narrative_fields():
         check(f"{name} is in the fields block", name in r["fields"])
 
 
+def test_telecom_vendor_bill_type_override():
+    print("\n[bill_type: telecom vendors are booked municipal]")
+    override = field_policy.vendor_bill_type_override
+
+    # The spellings actually observed, plus the legal-entity and brand variants either
+    # biller can print. 'TELUS Communications Inc.' and 'Shaw Cablesystems' are the two
+    # measured on the corpus documents (5/5 replicates each).
+    for name in ("TELUS", "TELUS Communications Inc.", "Telus Communications Company",
+                 "TELUS Mobility", "Rogers", "ROGERS BUSINESS",
+                 "Rogers Business together with Shaw", "Rogers together with Shaw",
+                 "Rogers Communications Canada Inc.", "Shaw Cablesystems",
+                 "Shaw Cablesystems G.P.", "Shaw Business", "Shaw Communications Inc."):
+        check(f"{name!r} -> municipal", override(name) == field_policy.MUNICIPAL, repr(override(name)))
+
+    # The false-positive guard. 'Shaw' and 'Rogers' are surnames a BC trade business can
+    # carry, so a bare token or substring test would flip a real commercial invoice to
+    # municipal -- dropping its PO and GST checks and blanking its narrative. The
+    # trailing space in the prefix rule is what saves 'Telusys' and 'Rogersville'.
+    for name in ("Shaw Plumbing Ltd.", "Robert Shaw", "Rogers Plumbing",
+                 "Rogers & Sons Roofing", "Shaw", "Shawn Electric", "Rogersville Waste",
+                 "Telusys Consulting", "Shaw Contracting Ltd", "Bob's Plumbing Ltd.",
+                 "City of Vancouver", "FortisBC Energy Inc.", "", "   ", None):
+        check(f"{name!r} -> no opinion", override(name) is None, repr(override(name)))
+
+    # Every vendor spelling the corpus has ever produced for a NON-telecom document --
+    # resolved finals and raw twins alike, harvested from out/regress-cache. None of them
+    # may match, or this rule would silently rebucket an existing document. This is the
+    # offline counterpart of the 0-false-positives sweep over 3,340 cached reads; widening
+    # the allowlist so that one of these starts matching must be a conscious change.
+    # Bare 'Shaw' is here on purpose: the Rogers bill's raw twin returns it on some
+    # replicates, and it is excluded from the allowlist because it is also a surname.
+    corpus_vendors = (
+        "ABBOTSFORD", "Alpha Integrated Systems", "Alpha Integrated Systems Ltd.",
+        "BC Hydro", "Bonacare Mechanical", "Bonacare Mechanical LTD", "Burnaby",
+        "Burnaby Revenue Services", "CAMBIE ROOFING", "CAMBIE ROOFING CONTRACTORS",
+        "CAMBIE ROOFING CONTRACTORS LTD.", "Cambie Roofing", "CITY OF ABBOTSFORD",
+        "CITY OF SURREY", "CITY OF VANCOUVER", "CentiMark", "CentiMark Ltd",
+        "City of Abbotsford", "City of Burnaby", "City of Delta", "City of Richmond",
+        "City of Surrey", "City of Vancouver", "DISTRICT OF WEST VANCOUVER", "Delta",
+        "District of West Vancouver", "Drips & Drains",
+        "Drips & Drains Plumbing and Heating", "Drips & Drains Plumbing and Heating Ltd.",
+        "FortisBC", "FortisBC - Natural gas", "FortisBC Energy Inc.",
+        "FortisBC Energy Inc. does business as FortisBC",
+        "FortisBC Energy Inc. does business as FortisBC.",
+        "FortisBC Energy does business as FortisBC", "Goodbye Graffiti", "Graffiti Guys",
+        "Graffiti Guys Removal", "Graffiti Guys Removal Services",
+        "Graffiti Guys Removal Services dba Goodbye Graffiti Surrey",
+        "HEATING & COOLING LTD", "Handy Appliances", "Handy Appliances Ltd.",
+        "JMEC Electric", "JMEC Electric Ltd.", "PRIORITY", "PRIORITY appliance service",
+        "Priority", "Priority Appliance", "Priority Appliance Service",
+        "ROMA Heating & Cooling", "ROMA Heating & Cooling Ltd", "Revenue Services",
+        "SIMON", "SIMON KAN", "SIMON Kan", "SIMON SIK FAI KAN", "Simon Kan", "Shaw",
+        "Trail Appliances", "Vancouver Central Dispatch", "Vangate Locksmith",
+        "Vangate Locksmith Ltd", "WASTE CONNECTIONS OF CANADA",
+        "WASTE CONNECTIONS OF CANADA INC.", "WASTE MANAGEMENT",
+        "WASTE MANAGEMENT OF CANADA CORPORATION", "Waste Management",
+    )
+    matched = [v for v in corpus_vendors if override(v) is not None]
+    check("no existing corpus vendor is rebucketed by the telecom rule", not matched, str(matched))
+
+    # Any spelling matching is enough -- the caller passes the resolved vendor and both
+    # raw twins, so the rule does not inherit the twin tiebreak. This is the measured
+    # 260901_rogers failure mode: extract 'Shaw Cablesystems' at a flat 0.785, generate a
+    # bare 'Shaw' that reached 0.725 on 1 replicate in 5. The two agree (one contains the
+    # other) so the tiebreak is pure confidence, and a generate twin edging over 0.785
+    # would resolve to 'Shaw' -- which is NOT in the allowlist, being a surname.
+    check("bare 'Shaw' alone is still not enough", override("Shaw") is None)
+    check("resolved 'Shaw' is rescued by the 'Shaw Cablesystems' extract twin",
+          override("Shaw", "Shaw Cablesystems", "Shaw") == field_policy.MUNICIPAL)
+    check("a matching generate twin is enough on its own",
+          override(None, None, "TELUS") == field_policy.MUNICIPAL)
+    check("no candidate matching is still no opinion",
+          override("Shaw", "Bob's Plumbing Ltd.", None) is None)
+    check("no candidates at all -> no opinion", override() is None)
+
+    # One-directional by construction: it can never move a bill INTO the stricter
+    # bucket, so it can never add a critical-field requirement.
+    check("only ever returns municipal or None",
+          set(filter(None, (override(v) for v in ("TELUS", "Rogers", "Bob's Plumbing"))))
+          == {field_policy.MUNICIPAL})
+
+    # End to end: CU says commercial (which is what the analyzer prompt tells it to say
+    # for telecom), the vendor overrides it, and every bucket consumer follows.
+    fields = commercial_fields(
+        vendor_name_extract=fstr("TELUS Communications Inc.", 0.95),
+        vendor_name_generate=fstr("TELUS", 0.93),
+        po_or_job_number_extract=fstr("", None),
+        gst_amount_extract=fnum(None, None),
+        account_number_extract=fstr("240062805 9", 0.95),
+        diagnosis_solution=fstr("Invented phone-service prose.", 0.9),
+        warranty=fstr("Invented warranty text.", 0.9),
+    )
+    r = ev(fields, file_name="260825_telus.pdf")
+    check("bucket flips to municipal", r["policyBucket"] == field_policy.MUNICIPAL, r["policyBucket"])
+    check("written bill_type is municipal",
+          r["writeValues"]["bill_type"] == field_policy.MUNICIPAL, r["writeValues"]["bill_type"])
+    check("response billType agrees with the bucket",
+          r["billType"] == field_policy.MUNICIPAL, str(r["billType"]))
+    check("an advisory records the override and names the vendor",
+          any("booked as municipal" in a and "TELUS" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("po_or_job_number is no longer critical",
+          "po_or_job_number" not in field_policy.critical_fields(r["policyBucket"]))
+    for name in field_policy.COMMERCIAL_ONLY_FIELDS:
+        check(f"municipal bucket blanks {name}", r["writeValues"][name] == "", repr(r["writeValues"][name]))
+    check("bill_type is not reported as defaulted (it was overridden, not absent)",
+          "bill_type" not in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # End to end for the twin-rescue case: the RESOLVED vendor is the bare 'Shaw' that
+    # does not match, and the extract twin carries the spelling that does.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("Shaw Cablesystems", 0.60),
+        vendor_name_generate=fstr("Shaw", 0.80),
+        po_or_job_number_extract=fstr("", None),
+        account_number_extract=fstr("014-2467-8396", 0.95),
+    ), file_name="260901_rogers.pdf")
+    check("resolved vendor is the non-matching bare 'Shaw'",
+          r["writeValues"]["vendor_name"] == "Shaw", repr(r["writeValues"]["vendor_name"]))
+    check("the extract twin still carries the bill to municipal",
+          r["policyBucket"] == field_policy.MUNICIPAL, r["policyBucket"])
+    check("the advisory names the spelling that actually matched",
+          any("'Shaw Cablesystems'" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # A non-telecom commercial invoice is untouched -- the control for the above.
+    r = ev(commercial_fields())
+    check("ordinary commercial vendor keeps its bucket",
+          r["policyBucket"] == field_policy.COMMERCIAL, r["policyBucket"])
+    check("no override advisory on a non-telecom bill",
+          not any("booked as municipal" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # The three municipal-only repairs become reachable once a telecom bill is bucketed
+    # municipal. All three need municipal page furniture no telecom bill prints, so they
+    # stay inert -- pinned here against the real payable-to lines of both documents.
+    telus_text = ("Make your cheque payable to TELUS Communications Inc. To avoid a late "
+                  "payment charge, we must receive your payment before Sep 10, 2026.")
+    rogers_text = ("Please make your cheque payable to Shaw Cablesystems. "
+                   "Rogers together with Shaw, Po Box 2468 Stn Main, Calgary, Alberta.")
+    for label, text, vendor in (("telus", telus_text, "TELUS Communications Inc."),
+                                ("rogers", rogers_text, "Shaw Cablesystems")):
+        check(f"{label}: municipal_payee_override stays silent",
+              field_policy.municipal_payee_override(vendor, text) is None)
+        check(f"{label}: municipal_name_with_prefix stays silent",
+              field_policy.municipal_name_with_prefix(vendor, text) is None)
+        check(f"{label}: licence_location_address stays silent",
+              field_policy.licence_location_address(text) is None)
+    # ...and the same three DO fire on a municipal bill, so the checks above are not
+    # vacuous.
+    city = ("Please make cheque payable to: City of Burnaby. <table><tr><th>Locations</th>"
+            "<th>Fee</th></tr><tr><td>4949 Canada Way</td><td>$98</td></tr></table>")
+    check("control: municipal_payee_override fires on a city bill",
+          field_policy.municipal_payee_override("Burnaby Revenue Services", city) == "City of Burnaby")
+    check("control: municipal_name_with_prefix fires on a city bill",
+          field_policy.municipal_name_with_prefix("Burnaby", city) == "City of Burnaby")
+    check("control: licence_location_address fires on a licence notice",
+          field_policy.licence_location_address(city) == "4949 Canada Way")
+
+
+def test_literal_null_sentinel_is_not_a_value():
+    print("\n[parse: CU's literal \"null\" string is an absent value]")
+
+    # The sentinel, in the spellings CU could plausibly return.
+    for raw in ("null", "NULL", "Null", " null ", "\tnull\n"):
+        check(f"get_value({raw!r}) -> None", gates.get_value(fstr(raw, 0.9)) is None,
+              repr(gates.get_value(fstr(raw, 0.9))))
+
+    # The documented contract of get_value: 0 and False are NOT missing. A sentinel filter
+    # that swallowed them would be far worse than the bug it fixes -- a real 0.00 GST or a
+    # 'no' is a genuine reading.
+    check("0 is still a value", gates.get_value(fnum(0, 0.9)) == 0)
+    check("0.0 is still a value", gates.get_value(fnum(0.0, 0.9)) == 0.0)
+    check("False is still a value", gates.get_value({"valueBoolean": False}) is False)
+    check("empty string passes through unchanged", gates.get_value(fstr("", None)) == "")
+
+    # Word-boundary safety: only the whole token is the sentinel.
+    for near in ("nullify", "null and void", "annul", "Nullarbor", "not null"):
+        check(f"{near!r} is a real value", gates.get_value(fstr(near, 0.9)) == near,
+              repr(gates.get_value(fstr(near, 0.9))))
+
+    # Twin resolution must treat it as absent even ABOVE the confidence bar. This case has
+    # not been observed (all 14 measured occurrences sat at 0.213-0.668), and it is the
+    # dangerous one: without the fix a passing resolution would write the string "null" into
+    # the invoice_number column and route the bill HAPPY_PATH.
+    parsed = gates.parse_fields(municipal_fields(invoice_number_extract=fstr("null", 0.95),
+                                                 invoice_number_generate=fstr("null", 0.95)))
+    value, _conf, passed, _note, source = field_policy.resolve_field(
+        field_policy.INVOICE_FINAL, parsed, THRESHOLD)
+    check("a 0.95 'null' does not resolve to a passing value", not passed, f"{value!r} {source}")
+    check("...and carries no value", value is None, repr(value))
+
+    # End to end: the municipal filename fallback fires again, which is the production
+    # symptom -- 14 reads across fortisbc, bug_260528_0016, burnaby_water, delta_water and
+    # west_van_water routed to review with 'null' written instead of auto-writing.
+    fields = municipal_fields(invoice_number_extract=fstr("null", 0.32),
+                              invoice_number_generate=fstr("null", 0.32))
+    r = ev(fields, file_name="fortisbc.pdf")
+    check("invoice_number defaults from the filename",
+          r["writeValues"]["invoice_number"] == "fortisbc", repr(r["writeValues"]["invoice_number"]))
+    check("resolution source is the filename fallback",
+          r["resolutions"]["invoice_number"]["source"] == "filename",
+          r["resolutions"]["invoice_number"]["source"])
+    check("the substitution is audited in defaultedFields",
+          "invoice_number" in r["defaultedFields"], str(r["defaultedFields"]))
+    check("the bill auto-routes again",
+          r["routingDecision"] == "HAPPY_PATH_CANDIDATE", r["routingDecision"])
+
+    # Control: a REAL null behaves identically. This is what pins the fix as "restore the
+    # existing semantics", not "add a new path" -- if these two ever diverge, the
+    # normalisation has grown a behaviour of its own.
+    real_none = municipal_fields(invoice_number_extract=fstr(None, 0.32),
+                                 invoice_number_generate=fstr(None, 0.32))
+    r_none = ev(real_none, file_name="fortisbc.pdf")
+    for key in ("routingDecision", "writeValues", "reviewReasons", "defaultedFields"):
+        check(f"literal 'null' matches a real null on {key}", r[key] == r_none[key],
+              f"{r[key]!r} vs {r_none[key]!r}")
+
+
+def test_collapsed_billing_period_extracts_are_discarded():
+    print("\n[gates: one date returned as BOTH ends of a range is not a range]")
+
+    # abbotsford_water prints 'BILLING PERIOD: Mar/Apr 2026' -- months only, no day printed.
+    # GPT-5.5 grounds both extract twins on that one span and returns 2026-04-01 for each;
+    # the correct end (the Apr 30 meter reading date) sits in the generate twin at 0.904.
+    # Measured 11/12 on a same-day control, and unmoved by two prompt trims.
+    def abbotsford(extract_conf):
+        return municipal_fields(
+            sub_bill_type=fstr("water", 0.9),
+            sub_bill_type_generate=fstr("water", 0.85),
+            billing_period_start_date_extract=fdate("2026-04-01", extract_conf),
+            billing_period_end_date_extract=fdate("2026-04-01", extract_conf),
+            billing_period_end_date_generate=fdate("2026-04-30", 0.904),
+            number_of_days_extract=fint(61, 0.99),
+        )
+
+    # Both observed confidence regimes, because the value -- not the confidence -- is the
+    # defect. 0.415 fails the bar and reached writeValues through resolve_twin's `e_present`
+    # tail; 0.921 CLEARS the bar and won on merit. A fix keyed on confidence would have
+    # repaired the first and left the second, which is why this rule ignores it entirely.
+    for conf, regime in ((0.415, "below the bar"), (0.921, "above the bar")):
+        r = ev(abbotsford(conf))
+        check(f"collapsed pair discarded, end from the generate twin ({regime})",
+              r["writeValues"]["billing_period_end_date"] == "2026-04-30",
+              str(r["writeValues"].get("billing_period_end_date")))
+        check(f"start derived from the CORRECT end ({regime})",
+              r["writeValues"]["billing_period_start_date"] == "2026-03-01",
+              str(r["writeValues"].get("billing_period_start_date")))
+        check(f"start source = derived ({regime})",
+              r["resolutions"]["billing_period_start_date"]["source"] == "derived",
+              str(r["resolutions"].get("billing_period_start_date")))
+        check(f"day count survives ({regime})",
+              r["writeValues"]["number_of_days"] == 61,
+              str(r["writeValues"].get("number_of_days")))
+        check(f"collapse advisory raised ({regime})",
+              any("both returned 2026-04-01" in a for a in r["advisoryFlags"]),
+              str(r["advisoryFlags"]))
+        check(f"informational only -- never gates routing ({regime})",
+              r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # The wrong answer this replaces, pinned so a regression is legible: without the rule the
+    # bad end wins and the start is derived from it, 2026-04-01 - (61 - 1) = 2026-01-31.
+    check("the value being prevented is 2026-01-31",
+          field_policy.derive_billing_period_start("2026-04-01", 0.9, 61, 0.9)[0] == "2026-01-31")
+
+    # Control: twins that name a real range are untouched, so the rule cannot fire on the 37
+    # corpus documents that never collapse.
+    r = ev(municipal_fields(
+        billing_period_start_date_extract=fdate("2026-01-01", 0.95),
+        billing_period_end_date_extract=fdate("2026-03-31", 0.95),
+        number_of_days_extract=fint(90, 0.95),
+    ))
+    check("a genuine range is left alone",
+          r["writeValues"]["billing_period_start_date"] == "2026-01-01"
+          and r["writeValues"]["billing_period_end_date"] == "2026-03-31",
+          str(r["writeValues"].get("billing_period_start_date")))
+    check("no collapse advisory on a genuine range",
+          not any("is one date and not a range" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # The predicate itself: equal (in any spelling) collapses, everything else does not.
+    collapsed = field_policy.billing_period_extracts_collapsed
+    check("equal dates collapse", collapsed("2026-04-01", "2026-04-01") == "2026-04-01")
+    check("equal across spellings", collapsed("Apr 1, 2026", "2026-04-01") == "2026-04-01")
+    check("different dates do not", collapsed("2026-03-01", "2026-04-30") is None)
+    check("a missing half does not", collapsed(None, "2026-04-30") is None)
+    check("both missing does not", collapsed(None, None) is None)
+    check("unparseable does not", collapsed("Mar/Apr 2026", "Mar/Apr 2026") is None)
+
+
+def test_vendor_leading_the_is_normalised_away():
+    print("\n[field_policy: a leading 'the' is not part of the vendor name]")
+    norm = field_policy._normalize_vendor
+
+    check("leading 'the' dropped", norm("THE UNIVERSITY OF BRITISH COLUMBIA")
+          == "university of british columbia")
+    check("the two UBC spellings now normalise equal",
+          norm("THE UNIVERSITY OF BRITISH COLUMBIA") == norm("University of British Columbia"))
+    check("a mid-name 'the' is untouched",
+          norm("Sons of the Pioneers") == "sons of the pioneers")
+    check("a vendor named only 'The' is not emptied", norm("The") == "the")
+    check("still strips trailing legal suffixes",
+          norm("The Drips & Drains Plumbing Ltd.") == "drips drains plumbing")
+
+    # property_ubc2: both twins name the university, differing only by the article and casing.
+    # Before this rule the token lists differed, so neither structural branch of
+    # _prefer_vendor_generate matched and the confidence tiebreak decided -- measured a 50/50
+    # coin flip across 12 live reads. Pinned at BOTH observed confidence regimes: the clean
+    # generate spelling must win regardless of which twin scored higher.
+    for e_conf, g_conf, label in ((0.918, 0.779, "extract more confident"),
+                                  (0.770, 0.856, "generate more confident")):
+        r = ev(commercial_fields(
+            vendor_name_extract=fstr("THE UNIVERSITY OF BRITISH COLUMBIA", e_conf),
+            vendor_name_generate=fstr("University of British Columbia", g_conf),
+        ))
+        check(f"UBC resolves to the clean generate spelling ({label})",
+              r["writeValues"]["vendor_name"] == "University of British Columbia",
+              str(r["writeValues"].get("vendor_name")))
+        check(f"UBC vendor is not a review reason ({label})",
+              not any("vendor_name" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+
+
+def test_propertytax_vendor_rescue():
+    print("\n[gates: the municipality on a property tax notice whose name is a logo]")
+    rescue = field_policy.propertytax_vendor_rescue
+    page = "Property Tax Office PO Box 7747 ... CITY OF VANCOUVER ... vancouver.ca/property-tax"
+
+    check("printed municipal name is taken",
+          rescue("City of Vancouver", page) == "City of Vancouver")
+    check("a name the page does not print is refused",
+          rescue("City of Burnaby", page) is None)
+    check("a bare place name is refused", rescue("Vancouver", page) is None)
+    check("a non-municipal name is refused", rescue("Property Tax Office", page) is None)
+    check("an empty generate twin is refused", rescue("", page) is None)
+    check("no page text is refused", rescue("City of Vancouver", "") is None)
+
+    # property_vancouver: the issuer is printed only as a logo, so the extract twin takes the
+    # return-address header instead. The twins disagree and the extract is below the bar, so
+    # resolve_twin's `elif e_present` tail writes the WRONG one -- and the vendor resolution
+    # fails, which is what this repair keys on.
+    tax = dict(
+        vendor_name_extract=fstr("Property Tax Office", 0.666),
+        vendor_name_generate=fstr("City of Vancouver", 0.778),
+        bill_type=fstr("municipal", 0.882),
+        sub_bill_type=fstr("propertytax", 0.88),
+        sub_bill_type_generate=fstr("propertytax", 0.88),
+    )
+    r = ev_md(municipal_fields(**tax), page)
+    check("the municipality is written", r["writeValues"]["vendor_name"] == "City of Vancouver",
+          str(r["writeValues"].get("vendor_name")))
+    check("and the notice no longer routes to review on the vendor",
+          not any("vendor_name" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+    check("an advisory records the substitution",
+          any("property tax notice" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
+
+    # Every gate is required. Each of these must leave the wrong extract in place.
+    inert = {
+        "sub_bill_type below its 0.80 bar": dict(tax, sub_bill_type=fstr("propertytax", 0.79)),
+        "the generate sub_bill_type disagreeing":
+            dict(tax, sub_bill_type_generate=fstr("water", 0.9)),
+        "bill_type below the 0.73 bar": dict(tax, bill_type=fstr("municipal", 0.5)),
+        "a water bill rather than a tax notice":
+            dict(tax, sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9)),
+    }
+    for label, fields in inert.items():
+        r = ev_md(municipal_fields(**fields), page)
+        check(f"inert with {label}",
+              r["writeValues"]["vendor_name"] == "Property Tax Office",
+              str(r["writeValues"].get("vendor_name")))
+
+    # Inert on a COMMERCIAL bill, and inert when the vendor resolution already passed --
+    # the latter is what keeps property_burnaby, whose vendor resolves fine, out of this.
+    r = ev_md(commercial_fields(**dict(tax, bill_type=fstr("commercial", 0.95))), page)
+    check("inert on a commercial bill",
+          r["writeValues"]["vendor_name"] == "Property Tax Office",
+          str(r["writeValues"].get("vendor_name")))
+    # A CONFIDENT extract that disagrees with the generate is protected: the printed name
+    # only wins when the generate twin is at least as confident. Without this guard the rule
+    # would overwrite a correct 0.95 read merely because the page prints another city.
+    r = ev_md(municipal_fields(**dict(tax, vendor_name_extract=fstr("City of Surrey", 0.95))), page)
+    check("inert when a passing extract outscores the generate",
+          r["writeValues"]["vendor_name"] == "City of Surrey",
+          str(r["writeValues"].get("vendor_name")))
+
+    # property_Vancouver2: the wrong extract CLEARS the 0.73 bar (0.745), so the resolution
+    # passes on merit and auto-writes -- the regime the failure-only gate missed.
+    r = ev_md(municipal_fields(**dict(
+        tax,
+        vendor_name_extract=fstr("Property Tax Office", 0.745),
+        vendor_name_generate=fstr("City of Vancouver", 0.778),
+    )), page)
+    check("a passing-but-wrong extract is overridden when the generate outscores it",
+          r["writeValues"]["vendor_name"] == "City of Vancouver",
+          str(r["writeValues"].get("vendor_name")))
+
+    # Agreeing twins are never touched, however the confidences fall.
+    r = ev_md(municipal_fields(**dict(
+        tax,
+        vendor_name_extract=fstr("CITY OF VANCOUVER", 0.723),
+        vendor_name_generate=fstr("City of Vancouver", 0.775),
+    )), page)
+    check("agreeing twins keep the normalised generate spelling",
+          r["writeValues"]["vendor_name"] == "City of Vancouver",
+          str(r["writeValues"].get("vendor_name")))
+
+
+def test_commercial_printed_vendor_name():
+    print("\n[gates: a commercial generate twin that truncated the printed name]")
+    printed = field_policy.commercial_printed_vendor_name
+
+    check("two dropped words -> keep the printed extract",
+          printed("Drips & Drains Plumbing and Heating Ltd.", "Drips & Drains", "Drips & Drains")
+          == "Drips & Drains Plumbing and Heating Ltd.")
+    check("ONE dropped word is normalisation, not truncation",
+          printed("FortisBC Energy Inc.", "FortisBC", "FortisBC") is None)
+    check("a dba trade name sits mid-string, so it is not a leading prefix",
+          printed("Graffiti Guys Removal Services dba Goodbye Graffiti Surrey",
+                  "Goodbye Graffiti", "Goodbye Graffiti") is None)
+    check("the tail direction is not this rule's business",
+          printed("HEATING & COOLING LTD", "ROMA Heating & Cooling", "ROMA Heating & Cooling")
+          is None)
+    check("already resolved to the printed form -> no repair",
+          printed("Drips & Drains Plumbing and Heating Ltd.", "Drips & Drains",
+                  "Drips & Drains Plumbing and Heating Ltd.") is None)
+    check("a missing twin is refused",
+          printed(None, "Drips & Drains", "Drips & Drains") is None)
+    check("an unrelated generate is refused",
+          printed("Drips & Drains Plumbing Ltd.", "Great West Pool", "Great West Pool") is None)
+
+    # diag_260414_0028. Pinned at BOTH observed regimes: the printed name must win even when
+    # the truncated generate twin is the more confident one, which is the whole defect.
+    for e_conf, g_conf, label in ((0.656, 0.764, "generate more confident -- the defect"),
+                                  (0.875, 0.460, "extract more confident")):
+        r = ev(commercial_fields(
+            vendor_name_extract=fstr("Drips & Drains Plumbing and Heating Ltd.", e_conf),
+            vendor_name_generate=fstr("Drips & Drains", g_conf),
+        ))
+        check(f"the printed name is written ({label})",
+              r["writeValues"]["vendor_name"] == "Drips & Drains Plumbing and Heating Ltd.",
+              str(r["writeValues"].get("vendor_name")))
+
+    # Municipal is left to the confidence tiebreak: the short registry spelling is wanted on
+    # the gas bills, and unscoped this rule rewrites 26 fortisbc reads.
+    r = ev(municipal_fields(
+        vendor_name_extract=fstr("FortisBC Energy Incorporated Limited", 0.40),
+        vendor_name_generate=fstr("FortisBC", 0.90),
+    ))
+    check("inert on a municipal bill",
+          r["writeValues"]["vendor_name"] == "FortisBC", str(r["writeValues"].get("vendor_name")))
+
+    # bug_260504_0021's truncated (non-dba) form IS eligible, and stays inert only because the
+    # extract is the more confident twin on every cached read. Pin both halves of that.
+    r = ev(commercial_fields(
+        vendor_name_extract=fstr("Graffiti Guys Removal Services", 0.881),
+        vendor_name_generate=fstr("Graffiti Guys", 0.497),
+    ))
+    check("bug_260504_0021 keeps its printed name",
+          r["writeValues"]["vendor_name"] == "Graffiti Guys Removal Services",
+          str(r["writeValues"].get("vendor_name")))
+
+
+def test_folio_number_is_critical_only_on_property_tax():
+    print("\n[field_policy: folio_number is critical on property tax notices only]")
+    crit = field_policy.critical_fields
+
+    check("absent from the commercial set", "folio_number" not in crit("commercial"))
+    check("absent from the municipal set", "folio_number" not in crit("municipal"))
+    check("absent when the sub-type is another municipal bill",
+          "folio_number" not in crit("municipal", "water"))
+    check("present on a municipal property tax notice",
+          "folio_number" in crit("municipal", "propertytax"))
+    check("matched case-insensitively", "folio_number" in crit("municipal", " PropertyTax "))
+    # Omitting the sub-type must never ADD a field -- the safe direction for any caller
+    # that does not have the label to hand (scripts/test.py takes this path).
+    check("omitting the sub-type gives the historical set",
+          crit("municipal") == field_policy.BASE_CRITICAL + field_policy.MUNICIPAL_DELTA)
+    check("a non-string sub-type is ignored", "folio_number" not in crit("municipal", None))
+    check("the base set is unchanged",
+          set(field_policy.BASE_CRITICAL) == {"vendor_name", "service_address",
+                                              "total_invoice_amount"})
+
+    tax = dict(
+        sub_bill_type=fstr("propertytax", 0.88),
+        sub_bill_type_generate=fstr("propertytax", 0.88),
+        account_number_extract=fstr("Account No: 000592.002", 0.95),
+        invoice_number_extract=fstr("2026 PROPERTY TAX", 0.9),
+    )
+
+    # Both twins present and agreeing -> written, and the notice is not held for it.
+    r = ev(municipal_fields(**dict(
+        tax,
+        folio_number_extract=fstr("328-314-00-0", 0.91),
+        folio_number_generate=fstr("328-314-00-0", 0.88),
+    )))
+    check("the folio is written", r["writeValues"]["folio_number"] == "328-314-00-0",
+          str(r["writeValues"].get("folio_number")))
+    check("and is not a review reason",
+          not any("folio_number" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+
+    # Missing on a property tax notice -> critical failure, routes to review.
+    r = ev(municipal_fields(**tax))
+    check("a missing folio holds a property tax notice for review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("and names folio_number as the reason",
+          any("folio_number" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+
+    # The SAME missing folio on a water bill changes nothing -- this is the gate that keeps
+    # every other municipal document out of it.
+    water = municipal_fields(
+        sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9),
+    )
+    r = ev(water)
+    check("a water bill with no folio is untouched",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("and folio_number is written empty",
+          r["writeValues"]["folio_number"] == "", repr(r["writeValues"].get("folio_number")))
+
+    # A commercial invoice never carries one either.
+    r = ev(commercial_fields())
+    check("a commercial invoice is untouched",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("folio_number is in every writeValues payload",
+          "folio_number" in r["writeValues"])
+
+
+def test_propertytax_account_number_comes_from_the_folio():
+    print("\n[field_policy: on a property tax notice the folio IS the account number]")
+    pick = field_policy.propertytax_account_from_folio
+    M, C = field_policy.MUNICIPAL, field_policy.COMMERCIAL
+
+    check("municipal + propertytax + passing folio -> the folio",
+          pick(M, "propertytax", "1987-9000-7", True) == "1987-9000-7")
+    check("matched case-insensitively", pick(M, " PropertyTax ", "0025.100", True) == "0025.100")
+    check("a water bill is refused", pick(M, "water", "1987-9000-7", True) is None)
+    check("a commercial invoice is refused", pick(C, "propertytax", "1987-9000-7", True) is None)
+    check("a failed folio resolution is refused",
+          pick(M, "propertytax", "1987-9000-7", False) is None)
+    check("an absent folio is refused", pick(M, "propertytax", "", True) is None)
+    check("a None folio is refused", pick(M, "propertytax", None, True) is None)
+    check("a non-string sub-type is refused", pick(M, None, "1987-9000-7", True) is None)
+    check("whitespace is collapsed", pick(M, "propertytax", " 631 000816.058 ", True)
+          == "631 000816.058")
+
+    tax = dict(
+        sub_bill_type=fstr("propertytax", 0.88),
+        sub_bill_type_generate=fstr("propertytax", 0.88),
+        invoice_number_extract=fstr("2026 PROPERTY TAX", 0.9),
+        folio_number_extract=fstr("1987-9000-7", 0.99),
+        folio_number_generate=fstr("1987-9000-7", 0.85),
+    )
+
+    # property_north_van_district: the notice prints BOTH, and the folio wins.
+    r = ev(municipal_fields(**dict(tax, account_number_extract=fstr("100198790007", 0.95))))
+    check("the folio replaces a differing printed account number",
+          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+          str(r["writeValues"].get("account_number")))
+    check("the label is applied once, not twice",
+          r["writeValues"]["account_number"].count("Account No:") == 1,
+          str(r["writeValues"].get("account_number")))
+    check("folio_number itself keeps the bare value",
+          r["writeValues"]["folio_number"] == "1987-9000-7",
+          str(r["writeValues"].get("folio_number")))
+
+    # The 16-of-20 case: the two already agree, so this is a no-op.
+    r = ev(municipal_fields(**dict(tax, account_number_extract=fstr("1987-9000-7", 0.95))))
+    check("a no-op when the two already agree",
+          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+          str(r["writeValues"].get("account_number")))
+
+    # A water bill on the same shape keeps its own account number and writes no folio.
+    r = ev(municipal_fields(
+        sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9),
+        account_number_extract=fstr("100198790007", 0.95),
+        folio_number_extract=fstr("1987-9000-7", 0.99),
+        folio_number_generate=fstr("1987-9000-7", 0.85),
+    ))
+    check("a water bill keeps its own account number",
+          r["writeValues"]["account_number"] == "Account No: 100198790007",
+          str(r["writeValues"].get("account_number")))
+
+    # A commercial invoice is never touched.
+    r = ev(commercial_fields(account_number_extract=fstr("100198790007", 0.95),
+                             folio_number_extract=fstr("1987-9000-7", 0.99),
+                             folio_number_generate=fstr("1987-9000-7", 0.85)))
+    check("a commercial invoice keeps its own account number",
+          r["writeValues"]["account_number"] == "Account No: 100198790007",
+          str(r["writeValues"].get("account_number")))
+
+    # The GATE must judge the folio too, not the account twins it replaced. CU returns no
+    # account_number at all on ~1 read in 6 of property_delta / property_west_vancouver while
+    # the folio comes back confident from the same span; before this the record was correct
+    # and the notice still reviewed. account_number IS critical on a municipal bill.
+    r = ev(municipal_fields(**dict(tax, account_number_extract=fstr(None, 0.836))))
+    check("a dropped account_number is rescued by a passing folio -> happy",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    check("the account resolution names the folio as its source",
+          r["resolutions"]["account_number"]["source"] == "propertytax_folio",
+          str(r["resolutions"].get("account_number")))
+    check("the rescued account number is written",
+          r["writeValues"]["account_number"] == "Account No: 1987-9000-7",
+          str(r["writeValues"].get("account_number")))
+    check("the rescue is advised, so a reviewer can see it fired",
+          any("taken from folio_number" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # NOT a relaxation: a folio that fails its own bar rescues nothing, and the notice still
+    # goes to a human. Twins that disagree do not clear the threshold.
+    r = ev(municipal_fields(
+        sub_bill_type=fstr("propertytax", 0.88),
+        sub_bill_type_generate=fstr("propertytax", 0.88),
+        invoice_number_extract=fstr("2026 PROPERTY TAX", 0.9),
+        account_number_extract=fstr(None, 0.836),
+        folio_number_extract=fstr("1987-9000-7", 0.42),
+        folio_number_generate=fstr("0025-100-99", 0.41),
+    ))
+    check("a failing folio does NOT rescue a dropped account_number",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("account_number needs attention is still reported",
+          any("account_number" in reason for reason in r["reviewReasons"]),
+          str(r["reviewReasons"]))
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
@@ -3336,10 +4007,15 @@ def main():
     test_handwriting_b2_nochild()
     test_response_shape()
     test_vendor_extract_generate_twin()
+    test_vendor_leading_the_is_normalised_away()
+    test_propertytax_vendor_rescue()
+    test_commercial_printed_vendor_name()
     test_service_address_extract_generate_twin()
     test_noble_office_service_address_is_never_written()
     test_amount_and_po_twins()
     test_account_number_twin()
+    test_folio_number_is_critical_only_on_property_tax()
+    test_propertytax_account_number_comes_from_the_folio()
     test_invoice_number_twin()
     test_invoice_number_filename_fallback()
     test_sub_bill_type()
@@ -3349,6 +4025,9 @@ def main():
     test_payment_due_date_corroboration_rescue()
     test_vendor_domain_corroboration()
     test_commercial_narrative_fields()
+    test_telecom_vendor_bill_type_override()
+    test_literal_null_sentinel_is_not_a_value()
+    test_collapsed_billing_period_extracts_are_discarded()
 
     print("\n" + "=" * 60)
     print("ALL CHECKS PASSED")

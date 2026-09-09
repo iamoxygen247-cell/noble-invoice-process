@@ -1,5 +1,5 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || vendor_name is NOT asserted: the resolved value alternates between 'DISTRICT OF WEST VANCOUVER' and 'District of West Vancouver' -- the same correct vendor in two casings, observed on the UNMODIFIED HEAD analyzer as well (live control 2026-08-17). Casing-only variance is not assertable under exact string comparison.",
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || vendor_name is NOT asserted: the resolved value alternates between 'DISTRICT OF WEST VANCOUVER' and 'District of West Vancouver' -- the same correct vendor in two casings, observed on the UNMODIFIED HEAD analyzer as well (live control 2026-08-17). Casing-only variance is not assertable under exact string comparison. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -22,7 +22,8 @@
       "diagnosis_solution_zh_hant": "",
       "recommendation": "",
       "recommendation_zh_hant": "",
-      "warranty": ""
+      "warranty": "",
+      "folio_number": ""
     },
     "fields": {
       "total_invoice_amount_extract": 598.82,

@@ -18,12 +18,20 @@ Design rules (kept deliberately, not by default):
     * It operates on a *parsed* representation ``{field: (value, confidence)}``,
       not raw Content Understanding JSON. CU-output parsing lives in ``gates.py``;
       this module knows only rules. That keeps the two concerns independent.
-    * The bucket is decided from the ``bill_type`` *label* only. It is never
-      inferred from the presence or absence of any other field, so changing the
-      critical-field policy can never silently change the type determination.
-    * The single bucket-dependent surface is ``critical_fields(bucket)``.
+    * The bucket is decided from the ``bill_type`` *label*, overridden only by an
+      explicit, enumerated vendor-identity allowlist (``vendor_bill_type_override``:
+      Noble books its telecom/cable accounts as municipal, which is a booking policy
+      no classifier can read off the page). It is still never inferred from the
+      presence or absence of any field, so changing the critical-field policy can
+      never silently change the type determination -- the guarantee this rule exists
+      to protect.
+    * The single bucket-dependent surface is ``critical_fields(bucket, sub_bill_type)``.
       Everything else (threshold, defaulting, derivation) is identical for both
-      buckets, so a future third bucket touches only this file.
+      buckets, so a future third bucket touches only this file. That function also
+      carries the one rule keyed on something finer than the bucket: ``folio_number``
+      is critical on a ``propertytax`` notice and on nothing else. The sub-type only
+      ever ADDS to the set, and omitting it yields the historical bucket-only answer,
+      so a caller without the label to hand cannot accidentally demand a field.
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v15"
+POLICY_VERSION = "commercial-narrative-v20"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -55,6 +63,11 @@ DATE_FORMAT = "%Y-%m-%d"
 BASE_CRITICAL: Tuple[str, ...] = ("vendor_name", "service_address", "total_invoice_amount")
 COMMERCIAL_DELTA: Tuple[str, ...] = ("po_or_job_number", "gst_amount")
 MUNICIPAL_DELTA: Tuple[str, ...] = ("account_number", "invoice_number")
+# Critical on property tax notices ONLY -- the folio is the identifier the municipality books
+# the payment against, and no other document type prints one. Keyed on the resolved
+# sub_bill_type rather than the bucket, so it is the one critical-field rule that is not
+# purely bucket-derived; see critical_fields.
+PROPERTYTAX_DELTA: Tuple[str, ...] = ("folio_number",)
 
 # Vendor name is captured twice by the analyzer: an extract-method field
 # (span-grounded, so its confidence is reliable) and a generate-method twin (the
@@ -116,6 +129,24 @@ INVOICE_FINAL = "invoice_number"
 ACCOUNT_EXTRACT = "account_number_extract"
 ACCOUNT_GENERATE = "account_number_generate"
 ACCOUNT_FINAL = "account_number"
+
+# The folio / roll number identifying the taxed property. Only property tax notices carry
+# one, and it is critical only there -- see PROPERTYTAX_DELTA and critical_fields.
+#
+# It deliberately OVERLAPS account_number, whose own prompt already lists "Folio, Folio
+# Number, Folio No., or Roll Number" among the account labels, so on most tax notices the folio
+# IS the account identifier and both fields return the same string. Measured on
+# commercial-narrative-v20 BEFORE propertytax_account_from_folio runs: the two agree on 16 of
+# the 20 tax notices and differ on 4 -- property_ubc (account 'RPT-1088-2731' beside folio
+# '631000816.058'), property_north_van_district ('100198790007' beside '1987-9000-7'),
+# property_ubc2 ('CST-20000015' beside '01060018') and property_white_rock ('000592002' beside
+# '000592.002'). That override then makes account_number equal the folio on all 20.
+# account_number's PROMPT was left untouched, so the account assertions on the other 32
+# documents do not move. (An earlier version of this comment said 18 of 20; that was measured
+# on the pre-v20 analyzer, before the Customer-ID and dropped-dot reads appeared.)
+FOLIO_EXTRACT = "folio_number_extract"
+FOLIO_GENERATE = "folio_number_generate"
+FOLIO_FINAL = "folio_number"
 
 # invoice_date is twinned like the identifiers, but unlike the billing-period dates
 # below it IS defaulted: when the twins resolve to nothing usable the write value
@@ -182,6 +213,7 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "gst_amount",
     "pst_amount",
     "account_number",
+    FOLIO_FINAL,
     "bill_type",
     "sub_bill_type",
     "invoice_description",
@@ -236,6 +268,9 @@ def resolve_bucket(bill_type_value: Optional[str]) -> str:
     missing/unreadable label -- resolves to the stricter ``commercial`` bucket.
     This fail-safe lives here as a guard on an absent *type label*; it is not
     field-presence inference (no other field is consulted).
+
+    The label this reads may have been overridden from the vendor's identity before it
+    got here -- see vendor_bill_type_override, applied in gates.evaluate.
     """
     return MUNICIPAL if (bill_type_value or "").strip().lower() == MUNICIPAL else COMMERCIAL
 
@@ -268,11 +303,24 @@ def default_bill_type(bill_type_value: Any) -> Optional[str]:
     return COMMERCIAL
 
 
-def critical_fields(bucket: str) -> Tuple[str, ...]:
-    """The critical field set for a bucket. The only bucket-dependent rule."""
-    if bucket == COMMERCIAL:
-        return BASE_CRITICAL + COMMERCIAL_DELTA
-    return BASE_CRITICAL + MUNICIPAL_DELTA
+def critical_fields(bucket: str, sub_bill_type: Any = None) -> Tuple[str, ...]:
+    """The critical field set for a bucket, plus the property tax delta.
+
+    ``sub_bill_type`` is the RESOLVED sub-type label. It adds ``folio_number`` on a property
+    tax notice and changes nothing otherwise -- every caller that does not have the sub-type
+    to hand may omit it and gets the historical bucket-only answer, which is the safe
+    direction: omitting it can only make the set smaller, never demand a field the document
+    has no reason to carry.
+
+    Gating on the sub-type rather than the bucket is deliberate. Property tax notices are a
+    strict subset of the municipal bucket, and folio_number is null on every other municipal
+    document -- water, gas, electric, business licence -- so making it municipal-critical
+    would route all of those to review for a field they never print.
+    """
+    base = BASE_CRITICAL + (COMMERCIAL_DELTA if bucket == COMMERCIAL else MUNICIPAL_DELTA)
+    if isinstance(sub_bill_type, str) and sub_bill_type.strip().lower() == "propertytax":
+        return base + PROPERTYTAX_DELTA
+    return base
 
 
 # --- per-field format rules --------------------------------------------------
@@ -731,11 +779,25 @@ _VENDOR_LEGAL_SUFFIXES = frozenset(
 
 
 def _normalize_vendor(value: Any) -> str:
-    """Lowercase, drop punctuation, collapse whitespace, and strip trailing legal
-    suffixes so two spellings of the same vendor compare equal."""
+    """Lowercase, drop punctuation, collapse whitespace, and strip a leading "the" plus
+    trailing legal suffixes, so two spellings of the same vendor compare equal."""
     if value is None:
         return ""
     tokens = [t for t in re.sub(r"[^\w\s]", " ", str(value).lower()).split() if t]
+    # A leading "the" is part of the letterhead, not of the name. property_ubc2 prints
+    # "THE UNIVERSITY OF BRITISH COLUMBIA" while its generate twin returns the registry
+    # spelling "University of British Columbia"; without this the token lists differ, no
+    # structural branch of _prefer_vendor_generate matches, and the confidence tiebreak
+    # decides -- measured a 50/50 coin flip over 12 live reads (6 each) on a base-critical
+    # field that auto-writes. Dropping it makes the two normalise equal, so the existing
+    # "write the clean generate spelling" branch fires deterministically.
+    #
+    # _HAS_MUNICIPAL_PREFIX already treats a leading "the" as noise, so this makes
+    # normalisation consistent with a convention the module already holds. Measured over
+    # 3,625 reads: 6 change, all property_ubc2 -- the only vendor value in the corpus that
+    # starts with "the". Guarded on len > 1 so a vendor named only "The" is not emptied.
+    if len(tokens) > 1 and tokens[0] == "the":
+        tokens = tokens[1:]
     while tokens and tokens[-1] in _VENDOR_LEGAL_SUFFIXES:
         tokens.pop()
     return " ".join(tokens)
@@ -754,6 +816,90 @@ def _vendor_values_consistent(a: Any, b: Any) -> bool:
         return True
     ta, tb = set(na.split()), set(nb.split())
     return ta <= tb or tb <= ta
+
+
+def vendor_twins_agree(extract_value: Any, generate_value: Any) -> bool:
+    """Public view of the vendor agreement test, for callers outside this module.
+
+    ``gates.evaluate`` needs it to tell the two propertytax_vendor_rescue regimes apart: a
+    passing resolution whose twins AGREE is corroborated and must be left alone, while a
+    passing resolution whose twins DISAGREE can still be carrying the wrong one of them.
+    """
+    return _vendor_values_consistent(extract_value, generate_value)
+
+
+# Billers Noble books as municipal utility accounts although they are private companies:
+# its telecom/cable accounts. Two billers -- Telus and Rogers -- but Rogers still BILLS
+# under the Shaw brands it acquired, so the Shaw trading names are Rogers spellings here,
+# not a third biller. Measured: the Rogers sample resolves to 'Shaw Cablesystems' on 5 of
+# 5 replicates (its payment slip prints "make your cheque payable to Shaw Cablesystems",
+# and the vendor_name_extract prompt reads the payable-to line first), so dropping the
+# Shaw spellings would miss the very document this rule exists for.
+#
+# Matched as a WHOLE normalised name or a word-boundary PREFIX of one, never a bare token
+# or a substring. The prefix form is required because one biller routinely yields several
+# spellings that normalise differently -- FortisBC appears in the corpus cache as four
+# ('fortisbc energy', 'fortisbc natural gas', 'fortisbc', 'fortisbc energy inc does
+# business as fortisbc') and its sidecar records the resolved value flipping run to run.
+# The trailing space is what keeps the prefix safe: 'telusys consulting' and
+# 'rogersville waste' do not start with 'telus ' / 'rogers '.
+#
+# A bare 'shaw' is deliberately absent, and 'rogers' is exact-match only: both are
+# surnames a BC trade business can carry ('Shaw Plumbing Ltd.'), and flipping such an
+# invoice to municipal would drop its PO and GST checks and blank its narrative fields.
+# A spelling not covered here simply misses, leaving the bill commercial -- the safe
+# direction, and a one-string fix.
+#
+# Measured over all 3,350 cached corpus reads, with the twin-OR candidate set the caller
+# actually passes (resolved final + both raw twins): exactly 10 match, and all 10 are the
+# two telecom anchors themselves ('TELUS Communications Inc.' 5x, 'Shaw Cablesystems' 5x).
+# Reading the twins as well as the resolved value added no false positive -- no raw twin
+# of the other 36 documents matches either. test_telecom_vendor_bill_type_override pins
+# that offline against the full harvested vendor list, which includes the bare 'Shaw' the
+# Rogers generate twin returns: alone it must NOT match, and the document is carried by
+# its 'Shaw Cablesystems' extract twin instead.
+_MUNICIPAL_VENDOR_PREFIXES: Tuple[str, ...] = (
+    "telus",
+    "rogers business", "rogers communications", "rogers together with shaw",
+    "shaw cablesystems", "shaw business", "shaw communications",
+)
+_MUNICIPAL_VENDOR_EXACT = frozenset({"rogers"})
+
+
+def vendor_bill_type_override(*vendor_values: Any) -> Optional[str]:
+    """
+    ``municipal`` when ANY of the given vendor spellings is one of Noble's telecom/cable
+    billers, else None (no opinion -- CU's own ``bill_type`` label stands).
+
+    The caller passes the resolved vendor AND both raw twins, because the resolution
+    between them is a coin flip this rule must not inherit. Measured on 260901_rogers:
+    the extract twin reads 'Shaw Cablesystems' at a flat 0.785 while the generate twin
+    reads a bare 'Shaw' at 0.417 -- but 0.725 on 1 replicate in 5. The two AGREE (one
+    contains the other), so _prefer_vendor_generate falls through to the confidence
+    tiebreak, and a generate twin that edged above 0.785 would resolve the vendor to
+    'Shaw' -- deliberately not in the allowlist, being a surname -- silently reverting
+    the bill to commercial. A 0.06 margin is well inside CU's documented +-0.3 confidence
+    noise. Reading every spelling makes the outcome independent of that tiebreak.
+
+    Same shape as gates.resolve_is_handwritten ("either twin saying yes wins"), and safe
+    for the same reason: a miss is the costly direction, and a twin would have to return
+    a whole telecom brand name for a non-telecom invoice to false-positive.
+
+    One-directional by construction: it returns only ``municipal``, never ``commercial``,
+    so it can never move a bill into the stricter bucket and can never ADD a critical-field
+    requirement. See gates.evaluate for where it is applied, and resolve_bucket for the
+    label rule it overrides.
+    """
+    for vendor_value in vendor_values:
+        name = _normalize_vendor(vendor_value)
+        if not name:
+            continue
+        if name in _MUNICIPAL_VENDOR_EXACT or any(
+            name == prefix or name.startswith(prefix + " ")
+            for prefix in _MUNICIPAL_VENDOR_PREFIXES
+        ):
+            return MUNICIPAL
+    return None
 
 
 # A "does business as" connector joining a legal entity to its trade name, e.g.
@@ -798,7 +944,9 @@ def _prefer_vendor_generate(
     # Only the TAIL direction. A generate that is a leading subset of the extract is the
     # ordinary normalisation case -- 'FortisBC' for 'FortisBC Energy Inc.', 'Drips & Drains' for
     # 'Drips & Drains Plumbing and Heating Ltd.' -- and those two want opposite answers, which
-    # only the confidence tiebreak separates. Leave them to it.
+    # this function cannot separate. It is left to the confidence tiebreak below, EXCEPT on
+    # commercial bills where the generate dropped two or more words: see
+    # commercial_printed_vendor_name, applied by gates.evaluate after this resolution.
     extract_tokens, generate_tokens = normalized_extract.split(), normalized_generate.split()
     if (
         extract_tokens
@@ -991,6 +1139,153 @@ def municipal_payee_override(value: Any, text: str) -> Optional[str]:
     return None if not payee or _vendor_values_consistent(payee, value) else payee
 
 
+def propertytax_account_from_folio(
+    bucket: str, sub_bill_type: Any, folio: Any, folio_passed: bool
+) -> Optional[str]:
+    """
+    The folio to write as ``account_number`` on a property tax notice, or None meaning
+    "leave the account number alone".
+
+    User requirement, 2026-09-09: when a property tax notice prints BOTH a folio number and
+    an account number, the folio is the one to keep. Scoped to the municipal bucket AND
+    ``sub_bill_type == "propertytax"`` -- no commercial invoice and no other municipal bill
+    (water, gas, electric, business licence) is touched.
+
+    Mostly a no-op by construction: ``account_number``'s own prompt already lists "Folio,
+    Folio Number, Folio No., or Roll Number" among the account labels, so the two fields
+    already agree on 16 of the corpus's 20 tax notices. Measured over all 60 cached
+    propertytax reads: 49 no-op, 11 changed on 4 documents --
+
+        property_ubc                 'RPT-1088-2731'  -> '631000816.058'
+        property_north_van_district  '100198790007'   -> '1987-9000-7'
+        property_ubc2                'CST-20000015'   -> '01060018'    (was the only WRONG key)
+        property_white_rock          '000592002'      -> '000592.002'  (was an UNSTABLE key)
+
+    The last two are repairs: v20 began taking the Customer ID on property_ubc2 and dropping
+    the dot on property_white_rock, and deriving the account from the folio -- which resolves
+    at 0.90-0.99 extract on every notice -- makes it deterministic again.
+
+    ``folio_passed`` is the folio's own twin resolution flag. It is required so a folio that
+    failed its threshold can never be copied into a SECOND critical field; today it costs
+    nothing, the folio passing on 60 of 60 cached reads.
+
+    The caller applies format_account_number to the result, so the 'Account No: ' label is
+    added exactly once to the raw folio.
+    """
+    if bucket != MUNICIPAL or not folio_passed:
+        return None
+    if not isinstance(sub_bill_type, str) or sub_bill_type.strip().lower() != "propertytax":
+        return None
+    if folio is None or not str(folio).strip():
+        return None
+    return " ".join(str(folio).split())
+
+
+def propertytax_vendor_rescue(generate_value: Any, text: str) -> Optional[str]:
+    """
+    The municipality printed on a property tax notice, taken from the vendor GENERATE twin
+    when the extract twin took the wrong string off the page -- or None, meaning "no opinion".
+
+    property_vancouver prints its issuer's name only as a logo
+    (``![CITY OF VANCOUVER](figures/1.1)``), so vendor_name_extract takes the plain text it
+    can read instead: 'Property Tax Office', the return-address header at offset 72. The
+    generate twin reads the logo correctly at 0.778. The two disagree, the extract is below
+    the bar at 0.666, and resolve_twin's ``elif e_present`` tail writes the WRONG one -- the
+    only branch where a failing extract still beats a passing generate.
+
+    None of the three other vendor repairs reaches it, all checked against the page:
+    municipal_name_with_prefix needs a bare place name, municipal_payee_override needs a
+    printed "payable to" line (this notice prints none), and vendor_domain_tiebreak finds no
+    domain at all because _VENDOR_DOMAIN_RE requires ``http://``, ``www.`` or ``@`` while the
+    page prints a bare 'vancouver.ca/property-tax'. Widening that regex was measured and
+    rejected: it invents labels on 19 of 38 documents.
+
+    So this gates on the CLASSIFICATION instead, which is independent of the vendor slip --
+    on all 9 replicates including the bad one, bill_type held 'municipal' at 0.882 and both
+    sub_bill_type twins 'propertytax' at 0.88. THIS FUNCTION only checks that the generate
+    twin holds a municipal name the page actually prints, so nothing is invented; the caller
+    (gates.evaluate) enforces the bucket, those two bars, and which resolution states qualify.
+
+    The caller admits TWO states, because the wrong value reaches the write two ways:
+      * the resolution FAILED -- property_vancouver's 0.666 extract, below the bar, written
+        by resolve_twin's ``elif e_present`` tail. Measured on the pre-v20 cache (3,601
+        reads): fired exactly once, taking that read from REVIEW_B4_CRITICAL_FIELD to
+        HAPPY_PATH_CANDIDATE.
+      * the resolution PASSED but the twins DISAGREE and the generate is at least as
+        confident -- property_Vancouver2's 0.745 extract against a 0.778 generate, which
+        clears the bar and AUTO-WRITES. Gating on failure alone missed this, and it is the
+        worse case: a silent wrong vendor rather than a review. Measured on the v20 cache
+        (156 reads, 60 of them propertytax): fires on exactly that one read, with zero
+        candidate reads outside propertytax.
+
+    Twins that AGREE are never offered to this function: agreement is the corroboration the
+    twin design rests on, and overriding it would discard the generate twin's casing
+    normalisation. property_burnaby stays out of it on that basis.
+    """
+    if generate_value is None or not str(generate_value).strip():
+        return None
+    name = " ".join(str(generate_value).split())
+    if not _HAS_MUNICIPAL_PREFIX.match(name):
+        return None
+    page = " ".join((text or "").split()).casefold()
+    return name if name.casefold() in page else None
+
+
+# How many words the extract must carry beyond the generate before the printed form wins.
+# One dropped word is exactly the normalisation the generate twin exists to perform --
+# 'FortisBC Energy Inc.' -> 'FortisBC', 'CAMBIE ROOFING CONTRACTORS LTD.' -> 'Cambie Roofing'
+# -- and test_vendor_extract_generate_twin asserts that behaviour on a commercial payload.
+# Two or more is a truncation, not a normalisation. Measured: at a delta of 2 every one of
+# the 30 corrected reads is kept and the whole suite stays green; at 1 the suite goes red.
+MIN_VENDOR_TOKEN_DELTA = 2
+
+
+def commercial_printed_vendor_name(
+    extract_value: Any, generate_value: Any, current: Any
+) -> Optional[str]:
+    """
+    The full printed vendor name from the EXTRACT twin, when the generate twin returned a
+    strict leading prefix of it that dropped MIN_VENDOR_TOKEN_DELTA words or more -- or None.
+
+    diag_260414_0028 prints 'Drips & Drains Plumbing and Heating Ltd.' and the extract reads
+    it correctly on 9 of 9 replicates. The generate twin returns 'Drips & Drains', exactly
+    what its prompt asks for ("the short common name ... not the full legal-entity suffix").
+    The two agree by containment, so _prefer_vendor_generate falls through to its confidence
+    tiebreak -- and GPT-5.5 dropped the extract to 0.656 against a 0.764 generate, so the
+    truncated form wins 7 reads in 9. "Trust the more confident twin" is already the rule
+    here, and the shorter answer is the more confident one; only preferring the printed name
+    outright fixes it.
+
+    COMMERCIAL ONLY, enforced by the caller. Unscoped this regresses the municipal gas bills
+    (fortisbc, 26 reads, one of them writing the prose sentence 'FortisBC Energy Inc. does
+    business as FortisBC.'), where the short registry spelling is the wanted one.
+
+    Measured over all 3,601 cached corpus reads: 30 change, all commercial, none harmful --
+    diag_260414_0028 (7, the fix), bug_260605_0017 (22, collapsing two casings into one full
+    name) and 260629_0024 (1, 'PRIORITY' alone being a fragment). It is eligible but inert on
+    recommend_240124_0001, bug_260615_0006 and bug_260504_0021, where the extract already
+    wins the tiebreak on every cached read.
+
+    Never fires on a "dba" bill: bug_260504_0021's generate twin returns 'Goodbye Graffiti',
+    which sits in the MIDDLE of 'Graffiti Guys Removal Services dba Goodbye Graffiti Surrey',
+    so the leading-prefix test fails. Those bills stay with the dba guard in
+    _prefer_vendor_generate.
+    """
+    normalized_extract = _normalize_vendor(extract_value)
+    normalized_generate = _normalize_vendor(generate_value)
+    if not normalized_extract or not normalized_generate:
+        return None
+    extract_tokens, generate_tokens = normalized_extract.split(), normalized_generate.split()
+    if len(extract_tokens) - len(generate_tokens) < MIN_VENDOR_TOKEN_DELTA:
+        return None
+    if extract_tokens[:len(generate_tokens)] != generate_tokens:
+        return None
+    # Already resolved to the printed form -- nothing to repair.
+    if _normalize_vendor(current) == normalized_extract:
+        return None
+    return extract_value
+
+
 # A service-address label whose value sits in the next markdown table cell, e.g.
 # "<td>FOR SERVICE AT:</td> <td>7171 NO. 5 RD</td>". The capture must start with a street
 # number: without it the pattern also takes a column header ("Bill To") on diag_260106_0008.
@@ -1153,6 +1448,17 @@ def _address_tokens_agree(a: Any, b: Any, min_overlap: float = 0.70) -> bool:
     return len(ta & tb) / min(len(ta), len(tb)) >= min_overlap
 
 
+def address_values_agree(a: Any, b: Any) -> bool:
+    """Public wrapper over the address token-overlap test.
+
+    gates.evaluate needs it for the A15 rescue: deciding whether a below-threshold
+    service_address names the SAME place as a confident bill_to_address, in which case the
+    confident copy should win. Deliberately the same test and threshold that resolve the
+    bill_to_address twins themselves, so the two paths cannot disagree about what "the same
+    address" means."""
+    return _address_tokens_agree(a, b)
+
+
 # Noble's own head/billing office(s) -- the generic paying-party address(es) that name no
 # serviced property. gates.evaluate consults this on both paths that can set service_address:
 # a Bill To block is promoted only when it is NOT one of these, and a service_address read
@@ -1231,6 +1537,27 @@ def billing_period_span_implausible(start: Any, end: Any) -> bool:
         return False
     span = (datetime.strptime(end_norm, DATE_FORMAT) - datetime.strptime(start_norm, DATE_FORMAT)).days
     return span <= 0 or span > MAX_BILLING_PERIOD_DAYS
+
+
+def billing_period_extracts_collapsed(start_extract: Any, end_extract: Any) -> Optional[str]:
+    """The single date both billing-period extract twins returned, or None when they did not
+    collapse onto one.
+
+    One span read as BOTH ends of a range is not a range. abbotsford_water prints
+    'BILLING PERIOD: Mar/Apr 2026' -- months only, no day -- and GPT-5.5 grounds both extract
+    twins on that one string and returns 2026-04-01 for each, at the same confidence off the
+    same bounding box. Across all 3,574 cached reads it is the only billing-period extract
+    date whose grounding span does not contain the day it claims: the '01' is manufactured,
+    not printed. Measured 11/12 on a same-day control, and unchanged by two prompt trims
+    (n=12 each, p=1.000 and p=0.590), which is why this is guarded in code.
+
+    Nothing is lost by discarding the pair: billing_period_span_implausible above already
+    refuses a start == end period, so a collapsed pair could never have been written as one.
+    """
+    start_norm = _normalize_date(start_extract)
+    if start_norm is None or start_norm != _normalize_date(end_extract):
+        return None
+    return start_norm
 
 
 def _slashed_date(text: str, order: Tuple[int, int, int]) -> Optional[str]:
@@ -1715,6 +2042,7 @@ TWIN_FIELDS: Dict[
     PO_FINAL: (PO_EXTRACT, PO_GENERATE, _po_values_agree, None),
     INVOICE_FINAL: (INVOICE_EXTRACT, INVOICE_GENERATE, _identifier_values_agree, None),
     ACCOUNT_FINAL: (ACCOUNT_EXTRACT, ACCOUNT_GENERATE, _identifier_values_agree, None),
+    FOLIO_FINAL: (FOLIO_EXTRACT, FOLIO_GENERATE, _identifier_values_agree, None),
     INVOICE_DATE_FINAL: (INVOICE_DATE_EXTRACT, INVOICE_DATE_GENERATE, _dates_agree, None),
     BILLING_START_FINAL: (BILLING_START_EXTRACT, BILLING_START_GENERATE, _dates_agree, None),
     BILLING_END_FINAL: (BILLING_END_EXTRACT, BILLING_END_GENERATE, _dates_agree, None),
@@ -1826,7 +2154,10 @@ def build_write_values(
     # billing-period fields, number_of_days and the five narrative fields already follow
     # ("the downstream Dataverse write never sees null for a text column"). The amount
     # fields keep null: they are numeric columns, which reject "".
-    for name in (PO_FINAL, ACCOUNT_FINAL):
+    # folio_number joins these two: it is null on every document that is not a property tax
+    # notice, which is most of them, and Dynamics should receive an empty string rather than
+    # a null for an identifier the document simply does not carry.
+    for name in (PO_FINAL, ACCOUNT_FINAL, FOLIO_FINAL):
         if write[name] is None or (isinstance(write[name], str) and write[name].strip() == ""):
             write[name] = ""
 
@@ -1897,6 +2228,35 @@ def build_write_values(
         bucket, sub_value, sub_confidence, write[PO_FINAL],
         parsed.get(SUB_BILL_TYPE_GENERATE, (None, None))[0],
     )
+
+    # folio_number is a PROPERTY TAX field and blank on everything else, by policy rather than
+    # by trusting the prompt to decline (the same reasoning as the narrative blanking below).
+    # The prompt does say "if it is not a property tax notice, return null", and CU disagrees
+    # on two shapes:
+    #   * municipal WATER bills are property-linked and really do print one -- delta_water
+    #     prints "FOLIO: 163-061-00-0", and richmond_water and vancouver_water likewise. The
+    #     value is genuine, simply not wanted: the requirement is property tax only.
+    #   * 260521_0024, a router-'other' document, returned the word 'COMPLEX' on 3 of 3 reads
+    #     -- an invented value, the generate-twin failure mode this codebase has repeatedly
+    #     had to guard in code rather than in prompt wording.
+    # Blanking here kills both, deterministically, and makes "" on a non-tax bill an
+    # assertable constant instead of a coin flip.
+    if write[SUB_BILL_TYPE] != "propertytax":
+        write[FOLIO_FINAL] = ""
+
+    # On a property tax notice the folio IS the account identifier, so it wins whenever the
+    # notice prints both (user requirement, 2026-09-09). Applied HERE rather than beside the
+    # account label above, because the bucket and the resolved sub_bill_type this is gated on
+    # are only computed at this point -- and it re-applies format_account_number so the
+    # 'Account No: ' label lands exactly once, on the raw folio.
+    folio_for_account = propertytax_account_from_folio(
+        bucket,
+        write[SUB_BILL_TYPE],
+        write[FOLIO_FINAL],
+        resolve_field(FOLIO_FINAL, parsed, threshold)[2],
+    )
+    if folio_for_account is not None:
+        write[ACCOUNT_FINAL] = format_account_number(folio_for_account)
 
     # The narrative fields describe service/supply work, which a municipal utility
     # bill does not report -- a water bill has nothing diagnosed, nothing recommended

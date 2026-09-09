@@ -121,12 +121,28 @@ MUNICIPAL_DELTA  = ("account_number", "invoice_number")
 
 **Rule.** Express type-dependent policy as **base + delta**. A misclassification can then only
 ever drop a *delta* requirement, never a base one — the failure mode is bounded by construction
-rather than by care. Keep the bucket-dependent surface to one function (`critical_fields(bucket)`);
-a future third type then touches one file.
+rather than by care. Keep the bucket-dependent surface to one function
+(`critical_fields(bucket, sub_bill_type)`); a future third type then touches one file.
 
-**Rule.** Decide the type from the *classification label only*, never inferred from the presence
-or absence of other fields. Otherwise changing a field policy silently changes the type
-determination, and the two failures become impossible to separate.
+That function carries the one rule keyed on something finer than the bucket: `folio_number` is
+critical on a `propertytax` notice and on nothing else, because property tax notices are a strict
+subset of the municipal bucket and no other municipal bill prints a folio. The sub-type argument
+only ever *adds* to the set, and omitting it returns the historical bucket-only answer — so a
+caller without the label to hand can never accidentally demand a field, which keeps the
+"bounded by design" property above intact.
+
+**Rule.** Decide the type from the *classification label*, overridden only by an explicit,
+enumerated **identity** allowlist — never inferred from the presence or absence of other fields.
+Otherwise changing a field policy silently changes the type determination, and the two failures
+become impossible to separate.
+
+The allowlist carve-out exists because some type decisions are *booking policy*, not something
+readable off the page: Noble books its telecom/cable accounts (Telus, Rogers) as municipal, and no
+classifier can know that — the analyzer prompt in fact classifies telecom as commercial in as many
+words. `field_policy.vendor_bill_type_override` encodes it against the resolved `vendor_name`.
+Two properties keep it from eroding the rule: it is **one-directional** (it can only relax the
+bucket, never tighten it, so it can never *add* a critical-field requirement), and it reads a field
+**value**, not a field's presence — so the feedback loop the rule guards against stays closed.
 
 ### 2.4 Idempotency, claims, and who owns each write
 

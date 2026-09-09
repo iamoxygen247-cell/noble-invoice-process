@@ -1,0 +1,28 @@
+{
+  "note": "Added 2026-09-09 together with 13 sibling Greater Vancouver property tax notices, on request, to grow `propertytax` coverage from 6 documents to 20. The CITY of North Vancouver (2617 TEMPE KNOLL DR) -- a different municipality from the DISTRICT notice in property_north_van_district, and a different roll from the second City notice in property_north_van_city2. total_invoice_amount is the COLUMN A (no home owner grant) figure: A=7,602.11 / B=7,132.11 / C=6,857.11 before arrears. ARREARS RULE, set 2026-09-09 by the user and implemented in the analyzer prompt (commercial-narrative-v20): on a PROPERTY TAX notice, unpaid arrears and delinquent taxes from prior years are still payable and ARE part of the amount due, so total_invoice_amount is the arrears-INCLUSIVE total. This REVERSES the general carried-forward rule, which treats a prior balance as already paid and remains correct for commercial and utility bills. Only three corpus notices carry non-zero arrears (this one, property_delta and property_north_van_city); notices whose only prior-period line is a PREPAYMENT credit (property_surrey, property_Vancouver2, property_north_van_district) are unaffected, because a credit already reduces what is owed. ARITHMETIC ON THIS PAGE: 'TOTAL CHARGES FOR TAXES AND UTILITIES 7,602.11' + 'Arrears (including interest to July 02, 2026) 1,643.66' = 'NET TAXES AND UTILITIES OUTSTANDING 9,245.77', which is the asserted value. DO NOT 'correct' it back to 7,602.11 -- that is this bill's own charges only, and the earlier version of this note asserted exactly that before the rule changed. MEASURED: under the pre-v20 analyzer this read 7,602.11 on 12 of 12; under commercial-narrative-v20 it reads 9,245.77 on 3 of 3, on BOTH twins, routing HAPPY_PATH_CANDIDATE 3/3. || invoice_date is NOT asserted: this notice prints no issue-date label, so build_write_values substitutes date.today() and the scaffold captured the run date -- a false green that would flip red the next day. Same reason as property_surrey. || invoice_description NOT asserted: free text that rewords itself every run. || number_of_days ASSERTION REMOVED 2026-09-09 (user authorised, all 20 property_* sidecars): the Power Automate flow does not consume it for property tax. Observed behaviour: number_of_days_extract returns no value at all and number_of_days_generate intermittently invents '1' (catalogued defect B3), which reconcile_number_of_days then corrects to the period-derived 365, while an empty twin pair stays blank by that function's explicit 'corrects only; never supplies' design -- so the field flipped '' <-> 365 between runs. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20); it is critical on property tax notices only (field_policy.PROPERTYTAX_DELTA). || The narrative fields (diagnosis_solution, recommendation, warranty and their zh_hant twins) are blank by policy on a municipal bill. || billing_period_start_date AND billing_period_end_date ASSERTIONS REMOVED 2026-09-09 (user authorised, all 20 propertytax sidecars): the Power Automate flow does not consume the billing period for property tax, so the corpus no longer asserts it on this family. Both fields REMAIN in WRITE_FIELDS and still reach Dynamics -- removing the assertion stops the corpus checking them, it does not stop them being written. What this gives up, stated once: on the 16 notices that asserted '' the pair was the guard against a generate twin inventing a period out of nothing, and on property_surrey it was catching a real failure chain -- B3's invented number_of_days=1 makes the code derive start = end - 1 day, which collapses the period to zero length and blanks a correct 2026-01-01 (open-defects A13b, measured 4 of 6 reads correct). That chain is unfixed and is now invisible to the corpus on every property tax notice.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of North Vancouver",
+      "service_address": "2617 TEMPE KNOLL DR",
+      "total_invoice_amount": 9245.77,
+      "payment_due_date": "2026-07-02",
+      "invoice_number": "property_north_van_city",
+      "po_or_job_number": "",
+      "pst_amount": 0,
+      "account_number": "Account No: 950001.238",
+      "bill_type": "municipal",
+      "sub_bill_type": "propertytax",
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": "",
+      "folio_number": "950001.238"
+    },
+    "fields": {
+      "sub_bill_type": "propertytax",
+      "sub_bill_type_generate": "propertytax"
+    }
+  }
+}

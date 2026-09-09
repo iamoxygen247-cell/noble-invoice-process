@@ -1,0 +1,31 @@
+{
+  "note": "One of six property tax notices added 2026-08-27 to give the `propertytax` sub_bill_type (commercial-narrative-v11) real coverage across municipalities -- before them the corpus held no tax notice at all, while that family accounted for 21 of the 26 misrouted payables in the B2 audit. sub_bill_type 'propertytax' is the assertion these documents exist for: measured 6/6 on a scratch analyzer, both twins agreeing at 0.858-0.892, with controls held (burnaby_water->water, business_license->business_license, bchydro->electric). *** FILENAME IS MISLEADING: this is a CITY OF VANCOUVER notice, not North Vancouver. *** The letterhead reads 'CITY OF VANCOUVER', the tax office is 'PO Box 7747 Vancouver BC V6B 8R1', the parcel is 201-41 Alexander St Vancouver, and the string 'north' appears nowhere in the document. Kept under the supplied name; note that invoice_number below is the municipal filename fallback, so renaming the PDF changes that assertion. total 1,623.02 is 'TOTAL TAXES DUE'; the page also prints 'Total 2026 Taxes 3,189.02' before the home owner grant -- the smaller figure is the payable. invoice_date from 'Statement Date: May 05, 2026' (a label find_invoice_date_in_text does accept), payment_due_date from 'Due Date: July 3, 2026'. || RENAMED 2026-09-09 from `property_north_van` to `property_Vancouver2` (user decision). The old stem was simply wrong: this is a CITY OF VANCOUVER notice for 201 41 ALEXANDER ST, not a North Vancouver one -- the corpus now holds three genuine North Vancouver notices (property_north_van_city, property_north_van_city2, property_north_van_district) and the old name collided with them. The rename CHANGES AN ASSERTED VALUE: these notices print no invoice number, so build_write_values falls back to the file stem, and invoice_number moves from 'property_north_van' to 'property_Vancouver2'. The cache is keyed on the PDF content hash, not the filename, so no CU calls were needed. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught. || number_of_days ASSERTION REMOVED 2026-09-09 (user authorised, all 20 property_* sidecars): the Power Automate flow does not consume number_of_days for property tax. It was removed from the whole family rather than only where it flakes, so the tax notices stay uniform. Behaviour seen: the period resolves 2026-01-01..2026-12-31 on every read (365 days inclusive), number_of_days_extract returns no value at all, and number_of_days_generate intermittently invents '1' -- catalogued defect B3 -- which reconcile_number_of_days then corrects to 365, while an empty twin pair stays blank by that function's explicit 'corrects only; never supplies' design. The field therefore flipped '' <-> 365 between runs. || billing_period_start_date AND billing_period_end_date ASSERTIONS REMOVED 2026-09-09 (user authorised, all 20 propertytax sidecars): the Power Automate flow does not consume the billing period for property tax, so the corpus no longer asserts it on this family. Both fields REMAIN in WRITE_FIELDS and still reach Dynamics -- removing the assertion stops the corpus checking them, it does not stop them being written. What this gives up, stated once: on the 16 notices that asserted '' the pair was the guard against a generate twin inventing a period out of nothing, and on property_surrey it was catching a real failure chain -- B3's invented number_of_days=1 makes the code derive start = end - 1 day, which collapses the period to zero length and blanks a correct 2026-01-01 (open-defects A13b, measured 4 of 6 reads correct). That chain is unfixed and is now invisible to the corpus on every property tax notice.",
+  "expect": {
+    "routingDecision": "HAPPY_PATH_CANDIDATE",
+    "writeValues": {
+      "vendor_name": "City of Vancouver",
+      "service_address": "201 41 ALEXANDER ST",
+      "total_invoice_amount": 1623.02,
+      "invoice_date": "2026-05-05",
+      "payment_due_date": "2026-07-03",
+      "invoice_number": "property_Vancouver2",
+      "po_or_job_number": "",
+      "pst_amount": 0,
+      "account_number": "Account No: 579-178-51-0002",
+      "bill_type": "municipal",
+      "sub_bill_type": "propertytax",
+      "diagnosis_solution": "",
+      "diagnosis_solution_zh_hant": "",
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": "",
+      "folio_number": "579-178-51-0002"
+    },
+    "fields": {
+      "total_invoice_amount_extract": 1623.02,
+      "total_invoice_amount_generate": 1623.02,
+      "sub_bill_type": "propertytax",
+      "sub_bill_type_generate": "propertytax"
+    }
+  }
+}

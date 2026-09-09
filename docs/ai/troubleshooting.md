@@ -2012,6 +2012,35 @@ sidecar had frozen one lucky roll.
 - **Only a `--force` re-roll tells you which assertions are real.** A green run off the cache
   proves nothing about stability; it proves the cache still holds the roll it was written from.
 
+## Two n=3 samples of the SAME definition failed on disjoint keys
+
+**What happened (2026-09-09):** `b5b984bc1a88` was rolled at n=3, scored, and then re-rolled LIVE
+the same day at n=3 against the *identical* definition (156 CU calls, 0 cache hits). The two
+samples did not merely differ in confidence — **each was green on the other's failures**:
+
+| key | frozen n=3 | live n=3 | at n=6 |
+|---|---|---|---|
+| `bug_260629_0012.routingDecision` | **RED** | green 3/3 | 5/6 |
+| `property_delta.routingDecision` | green 3/3 | **RED** | 5/6 |
+| `property_west_vancouver.routingDecision` | green 3/3 | **RED** | 5/6 |
+| `property_surrey.billing_period_start_date` | green 3/3 | **RED** | 4/6 |
+
+Same analyzer, same PDFs, same code, hours apart. Not one key was consistently wrong; all four were
+coin flips that n=3 rounds to certainty in either direction.
+
+**The practical rules this adds to the two above:**
+
+- **A green n=3 is not evidence of stability, and a red n=3 is not evidence of a regression.** Both
+  are single draws. Before asserting a new key — especially `routingDecision`, which collapses every
+  critical field into one binary — get n≥6, and prefer n≥12 for anything that will drive a decision.
+- **Back up the cache folder before `--force`.** There is no replicate-band flag: `--force` re-calls
+  r0–r2 and **overwrites those files**, destroying the reads any prior analysis cited. Copy
+  `out/regress-cache/<hash>/` aside first; the two samples can then be scored together offline for a
+  free doubling of evidence (both are the same definition, so combining them is legitimate).
+- **Two of the four were real code defects** that only a second sample surfaced — the folio→
+  `account_number` substitution never reaching the B4 gate, and A15. A re-roll is not just a
+  stability check; it is a second chance to find bugs the first roll happened to miss.
+
 ## `service_address` was two bugs, and neither showed up in the sidecars
 
 **2026-08-18.** `B1` in `open-defects.md` described one defect on two documents at "roughly 1
@@ -2595,3 +2624,49 @@ md = gates.collect_markdown(json.loads(cache_file.read_text(encoding="utf-8")))
 
 If a real answer needs a proper parser, add one deliberately — do not substitute a heuristic and
 then reason from its output.
+
+---
+
+## The golden corpus and the unit suite cover different things — a bucket-scoped rule needs both
+
+**Verified 2026-09-09** while adding `commercial_printed_vendor_name` (A13d).
+
+The rule was scoped to the **commercial** bucket precisely because the unscoped version
+regressed `fortisbc`. Replaying it over all 3,601 cached corpus reads showed **30 changes,
+all commercial, none harmful** — a clean result. It still broke
+`test_vendor_extract_generate_twin`, which builds a *synthetic* **commercial** payload with
+`FortisBC Energy Inc.` @0.40 + `FortisBC` @0.90 and asserts the pipeline writes `FortisBC`.
+
+**Why the corpus could not catch it:** every real FortisBC bill in the corpus is a gas bill,
+so it buckets **municipal**. The commercial FortisBC case exists *only* in the unit suite.
+The corpus samples the documents Noble actually receives; the unit suite pins the contract on
+shapes no sample happens to contain. Neither is a superset of the other.
+
+**The rule:** when a change is gated on a bucket, a bill type, or any other classification,
+a green corpus is not evidence that the contract still holds. Run `pytest` as well — and if
+you are measuring the change out-of-tree, run `pytest` against the patched code, not against
+`HEAD`:
+
+```python
+# exec the edited sources into modules, inject them, THEN let pytest import the test modules
+sys.modules["field_policy"] = patched_fp
+sys.modules["gates"] = patched_gates
+pytest.main(["-q", "tests"])
+```
+
+Two traps in that harness, both hit:
+
+1. **Run one variant per interpreter.** Looping variants in a single process leaves
+   `function_app` holding a reference to the *previous* iteration's `gates`, which produced
+   two phantom `test_diagnostics` failures that vanished with a fresh process per variant.
+2. **A fixture-taking test cannot be called directly.** Iterating `dir(module)` and calling
+   each `test_*` reports dozens of bogus `TypeError: missing positional argument 'monkeypatch'`
+   failures. Use `pytest.main`, not a hand-rolled runner.
+
+**The fix that came out of it** is also worth keeping: the conflict was real and irreducible on
+confidence (the test case and `diag_260414_0028` are structurally identical — commercial,
+leading prefix, extract below the bar, generate above it), so it was resolved on **structure**
+instead, by requiring the generate twin to have dropped **two or more** words. Measured: at a
+delta of 2 all 30 corrections survive and the suite is green; at 1 the suite is red; at 3 the
+`WASTE MANAGEMENT` and `PRIORITY` repairs are lost. Pick such a constant by measuring every
+value, not by taking the first one that goes green.

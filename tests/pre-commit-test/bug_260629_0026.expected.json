@@ -1,5 +1,5 @@
 {
-  "note": "BC Hydro security deposit; BALANCE FORWARD 0.00 -> Total Due 198.14, not the 21.14 current charges. invoice_date 2026-06-17 is printed in the header table; carried by the printed-text corroboration on runs where the extract twin returns null, so the invoice_date twins are NOT asserted. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
+  "note": "BC Hydro security deposit; BALANCE FORWARD 0.00 -> Total Due 198.14, not the 21.14 current charges. invoice_date 2026-06-17 is printed in the header table; carried by the printed-text corroboration on runs where the extract twin returns null, so the invoice_date twins are NOT asserted. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -23,7 +23,8 @@
       "diagnosis_solution_zh_hant": "",
       "recommendation": "",
       "recommendation_zh_hant": "",
-      "warranty": ""
+      "warranty": "",
+      "folio_number": ""
     },
     "fields": {
       "total_invoice_amount_extract": 198.14,

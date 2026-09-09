@@ -14,7 +14,8 @@ transport — no Blob, no SAS), applies the routing gates via `gates.py` — **B
 (router/effective category `other` → reject), **B4** (a critical field for the
 resolved bill-type bucket is missing, empty, low-confidence, or fails its format
 rule — e.g. `po_or_job_number` must be exactly 8 digits; municipal bills
-additionally require `account_number` and `invoice_number` — → review), and a
+additionally require `account_number` and `invoice_number`, and a **property tax
+notice** (`sub_bill_type` = `propertytax`) additionally requires `folio_number` — → review), and a
 no-child-extraction review — using the bill-type policy in `field_policy.py`,
 writes `Extracted` + the routing decision, and returns the decision.
 
@@ -73,7 +74,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v15",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v20",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },

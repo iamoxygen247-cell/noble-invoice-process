@@ -18,7 +18,85 @@ regression on the same document is recognisable.
 measured rate like `5/10` means 5 of 10 replicate CU calls on the same document and analyzer.
 Rates in this file were measured on analyzer hash `cd1e585c2f1f` (2026-08-17) unless stated.
 
-Last updated: 2026-08-27 (later) — **A8 closed as accepted behaviour, not a defect**: a blank
+Last updated: 2026-09-09 (later) — **`commercial-narrative-v20`**: the analyzer gained
+`folio_number_extract` / `folio_number_generate` (critical on property tax notices ONLY, via
+`field_policy.PROPERTYTAX_DELTA`), and the `total_invoice_amount` prompt gained the property-tax
+paragraph that **closes A11 and A14 together** (no-grant column + arrears are payable). Code-side:
+`account_number` is taken from the folio on a property tax notice that prints both (user
+requirement — 11 reads, 4 documents), the A13e vendor rescue was widened to the above-threshold
+regime it was missing (**A13e part 2** — that one auto-wrote a wrong vendor, D1), and
+`folio_number` is blanked off property tax notices (**A13g**). **A15 is fixed** in the same change
+(below). Corpus: **1124 OK / 0 not OK across 52 documents, 1124 assertions**, green on BOTH n=3
+samples and on all six reads per document. **`warranty_260120_0062.account_number`, the
+long-standing blocker, now reads correctly — see the caveat in A13.** **This change needs BOTH a
+prod analyzer push and a function deploy, analyzer FIRST.**
+
+> **The corpus was re-rolled LIVE against this definition (156 CU calls, 0 cache hits) and the
+> result is the strongest "lucky draw" evidence this project has.** The frozen sample and the live
+> sample are both n=3 of the *same* definition `b5b984bc1a88`, and **each was green on the other's
+> failures**: the frozen roll failed only `bug_260629_0012.routingDecision`, while the live roll
+> failed `property_delta.routingDecision`, `property_west_vancouver.routingDecision` and
+> `property_surrey.billing_period_start_date` — and passed `bug_260629_0012` 3/3. Scored together at
+> **n=6**, four keys were unstable, none consistently wrong (three at 5/6, one at 4/6). Two of those
+> were real code defects, now fixed; one was withdrawn by the user; one (A15) is fixed. **Never
+> treat a green n=3 as a stable corpus.**
+
+The live roll also exposed **a defect in the folio→`account_number` requirement as first
+implemented**: `build_write_values` set `write[account_number]` from the folio but never updated the
+`resolutions` map, so `evaluate_b4` still judged the *account twins the folio had replaced*. When CU
+returned no `account_number` at all (a blank field entry — confidence, no value) while
+`folio_number` came back at 0.875–0.988 **from the same span on the same read**, the notice routed
+`REVIEW_B4_CRITICAL_FIELD` even though the record it was about to write was complete and correct.
+Measured **1 read in 6** on `property_delta` and `property_west_vancouver`. Fixed in `gates.py` by
+pointing the account resolution at the folio, after the PO-echo discard (the last rule that can
+change `account_number`) and before B4. **Not a relaxation** — `propertytax_account_from_folio`
+still returns `None` unless the folio passed its own bar, so a missing or weak folio reviews exactly
+as before. Blast radius over 312 reads: applied on **120 reads, 0 outside `municipal` +
+`propertytax`**, and changed the outcome on exactly the **2** reads above.
+
+**Authorised sidecar removals** (user, 2026-09-09), each recorded in the affected note:
+`260901_rogers.invoice_description`; `260825_telus.payment_due_date`; `number_of_days` from all 20
+`property_*` sidecars; and **`billing_period_start_date` + `billing_period_end_date` from all 20
+`propertytax` sidecars** — the Power Automate flow does not consume the billing period for property
+tax. That last removal takes 40 assertions and, stated plainly, hides the A13b failure chain
+(B3's invented `number_of_days=1` derives `start = end − 1 day`, collapsing the period and blanking a
+correct `2026-01-01`, measured 4 of 6 reads correct) from the corpus on every tax notice. The chain
+is unfixed. `property_white_rock.routingDecision` was **restored** (user request; green 3/3 on the
+frozen sample and 3/3 live).
+Previous watermark: 2026-09-09 — **the corpus grew from 38 documents to 52**: 14 Greater Vancouver property
+tax notices were added on request, taking `propertytax` coverage from 6 documents to 20 and the
+expectation count from 815 to 1137. All 14 verified against their printed pages and green. Three more
+A13 rows closed in code (`commercial-narrative-v19`): **A13d** `diag_260414_0028.vendor_name`
+(commercial printed-name rule, 30 reads changed), **A13e** `property_vancouver.vendor_name` →
+routing (property-tax vendor rescue, 1 read), and **A13f** `property_ubc2.vendor_name` (a leading
+"the" in `_normalize_vendor`, 6 reads). **No sidecar was edited and `analyzers/` is untouched**, so no
+prod analyzer push is needed. **Only one A13 row is still open** —
+`warranty_260120_0062.account_number` (8/9) — and it is now the *only* failing key in the whole
+corpus. New item **A14**: `total_invoice_amount_extract` sweeps in a *small* arrears line on
+`property_white_rock` (5 of 12), which routes to review rather than writing wrongly. **A11 re-measured
+on all 20 tax notices** — every one picked column A, but by coincidence rather than by construction;
+documentation only, per the user's decision.
+Previous watermark: 2026-09-08 (later still) — **A13 partially resolved**: the two `abbotsford_water`
+billing-period keys are fixed in code (`commercial-narrative-v18`,
+`field_policy.billing_period_extracts_collapsed`), and the `property_surrey`
+`billing_period_start_date` row was **withdrawn — it was never a defect**, the notice does print
+the period and the sidecar has been re-baselined. Three factual errors in the original A13 entry
+are corrected below. A three-arm prompt experiment (n=12 each, same day) was run first and found
+the prompt is **not** the lever, so `analyzers/` is untouched and no prod analyzer push is needed.
+`property_surrey.service_address` was also **accepted** as the new truth the same day (A13c): the
+shorter `2790 167 ST` is what the notice prints under its own PROPERTY ADDRESS label, and the old
+assertion had spliced in the mailing block's city and postal code. **Three A13 rows remain open.**
+Previous watermark: 2026-09-08 (later) — new item **A13**: the CU
+deployment was upgraded from GPT-5.2 to GPT-5.5 and extraction quality dropped on six keys across
+five documents (rates 1/9 to 9/9, all measured post-upgrade). The analyzer was **not** changed —
+same definition hash either side of the upgrade. A seventh symptom from the same investigation, CU
+returning the literal string `"null"` and defeating the municipal invoice-number fallback, had one
+root cause and **was** fixed (`commercial-narrative-v17`, `gates._denull`). Previous watermark:
+2026-09-08 — new item **A12**: a bill addressed only to Noble's own office loses
+`service_address` and always routes to review (measured 5/5 on the new `260825_telus` anchor).
+Found while shipping the vendor-driven `bill_type` rule (`commercial-narrative-v16`), which is
+code-side and needed no analyzer push; the record half of that change is `dataverse-todo.md` →
+DV-10. Previous watermark: 2026-08-27 (later) — **A8 closed as accepted behaviour, not a defect**: a blank
 `invoice_date` always becomes today's date, in **both** buckets (user). Two attempts to change that
 — blank everywhere (`v12`, committed as 11a530c), then blank on municipal only (`v13`, never
 committed) — were **reverted**; neither reached production. The shipped version is `v14`. The measurement is kept because it is useful:
@@ -149,12 +227,16 @@ they are currently unasserted only because exact string comparison cannot tolera
 | B1 | *(fixed 2026-08-18)* `service_address` is critical, so an intermittent null routed to `REVIEW_B4_CRITICAL_FIELD` — a human saw it and no row was written. Cost review churn, not data integrity |
 | B4 | `total_invoice_amount_generate` is a raw twin, not in `WRITE_FIELDS`; the resolved total stays correct |
 | B6c | *(fixed 2026-08-18)* `business_license` routing flip — affected which queue the invoice entered, not any stored value |
+| A12 | `service_address` is critical, so discarding Noble's own office routes to `REVIEW_B4_CRITICAL_FIELD` — a human sees it and no row is auto-written. Same shape as B1: review churn, not data integrity |
+| A13 (part) | `warranty_260120_0062.account_number` is critical, so the GPT-5.5 degradation routes to review rather than writing. **The billing-period half of A13 was D1, not D4** — those keys are informational and auto-write, so a wrong period reached Dynamics unseen. **Fixed 2026-09-08** (`commercial-narrative-v18`), closing the D1 exposure; `property_surrey.service_address` was **accepted** the same day (A13c). The three `vendor_name` rows were **fixed in code 2026-09-09** (`commercial-narrative-v19`, A13d/A13e/A13f), leaving this one D4 row |
+| A14 | `property_white_rock.total_invoice_amount_extract` sweeps in a small arrears line on 5 of 12 reads. The twins then disagree and the notice routes `REVIEW_B4_CRITICAL_FIELD`, so a human sees it and nothing wrong is written — D4, not D1. The generate twin is correct 12/12 |
+| A15 | *(fixed 2026-09-09)* `bug_260629_0012` — a below-threshold `service_address` blocked the Bill-To fallback, so the doc reviewed on 1 read in 103. The value written was the correct one on every read; only the routing differed. Same shape as B1 and A12: review churn, not data integrity |
 | C1, C2, C3 | Corpus and tooling health; no runtime effect |
 
-**Count:** D1 = 7, D2 = 3, D3 = 1 (**11 Dataverse-affecting**) and D4 = 5 (**impact today**).
+**Count:** D1 = 7, D2 = 3, D3 = 1 (**11 Dataverse-affecting**) and D4 = 6 (**impact today**).
 One caveat on the arithmetic: section `B6` covers three variants and is tagged `D2` because two
 of them are, but its third variant (`business_license` routing) is `D4` — so the honest split is
-11 Dataverse concerns and 6 non-Dataverse ones across 16 sections.
+11 Dataverse concerns and 7 non-Dataverse ones across 17 sections.
 
 **Sequencing:** with Dataverse unused, D1/D2/D3 are all deferred (P2/P3 above). D4 is the work
 that pays off now (P1). Within D1, A3 is the cheapest fix — the municipal sectioned-GST rescue
@@ -556,7 +638,7 @@ Amount due     $2,428.69   |  $1,858.69        |  $1,583.69
 ```
 
 **3 of the 6 sampled notices are ambiguous this way** (`property_burnaby` 3 figures,
-`property_vancouver` and `property_north_van` 2 each). The other three print grants of `0.00`
+`property_vancouver` and `property_Vancouver2` 2 each). The other three print grants of `0.00`
 (`property_abbotsford`, `property_surrey`) or a single figure (`property_richmond`).
 
 **Rule (user, 2026-08-27): write the NO-GRANT amount, column A.** The grant requires the property
@@ -711,7 +793,7 @@ defaulted. Code-side, no analyzer change; the guard against compounding two defa
 it was `invoice_date + 30` and therefore stable. That claim was wrong about the code, the assertion
 tracked the run date, and the corpus went red on 2026-08-28. Assertion dropped; see that sidecar.
 
-### A11. `total_invoice_amount` has no rule for home-owner-grant columns — **OPEN**
+### A11. `total_invoice_amount` has no rule for home-owner-grant columns — **FIXED 2026-09-09** (`commercial-narrative-v20`)
 
 **D3 — costs a false review, does not corrupt a value.** Every BC property tax notice prints the
 same three-column grant layout: **no grant / regular grant / senior-additional grant**, each with
@@ -750,6 +832,525 @@ notice showing no-grant / regular-grant / senior columns, return the **no-grant*
 prompt change, so it needs the full protocol: scratch analyzer, n ≥ 12 per arm with a concurrent
 control, all six notices plus non-tax controls. Restore the burnaby `routingDecision` assertion if
 the extract twin then anchors reliably. **Do not bundle with an unrelated prompt edit.**
+
+#### Re-measured 2026-09-09, after 14 more notices were added — documentation only, no code
+
+The user's decision on 2026-09-08 was **"for all `bill_sub_type = propertytax`, always pick A (no
+grant)" — documented, not coded.** This section records what the corpus now shows.
+
+The corpus went from **6 property tax notices to 20** on 2026-09-09. Every one of the 14 new notices
+resolved `total_invoice_amount` to its **column A** figure, verified individually against the printed
+page — including nine that print all three grant columns with three *different* numbers, which is the
+`property_burnaby` shape this defect was raised on:
+
+| notice | A (no grant) | B | C | stable? |
+|---|---|---|---|---|
+| `property_ubc` | **3,138.43** | 2,568.43 | 2,293.43 | 3/3 |
+| `property_north_van_district` | **875.60** | 305.60 | 30.60 | 3/3 |
+| `property_north_van_city` | **7,602.11** | 7,132.11 | 6,857.11 | 12/12 |
+| `property_north_van_city2` | **7,192.89** | 6,622.89 | 6,347.89 | 3/3 |
+| `property_delta` | **45,691.50** | 45,121.50 | 44,846.50 | 12/12 |
+| `property_port_moody` | **3,046.79** | 2,476.79 | 2,201.79 | 3/3 |
+| `property_new_westminster` | **2,233.58** | 1,663.58 | 1,388.58 | 3/3 |
+| `property_port_coquitlam` | **2,990.13** | 2,420.13 | 2,145.13 | 3/3 |
+| `property_coquitlam` | **2,110.90** | 1,540.90 | 1,265.90 | 3/3 |
+| `property_white_rock` | **6,032.62** | 5,462.62 | 5,187.62 | see A14 |
+| `property_pitt_meadows` / `property_west_vancouver` | all three columns equal (grant 0.00) | | | 3/3 |
+| `property_ubc2` / `property_vancouver_advance` | no grant columns printed | | | 3/3 |
+
+**State this precisely: the rule holds by coincidence, not by construction.** The prompt still says
+nothing about grants, so nothing *makes* CU prefer column A — it simply has, on every read measured
+so far. These notices auto-write (`HAPPY_PATH_CANDIDATE` on 19 of 20), so a read that picked column B
+would be a **silent D1**, not a review. The 14 new notices raise confidence in the observation and
+raise the exposure at the same time.
+
+The `property_burnaby` extract-twin dropout this section documents (3/6) did **not** reproduce on any
+of the 14 new notices: 0 dropouts in 60 reads.
+
+#### Closed 2026-09-09 — both halves shipped in one analyzer version
+
+A11 and A14 were **bundled deliberately** (user decision): both are edits to the same
+`total_invoice_amount` prompt, so two separate versions could not have been attributed apart
+anyway, and bundling cost one cache re-roll instead of two.
+
+**What the prompt now says.** Both twins gained a property-tax paragraph: *(a)* on a notice with
+grant columns, return the **no-grant** figure, read from the notice's own total row — and never
+from a sentence about next year's estimated instalments, which is the trap `property_white_rock`
+sets by printing *"would be $621.00 No Grant Available"*; *(b)* on a property tax notice, unpaid
+**arrears are payable and count toward the total**, reversing the general carried-forward rule for
+this document family only. Keying on the words *"No Grant"* rather than *"Column A"* was the
+user's call and the corpus supports it: all 18 notices with grant columns print some form of
+*No Grant*, while the column is **not** always labelled A — `property_ubc` prints `No Grant A`
+reversed, and five others print a bare `NO GRANT`.
+
+**Measured over the full 52-document re-roll — the three arrears notices moved, and nothing else
+did:**
+
+| notice | before | after | note |
+|---|---|---|---|
+| `property_delta` | 45,691.50 ×12 | **48,009.77 ×3** | arrears 2,318.27 now included |
+| `property_north_van_city` | 7,602.11 ×12 | **9,245.77 ×3** | arrears 1,643.66 now included |
+| `property_white_rock` | 6,158.28 ×5 / 6,032.62 ×7 | **6,158.28 ×3, stable** | the A14 coin flip is gone |
+| the other 17 tax notices | — | **unchanged** | |
+
+`property_white_rock` is the direct A14 close: the extract twin no longer flips, so the twins agree
+and the notice stops routing to review on an ambiguous total.
+
+**Caveat, stated rather than buried.** These totals are still only measured at **n = 3** on the new
+definition, and the reads sit on one day. The A11 observation that CU picks column A remains an
+*observation*: the prompt now asks for it explicitly, which is far stronger than before, but these
+notices auto-write, so a column-B read would still be a silent bad write rather than a review.
+
+### A14. `total_invoice_amount_extract` ignores a *small* arrears line — **FIXED 2026-09-09** (`commercial-narrative-v20`), found the same day
+
+**D4 — routes to review, never writes the wrong figure.** Found while adding the 14 property tax
+notices. Anchor: **`property_white_rock`**, measured at **n = 12**.
+
+The analyzer prompt is explicit that an aged-arrears line is carried forward and must be excluded
+(`total_invoice_amount` description, step 4). White Rock prints:
+
+```
+2026 TOTAL TAXES AND OTHER CHARGES        6,032.62      <- this bill's own charges (column A)
+Unpaid Arrears Taxes                        125.66      <- carried forward
+TOTAL OUTSTANDING TAXES DUE JULY 2, 2026  6,158.28
+```
+
+so **6,032.62** is correct. Measured over 12 replicates:
+
+| twin | reads | verdict |
+|---|---|---|
+| `total_invoice_amount_generate` | **6,032.62 × 12** | correct every time |
+| `total_invoice_amount_extract` | 6,032.62 × 7, **6,158.28 × 5** | flips |
+
+On the 5 reads where the extract sweeps in the arrears the twins disagree, the resolution fails, and
+the notice routes `REVIEW_B4_CRITICAL_FIELD` instead of auto-writing. **That is the safe direction**
+— which is why this is D4 and not D1 — but `routingDecision` and `total_invoice_amount` are both
+unstable, so `property_white_rock.expected.json` asserts neither. It asserts
+`total_invoice_amount_generate = 6032.62`, which is stable and correct.
+
+**Not a general failure of the carried-forward rule.** The two other arrears-bearing notices are
+stable 12/12 on both twins:
+
+| notice | own charges | arrears | total due | extract twin |
+|---|---|---|---|---|
+| `property_delta` | 45,691.50 | 2,318.27 | 48,009.77 | 45,691.50 × 12 |
+| `property_north_van_city` | 7,602.11 | 1,643.66 | 9,245.77 | 7,602.11 × 12 |
+| **`property_white_rock`** | **6,032.62** | **125.66** | **6,158.28** | **flips 7/5** |
+
+The distinguishing feature is the **size** of the arrears: White Rock's 125.66 is 2 % of the total,
+against 5 % and 18 % on the two stable notices. A hypothesis worth testing, not a conclusion — n = 1
+document at each size.
+
+**Fix shape:** unclear, and deliberately not attempted. A prompt edit would need the full protocol
+(scratch analyzer, n ≥ 12 per arm, concurrent control) and would touch the same
+`total_invoice_amount` description that A11 wants to change — **bundle them or neither**, since two
+edits to one field's prompt cannot be attributed separately. A code-side option exists (prefer the
+generate twin when the extract exceeds it by exactly a printed arrears figure) but it is speculative
+against one document.
+
+### A12. A bill addressed only to Noble's own office loses `service_address` and always reviews — **OPEN**
+
+**D4 — costs a review on every occurrence, never a wrong write.** Found 2026-09-08 while adding the
+two telecom corpus anchors. Measured **5/5 replicates** on `260825_telus`.
+
+Some vendors bill Noble's head office directly, with no serviced property anywhere on the page. The
+TELUS statement is the clean case: every address it prints — the letterhead customer block, the
+remittance slip, the page-3 and page-4 charge blocks — is `155 13988 MAYCREST, RICHMOND BC V6V 3C3`,
+which is Noble's own office. `is_noble_office_address` correctly matches all five spellings.
+
+`gates.evaluate` then does the right thing and refuses to write it: the Bill To fallback is tried
+first, that address is *also* the office, so `service_address` is discarded
+(`resolutions.service_address.source = "noble_office_rejected"`) rather than sending the paying
+party's address to Dynamics as the serviced property. But `service_address` is **base**-critical, so
+the bill fails B4 in **either** bucket:
+
+```
+routingDecision   REVIEW_B4_CRITICAL_FIELD   5/5
+reviewReasons     ("service_address needs attention",)   5/5
+```
+
+This is orthogonal to `bill_type`: the vendor-driven municipal rule shipped in
+`commercial-narrative-v16` fixes the bucket for this bill (`bill_type` is now written `municipal`,
+and the record and the reviewer both see it), but it cannot fix the routing, because the municipal
+delta relaxes `po_or_job_number`/`gst_amount`, never a base field. The Rogers anchor
+(`260901_rogers`) prints a real `SERVICE ADDRESS` block and reaches `HAPPY_PATH_CANDIDATE` on 5/5,
+which is what isolates this to the address, not the bill type.
+
+**Deliberately not fixed** (user decision, 2026-09-08): logged rather than fixed so the `bill_type`
+change stayed surgical. `260825_telus.expected.json` asserts `service_address: null` and
+`routingDecision: REVIEW_B4_CRITICAL_FIELD`, so fixing this later forces a conscious sidecar update
+rather than a silent corpus flip.
+
+**Fix shape — needs a product decision first, not a prompt edit.** The open question is what a bill
+with no serviced property *should* write. Three candidates, in increasing risk:
+
+1. Write Noble's office and accept it, for vendors that genuinely bill the office (telecom, SaaS).
+   Cheapest, but it puts the paying party in the service column — exactly what
+   `is_noble_office_address` exists to prevent, and it would need to be scoped to a vendor class.
+2. Write `""` and let the bill auto-route, treating "no serviced property" as a valid answer rather
+   than a missing one. Needs `service_address` to stop being base-critical for that class, which is
+   a real weakening of the B4 net.
+3. Leave it reviewing. Correct today, and cheap while telecom volume is two invoices a month.
+
+Code-side either way — no analyzer change, so no prod analyzer push.
+
+### A15. A *correct but unconfident* `service_address` suppresses the Bill-To fallback that would have rescued it — **FIXED 2026-09-09**
+
+**D4 — cost a review, never a wrong write.** Found 2026-09-09 by diagnosing the corpus's last
+failing key. Measured **1 read in 103**.
+
+> **Fix (user-approved, with the constraint they set):** the Bill-To fallback now *also* fires when
+> the `service_address` resolution **failed**, the Bill-To **passed**, and the two values **name the
+> same place** (`field_policy.address_values_agree`, the same token-overlap test that resolves the
+> Bill-To twins, so the two paths cannot disagree about "same address"). The user's condition —
+> *"as long as the address is not the noble office address"* — is enforced by the pre-existing
+> `not is_noble_office_address(bt_val)` guard, left untouched: an office address is still discarded,
+> still reviewed, and never written. A **different** low-confidence address is still never
+> overwritten and still reviews. Both are pinned by
+> `test_a15_unconfident_duplicate_of_the_bill_to_is_promoted`.
+>
+> Verified on the triggering read itself (`bug_260629_0012` frozen r2): `0.399` → promoted to
+> `0.897`, `REVIEW_B4_CRITICAL_FIELD` → `HAPPY_PATH_CANDIDATE`. Blast radius over 312 reads: **3
+> reads on 2 documents**, both the same "no service block" shape. The second is
+> `diag_260414_0028` r0, where the extract twin returned the same address at 0.413 — there the
+> written value and the routing are **unchanged** (it reviews for `po_or_job_number`, which its
+> sidecar asserts); the rescue only made r0 reach the address the same way r1/r2 already did.
+
+`bug_260629_0012` (JMEC Electric) prints no SHIP TO / Service Address block at all, so
+`service_address` is normally supplied by the Bill-To fallback at `gates.py:1114`. That fallback is
+gated on the field being **empty or Noble's own office**:
+
+```python
+sa_val = resolutions[field_policy.SERVICE_ADDRESS_FINAL][0]
+sa_is_office = field_policy.is_noble_office_address(sa_val)
+if is_empty_value(sa_val) or sa_is_office:
+```
+
+The comment above it states the intent plainly — *"A present, non-office service_address is never
+overwritten, even below threshold: that read found a real address and still routes to review."*
+On this document that intent inverts: the extract twin's "real address" **is** the Bill To block, so
+a low-confidence hit on it displaces a high-confidence copy of the identical string.
+
+The three cached reads under `b5b984bc1a88`, same PDF, same definition:
+
+| read | `service_address_extract` | `bill_to_address` | resolved source | conf | routing |
+|---|---|---|---|---|---|
+| r0 | *(no value)* @0.836 | `#307-7480 Gilbert Road…` @0.875 | `bill_to_fallback` | **0.875** | HAPPY_PATH_CANDIDATE |
+| r1 | *(no value)* @0.836 | `#307-7480 Gilbert Road…` @0.897 | `bill_to_fallback` | **0.897** | HAPPY_PATH_CANDIDATE |
+| r2 | `#307-7480 Gilbert Road…` **@0.399** | `#307-7480 Gilbert Road…` @0.897 | `extract` | **0.399** | REVIEW_B4_CRITICAL_FIELD |
+
+`service_address` is the **only** failing field on r2 (`reviewReasons == ['service_address needs
+attention']`); all four other criticals clear comfortably. The **written value is identical on all
+three reads**, which is why `writeValues.service_address` is green and only `routingDecision` is red.
+
+**This is not A9.** The first record of this key called it "an A9-shaped CU dropout, 7 fields
+`None`". Re-measured against the raw cache, that is wrong in both magnitude and direction: 18 of the
+41 raw fields carry no value on r0 and r1, and **17** on r2 — r2 is the read where CU returned *one
+more* value, not fewer. (The original figure came from passing the whole CU result where
+`find_child_content` expects a `contents` list, so it read an empty field set.)
+
+**Rate, across every cached version of this PDF** — 19 analyzer definitions, 106 reads:
+`service_address_extract` abstained on **105 of 106**, and the single read where it answered is the
+single review. Excluding `29259b9fa9dd` (a 2026-07-25 definition of 32 fields, predating
+`bill_to_address` entirely — its 3 reviews are the feature's *absence*, `source='none'`), the rate is
+**1 review in 103 fallback-eligible reads**. That base rate spans definitions from 2026-07 to
+2026-09, so the `commercial-narrative-v20` edit is not implicated; per the standing rule this is
+still not a *concurrent* control, so treat it as a strong prior rather than an attribution.
+
+**Fix shape (not applied — needs a decision).** The narrow correction is to let the fallback also
+fire when `service_address` **failed its resolution** and `bill_to_address` **passed** and the two
+values are the same address, so the confident copy wins over the unconfident one. That is strictly
+narrower than "overwrite any below-threshold address": it changes nothing when the twins disagree
+with the Bill To block, which is the case the current guard exists to protect. Cost of leaving it:
+one unnecessary review per ~100 reads on invoices with no service block. Code-side — no analyzer
+change, so no prod analyzer push.
+
+### A13. Extraction quality dropped after the GPT-5.2 → GPT-5.5 upgrade — **PARTIALLY RESOLVED 2026-09-08**
+
+> **Status.** Of the seven rows originally listed: the two `abbotsford_water` billing-period keys
+> are **fixed** in code; `property_surrey.billing_period_start_date` is **withdrawn — it was never a
+> defect**; `property_surrey.service_address` is **accepted** as the new truth (user, 2026-09-08);
+> **three remain OPEN**. Three factual errors in the original write-up are corrected inline below.
+> Details in *A13a*, *A13b* and *A13c* after the table.
+
+**D1/D4 mixed — two of these corrupt a written value, four cost review churn.** Found 2026-09-08
+by running the corpus live against the upgraded model. **The analyzer was not touched:**
+`analyzers/` has no diff vs HEAD, and the pre- and post-upgrade draws share the cache folder
+`db29961e7034` — that folder name *is* the content hash of the analyzer definition, so the
+definition was provably constant across both roll dates. Only the model changed.
+
+Rates are out of **9 replicates**, all on GPT-5.5 (a `--force` re-roll replaced the three
+pre-upgrade draws). The pre-upgrade column was measured on the 3 draws taken 2026-08-27 and
+survives only in a local cache backup; it is not reproducible from the live cache.
+
+| Document | Field | Pre-upgrade (3) | GPT-5.5 (9) | Rate | Status |
+|---|---|---|---|---|---|
+| ~~`property_surrey`~~ | ~~`service_address`~~ | `2790 167 ST SURREY BC V3Z 0A9` 3/3 | `2790 167 ST` 9/9 | — | **ACCEPTED — A13c** |
+| `warranty_260120_0062` | `account_number` | `Account No: 6042641001` 3/3 | `""` 8/9 | **8/9** | OPEN |
+| `diag_260414_0028` | `vendor_name` | full legal name 3/3 | `Drips & Drains` 7/9 | **7/9** | **FIXED — A13d** |
+| `property_vancouver` | `vendor_name` → routing | city name 3/3 | `Property Tax Office` 1/9 | 1/9 | **FIXED — A13e** |
+| `abbotsford_water` | `billing_period_start_date` | `2026-03-01` 3/3 | `2026-01-31` 8/9 | **8/9** | **FIXED — A13a** |
+| `abbotsford_water` | `billing_period_end_date` | `2026-04-30` 3/3 | `2026-04-01` 8/9 | **8/9** | **FIXED — A13a** |
+| ~~`property_surrey`~~ | ~~`billing_period_start_date`~~ | `""` 3/3 | `2026-01-01` 9/9 | — | **WITHDRAWN — A13b** |
+
+**Severity split.**
+
+* `warranty_260120_0062.account_number` degrades a **base-critical** field — a lost account number.
+  It routes to review rather than writing silently, so it costs churn, not correctness (**D4**).
+  `property_surrey.service_address` was listed here on the same grounds; it has since been
+  **accepted** rather than fixed — see A13c.
+* `abbotsford_water`'s billing period was informational, never critical, and **auto-wrote** — a
+  wrong period reached Dynamics unseen (**D1**). That exposure is now closed; see A13a.
+* `property_vancouver` returns a wrong entity (`Property Tax Office`) on 1 read in 9; the other 8
+  are correct. The `City of Vancouver` / `CITY OF VANCOUVER` casing difference in the same column
+  is **not** a failure — `regress._values_equal` case-folds `vendor_name` (DV-4 owns the
+  normalisation).
+
+**The last row is provisionally green, and should not be closed yet.**
+`warranty_260120_0062.account_number` read `""` on 8 of 9 reads under the old analyzer and reads
+`Account No: 6042641001` on **3 of 3** under `commercial-narrative-v20`. Three clean reads against
+an 8-in-9 defect is unlikely by chance (~0.1 %), so something genuinely changed — but **n = 3 is
+thin evidence for declaring it fixed**, and it carries the same attribution confound as every other
+v20 movement: the old reads were taken on earlier days, so "which definition" and "which day" are
+the same variable. Re-roll it to n >= 12 beside a same-day control before closing this row.
+
+The original entry, kept until then: `warranty_260120_0062.account_number` (8/9). It would need analyzer prompt
+work, which per `CLAUDE.md` requires a scratch analyzer, n ≥ 12 per arm with a **concurrent** control,
+and a prod analyzer push. Its sidecar is deliberately left asserting the pre-upgrade value (user
+decision, 2026-09-08), so the corpus stays red on exactly that key until it is triaged. Unasserting
+it to get green would remove coverage on a base-critical field for a model change that may yet be
+tuned. **It is the only failing key in the corpus and the only thing blocking the pre-commit hook.**
+
+#### A13d — `diag_260414_0028.vendor_name` — **FIXED 2026-09-09** (`commercial-narrative-v19`)
+
+Both twins were right; they disagreed about **form**. The extract read the printed
+`Drips & Drains Plumbing and Heating Ltd.` on 9 of 9, and the generate returned `Drips & Drains`,
+exactly what its prompt asks for. They agree by containment, so `_prefer_vendor_generate` fell
+through to its confidence tiebreak — and GPT-5.5 dropped the extract to 0.656 against a 0.764
+generate, so the truncated form won 7 reads in 9. *"Trust the more confident twin"* was already the
+rule, and here the shorter answer was the more confident one.
+
+Fixed with `field_policy.commercial_printed_vendor_name`, applied in `gates.evaluate`: on a
+**commercial** bill, when the generate twin is a strict leading prefix of the extract that dropped
+**two or more** words, keep the printed extract. Measured over all 3,601 cached corpus reads: **30
+changed, all commercial, none harmful** — `diag_260414_0028` (7, the fix), `bug_260605_0017` (22,
+collapsing two casings into one full name) and `260629_0024` (1, `PRIORITY` alone being a fragment).
+`diag_260414_0028` is now stable on the value its sidecar already asserted; **no sidecar was edited.**
+
+**The two gates are both load-bearing, and both were found by measurement:**
+
+* **Commercial-only.** Unscoped, the same rule rewrites 26 `fortisbc` reads (a municipal gas bill,
+  where the short registry spelling is wanted) and on one of them writes the prose sentence
+  `FortisBC Energy Inc. does business as FortisBC.`
+* **Two-or-more words.** At a delta of one this **breaks `test_vendor_extract_generate_twin`**, which
+  asserts on a *commercial* payload that `FortisBC Energy Inc.` @0.40 + `FortisBC` @0.90 writes
+  `FortisBC`. That case is structurally identical to `diag` — commercial, leading prefix, extract
+  below the bar, generate above — so no confidence-based narrowing can separate them. The corpus
+  could not catch it, because real FortisBC bills bucket municipal. At a delta of 2 every one of the
+  30 corrections survives and the suite stays green; at 3 the `WASTE MANAGEMENT` and `PRIORITY`
+  repairs are lost.
+
+**Three candidates were measured and rejected — do not re-try them:**
+
+| candidate | reads changed | why it fails |
+|---|---|---|
+| leading subset → keep the long extract, **unscoped** | 62 | regresses `fortisbc` (26) and `Waste Management` (22) |
+| leading subset → keep the **short** generate | 557 | `Shaw Cablesystems`→`Shaw`, `TELUS Communications Inc.`→`TELUS`, `SIMON SIK FAI KAN`→`SIMON` |
+| both twins above threshold → use the extract | 31 | **never fixes diag** — its extract is 0.656, below the bar, on 7 of 9 reads |
+
+*Highest confidence wins, ties → extract* changes **0** reads: `field_policy.py:890` already **is**
+`return (g_conf or 0.0) >= (e_conf or 0.0)`, and there are no exact ties in the 774 reads that reach
+the tiebreak.
+
+#### A13e — `property_vancouver.vendor_name` → routing — **FIXED 2026-09-09** (`commercial-narrative-v19`)
+
+The notice prints its issuer only as a logo (`![CITY OF VANCOUVER](figures/1.1)`), so the extract
+twin took the plain text it *could* read — `Property Tax Office`, the return-address header at
+offset 72 — at 0.666. The generate twin read the logo correctly at 0.778. The twins disagree and the
+extract is below the bar, so `resolve_twin`'s `elif e_present` tail wrote the **wrong** one: the only
+branch where a failing extract still beats a passing generate.
+
+None of the three existing vendor repairs could reach it, each checked against the page:
+`municipal_name_with_prefix` needs a bare place name, `municipal_payee_override` needs a printed
+*payable to* line (this notice prints none), and `vendor_domain_tiebreak` finds no domain at all
+because `_VENDOR_DOMAIN_RE` requires `http://`, `www.` or `@` while the page prints a bare
+`vancouver.ca/property-tax`. **Widening that regex was measured and rejected** — it invents labels on
+19 of 38 documents, including `jattempted` from prose, plus `translink`/`metrovancouver` on tax
+notices and `shawbusiness` on the Rogers bill.
+
+Fixed with `field_policy.propertytax_vendor_rescue`, gated on the **classification** instead, which
+is independent of the vendor slip: on all 9 replicates *including the bad one*, `bill_type` held
+`municipal` @0.882 and both `sub_bill_type` twins `propertytax` @0.88. When those clear their bars,
+the bucket is municipal, **the vendor resolution has failed**, and the generate twin holds a
+`City of X` the page actually prints — write it. Placed *before* `municipal_payee_override` so
+`municipal_name_with_prefix` still runs after it.
+
+Measured over all 3,601 cached corpus reads: **fires exactly once**, on the slipping read, taking it
+from `REVIEW_B4_CRITICAL_FIELD` to `HAPPY_PATH_CANDIDATE`. It is a no-op on the other 19 property tax
+notices because their vendor resolution passes — which is what keeps `property_burnaby` out of it.
+`property_vancouver_advance`, added the same day, prints the *same* `Property Tax Office` header and
+resolves correctly with no repair, so it is the control for this rule rather than a case of it.
+
+#### A13e (part 2) — the same rescue missed the ABOVE-threshold regime — **FIXED 2026-09-09**
+
+The A13e rescue above was gated on the vendor resolution having **failed**, which was true of
+`property_vancouver` (wrong extract at 0.666, below the 0.73 bar). The `commercial-narrative-v20`
+roll then produced the same wrong string on a *different* document with the bar cleared:
+
+```
+property_Vancouver2 r2   extract='Property Tax Office' @0.745   generate='City of Vancouver' @0.778
+                         0.745 >= 0.73, so resolve_twin passes on `elif e_pass`  ->  AUTO-WRITES
+```
+
+That is the worse of the two regimes — a failed resolution routes to review, but this one wrote the
+wrong vendor unreviewed (**D1**, not D4). The gate now fires in either regime, with the guard each
+needs: on a **failed** resolution, no confidence test (there is no trustworthy value to protect);
+on a **passing** one, only when the twins disagree **and** the generate twin is at least as
+confident as the extract. That second guard exists because a synthetic test caught the rule
+overwriting a confident correct extract — a 0.95 `City of Surrey` losing to a 0.778
+`City of Vancouver` merely because the page prints the latter somewhere.
+
+Twins that AGREE are never touched: agreement is the corroboration the whole twin design rests on,
+and overriding it would discard the generate twin's casing normalisation.
+
+**Measured over all 60 cached property-tax reads: 1 read changes — that one — and 0 reads outside
+`propertytax` are even candidates.**
+
+#### A13g — `folio_number` returns a value on documents that are not tax notices — **GUARDED IN CODE 2026-09-09**
+
+Found while backfilling the new field into all 52 sidecars. The `folio_number` prompt says *"if it
+is not a property tax notice, return null"*, and CU disagreed on two shapes:
+
+| document | `sub_bill_type` | folio returned | verdict |
+|---|---|---|---|
+| `delta_water` | water | `163-061-00-0` ×2, `""` ×1 | **genuine** — the bill prints `FOLIO: 163-061-00-0` |
+| `richmond_water` | water | `062-376-007` ×3 | genuine, printed |
+| `vancouver_water` | water | `670-027-92-0000` ×3 | genuine, printed |
+| `260521_0024` | other | **`COMPLEX`** ×3 | **invented** — not a folio at all |
+
+Municipal water bills are property-linked and really do carry a folio, so three of these are
+correct reads of the page and simply not wanted — the requirement is property tax only. The fourth
+is the familiar generate-twin failure: it answers even when the field is absent.
+
+Guarded in `build_write_values` rather than by re-wording the prompt: `folio_number` is blanked
+whenever the resolved `sub_bill_type` is not `propertytax`, the same policy-not-prompt reasoning
+already used for the narrative fields. That kills the invented value, drops the unwanted ones, and
+makes `""` an assertable constant on all 32 non-tax sidecars instead of a coin flip. **`folio_number`
+is not critical outside property tax, so none of this ever affected routing.**
+
+#### A13f — `property_ubc2.vendor_name` coin flip — **FIXED 2026-09-09** (`commercial-narrative-v19`)
+
+Found while measuring the two UBC notices. The letterhead prints
+`THE UNIVERSITY OF BRITISH COLUMBIA`; the generate twin returns the registry spelling
+`University of British Columbia`. `_prefer_vendor_generate` already has the right rule for this
+("if the two normalise equal, write the clean generate spelling") but it never fired, because
+`_normalize_vendor` stripped only **trailing** legal suffixes and left the **leading** "the", so the
+token lists differed and neither structural branch matched — leaving the confidence tiebreak to flip.
+Measured a **50/50 coin flip across 12 live reads** (6 each) on a base-critical field that auto-writes.
+
+Fixed by dropping a leading "the" in `_normalize_vendor`. `_HAS_MUNICIPAL_PREFIX` already treated a
+leading "the" as noise, so this makes normalisation consistent with a convention the module already
+held. Measured over 3,625 reads: **6 change, all `property_ubc2`** — the only vendor value in the set
+starting with "the" — taking it to `University of British Columbia` 12/12. `property_ubc2` is now a
+corpus anchor for it.
+
+**Separately fixed, same investigation:** CU's literal `"null"` string defeating the municipal
+invoice-number filename fallback — see `commercial-narrative-v17`, `gates._denull`. That one had a
+single root cause and is not part of this item.
+
+---
+
+#### A13a. `abbotsford_water`'s billing period — **FIXED 2026-09-08** (`commercial-narrative-v18`)
+
+**Root cause, and a correction to the original entry.** The bill prints `BILLING PERIOD: Mar/Apr
+2026` — months only, no day. GPT-5.5 grounds **both** billing-period extract twins on that one
+span (markdown offset 302) and returns `2026-04-01` for each, at the same confidence off the same
+bounding box. A sweep of **all 3,574 cached reads** found this is the *only* billing-period extract
+date whose grounding span does not contain the day it claims: **the `01` is manufactured, not
+printed.** One span read as both ends of a range is not a range.
+
+> **Correction 1.** The original entry blamed this solely on
+> `generate_rescue = allow_generate_rescue and g_pass and not e_present`. That explains r3–r8, where
+> the extract sat at 0.415 and reached `writeValues` through `resolve_twin`'s `elif e_present` tail
+> — but **not r0/r1, where the extract was at 0.921 and CLEARED the bar**, winning on `e_pass`.
+> Widening the generate rescue, which the entry implied, would have fixed 6 of 8 reads and left 2
+> wrong. The shipped rule ignores confidence entirely, which is why it fixes both regimes.
+
+**The prompt was tested first, and is not the lever.** Three arms, n=12 each, all rolled within six
+minutes on 2026-09-08 against a same-day control (the confound `CLAUDE.md` names). Both candidate
+arms only **removed** text — the prompt already forbids exactly this, naming `'Mar/Apr 2026'`
+verbatim, and has done since `5ff3613` on 2026-07-16, through 141 correct reads.
+
+| arm | prompt chars | collapsed | period correct | vs control |
+|---|---|---|---|---|
+| A control | 1857 | 11/12 | 1/12 | — |
+| B (parenthetical removed) | 1799 | 10/12 | 2/12 | Fisher p = **1.000** |
+| C (whole month-only sentence removed) | 1684 | 9/12 | 3/12 | Fisher p = **0.590** |
+
+At n=12 the screen could only have detected a jump to **7/12** (p=0.027). More telling than the
+arithmetic: **the failure is byte-identical in all three arms** — every failing read returns
+`('2026-04-01', '2026-04-01', None, '2026-04-30')`, every passing read has both extracts null, and
+no arm produced any intermediate behaviour. That is the signature of CU's `date`-type normalisation
+converting the returned span text, which no prompt wording can reach. `analyzers/` was left
+untouched; **no prod analyzer push.**
+
+**The fix.** `field_policy.billing_period_extracts_collapsed` + a suppression step in
+`gates.evaluate`, placed before the twin resolution *and* `build_write_values` — both re-resolve
+from the same `parsed` dict, so a repair applied to one would disagree with the other. Nothing is
+lost: `billing_period_span_implausible` already refused a `start == end` period, so a collapsed
+pair could never have been written as one; the rule just applies that invariant early enough to
+stop the bad end poisoning the derivation (`2026-04-01 − 60 = 2026-01-31` instead of `2026-03-01`).
+
+**Blast radius, measured by replaying all 3,601 cached reads with the rule on and off:** 33 reads
+change at all, **60 written values change — 30 reads × 2 fields, every one `abbotsford_water`,
+every one wrong→right.** `routingDecision` changes nowhere. The 3 non-`abbotsford` reads reach
+identical written values by a different route. `abbotsford_water` goes 1/12 → 12/12 against its
+**unchanged** sidecar.
+
+#### A13b. `property_surrey.billing_period_start_date` — **WITHDRAWN, never a defect**
+
+> **Correction 2.** The original entry said *"the notice prints no billing period at all and GPT-5.5
+> invents `2026-01-01` on 9/9."* **Both halves are wrong.** CU's own OCR of the payment stub carries,
+> at offset 4630: `DUE DATE JULY 2, 2026` / `JANUARY 1 TO DECEMBER 31, 2026`. The range is printed,
+> and the value is read from it — `billing_period_start_date_generate` spans the whole line.
+
+> **Correction 3.** Listing this as a D1 "wrong period reaches Dynamics unseen" was wrong in the same
+> way. The written value is **correct**; it was the sidecar that was stale.
+
+The sidecar already asserted `billing_period_end_date: 2026-12-31`, read from the *second half of
+that same printed line*, which made it the only sidecar in the corpus asserting a period with an
+end and no start. Sibling `property_abbotsford` prints *"For the period January 1, 2026 to December
+31, 2026"* and already asserts the same pair, extract twins at 0.953 / 0.924. GPT-5.5 **improved**
+here: pre-upgrade the value was `""` 6/6, and on 2 of those reads the start extract collapsed onto
+`2026-12-31` and was blanked by the span guard.
+
+Sidecar re-baselined `""` → `"2026-01-01"` (user approved, 2026-09-08). **Residual weakness, not a
+defect:** the value rides on the *generate* twin at **0.578, below the 0.73 bar**, because
+`billing_period_start_date_extract` grounds on the span `'JANUARY 1'` and returns nothing — it does
+not apply its own prompt's year-carry rule, even though the prompt states it (the year is printed
+once, at the end of the range). So this key is model-sensitive; if CU is retuned it may go red
+again, and that would be a real signal rather than a false failure.
+
+#### A13c. `property_surrey.service_address` — **ACCEPTED as the new truth 2026-09-08**
+
+Accepted on the user's call, and the evidence says the **new** value is the more faithful one. The
+notice prints `2790 167 ST` under its own **`PROPERTY ADDRESS`** label (markdown offset 618) and
+again as `CIVIC` on the payment stub (offset 5535). The city and postal code appear only in the
+**mailing** block at offset 406 — `LYU SHUWEN / XUE LI / 2790 167 ST / SURREY BC V3Z 0A9` — which
+is the owner's mail-to, not the serviced property. So the pre-upgrade assertion
+`2790 167 ST SURREY BC V3Z 0A9` had spliced the property-address line together with the mailing
+block's city and postal code; GPT-5.5 stopped doing that.
+
+Stability on the upgraded model: resolved `2790 167 ST` **9/9**, with `service_address_extract`
+returning it on **every** replicate at **0.925–0.959** — far above the 0.73 bar. The only 2 reads
+where the generate twin appended the city sat at **0.413**, below the bar. Routing is
+`HAPPY_PATH_CANDIDATE` 9/9 either way, so nothing about the gate changed.
+
+Sidecar re-baselined; `service_address` **stays asserted**. This re-baselines a value, it does not
+drop coverage on a base-critical field — the standing rule against unasserting `service_address` to
+make the corpus green is intact. **Record-shape note:** the written address for this document
+family now carries no city / province / postal code. That is the normalisation question **DV-4**
+already owns (`Normalise vendor_name and service_address`); no new Dataverse item was opened.
 
 ### ~~C6.~~ CLOSED 2026-08-27 — the router's `other` wording is not the defect
 

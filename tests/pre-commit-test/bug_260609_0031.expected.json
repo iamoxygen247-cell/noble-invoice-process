@@ -1,5 +1,5 @@
 {
-  "note": "BC Hydro final bill; BALANCE FORWARD 24.32 -> this bill's ELECTRICITY CHARGES SUBTOTAL 11.37. invoice_date 2026-05-28 is printed in the header table; the extract twin returns null on some runs and the printed-text corroboration carries it, so the invoice_date twins are NOT asserted. payment_due_date 2026-06-19 was un-asserted on 2026-07-24 because the extract returned null on some runs and the field then defaulted to today+30, flipping run to run. It is asserted again from 2026-08-18: the corroboration rescue in 9c8b283 keeps a sub-threshold due date when the same day is printed in the OCR text, and 'Due $35.69 Due by Jun 19, 2026' is, so the value is stable on all 14 cached replicates. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || C2 2026-08-18: payment_due_date 2026-06-19 asserted -- printed as 'Due $35.69 Due by Jun 19, 2026', a read value rather than the today+30 default. Stable on all 14 cached replicates.",
+  "note": "BC Hydro final bill; BALANCE FORWARD 24.32 -> this bill's ELECTRICITY CHARGES SUBTOTAL 11.37. invoice_date 2026-05-28 is printed in the header table; the extract twin returns null on some runs and the printed-text corroboration carries it, so the invoice_date twins are NOT asserted. payment_due_date 2026-06-19 was un-asserted on 2026-07-24 because the extract returned null on some runs and the field then defaulted to today+30, flipping run to run. It is asserted again from 2026-08-18: the corroboration rescue in 9c8b283 keeps a sub-threshold due date when the same day is printed in the OCR text, and 'Due $35.69 Due by Jun 19, 2026' is, so the value is stable on all 14 cached replicates. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || C2 2026-08-18: payment_due_date 2026-06-19 asserted -- printed as 'Due $35.69 Due by Jun 19, 2026', a read value rather than the today+30 default. Stable on all 14 cached replicates. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -23,7 +23,8 @@
       "diagnosis_solution_zh_hant": "",
       "recommendation": "",
       "recommendation_zh_hant": "",
-      "warranty": ""
+      "warranty": "",
+      "folio_number": ""
     },
     "fields": {
       "total_invoice_amount_extract": 11.37,

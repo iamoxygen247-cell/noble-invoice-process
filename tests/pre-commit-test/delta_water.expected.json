@@ -1,5 +1,5 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the filename stem -- which is what this doc has always resolved to, correctly. The '1740' after its '# Metered Utility Bill' heading is a notice/form number; an earlier prompt edit made the twins return it on 3/3 runs, and this assertion is what caught that regression. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial.",
+  "note": "Municipal water baseline; full municipal critical set. Water bills have NO invoice number (business rule), so invoice_number is the filename stem -- which is what this doc has always resolved to, correctly. The '1740' after its '# Metered Utility Bill' heading is a notice/form number; an earlier prompt edit made the twins return it on 3/3 runs, and this assertion is what caught that regression. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -23,7 +23,8 @@
       "diagnosis_solution_zh_hant": "",
       "recommendation": "",
       "recommendation_zh_hant": "",
-      "warranty": ""
+      "warranty": "",
+      "folio_number": ""
     },
     "fields": {
       "total_invoice_amount_extract": 295.85,
