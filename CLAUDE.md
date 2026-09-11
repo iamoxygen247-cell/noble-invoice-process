@@ -165,6 +165,14 @@ Never weaken the net to make a change pass: do not delete a corpus doc, loosen a
 or push the prod `generalinvoice` analyzer with `create_analyzer.py --force`, unless the
 user explicitly asks. A red regression means investigate, not suppress.
 
+**Reporting a corpus failure (user, 2026-09-10).** When a regression run reports a WRONG or
+UNSTABLE field, report it **before attempting any fix**, one line per failing read, in this
+format:
+
+```text
+Filename, field, sidecar value, CU value, confidence level for extract/generate
+```
+
 ---
 
 ## Python Dependency Rules
