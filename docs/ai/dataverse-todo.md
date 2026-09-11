@@ -392,8 +392,11 @@ Four things to settle on the Dynamics side:
 
 5. **`number_of_days` is no longer asserted on property tax notices** (user, 2026-09-09: the flow
    does not consume it for that family). The field is still written — this changed the corpus's
-   assertions, not the record. Its observed value on a tax notice flips between `""` and the
-   period-derived `365`, so anything consuming it for property tax should treat it as unreliable.
+   assertions, not the record. Its observed value on a tax notice flipped between `""` and the
+   period-derived `365` until `commercial-narrative-v22` (2026-09-10), which discards an invented
+   count instead of correcting it. The only non-blank value still seen on the current analyzer is an
+   invented `1` on `property_surrey` (2 of 132 property-tax reads; the open-defects A13b chain), so
+   anything consuming it for property tax should still treat it as unreliable.
 
 ---
 

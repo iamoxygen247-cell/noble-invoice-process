@@ -74,7 +74,7 @@ Response (HTTP 200 on a normal decision):
   "routerCategoryPath": "$.contents[0].segments[0].category",
   "analyzerUsed": "generalinvoice", "childSelection": "matched analyzerId == generalinvoice",
   "billType": "commercial", "subBillType": "repair",
-  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v20",
+  "policyBucket": "commercial", "policyVersion": "commercial-narrative-v22",
   "isHandwritten": "no", "isHandwrittenConfidence": 0.97,
   "reviewReasons": [], "advisoryFlags": [],
   "fields": { "vendor_name": {"value": "...", "confidence": 0.93}, "...": {} },
@@ -127,7 +127,10 @@ On a `REVIEW_B4_CRITICAL_FIELD` decision, `reviewReasons` holds a **single
 reviewer-facing summary** naming every failing critical field — e.g.
 `vendor_name and po_or_job_number need attention`. The per-field diagnostics
 (confidence values, which twin failed, format hints) are in `advisoryFlags`
-with a `B4 ` prefix.
+with a `B4 ` prefix. The one exception is a total of zero or below (see below): the
+summary then leads with
+`Payment is not required either due to overpayment or zero balance (total_invoice_amount <amount>)`,
+followed by `; <fields> need attention` when other critical fields failed too.
 
 `billType` is the classified label, and the policy bucket is derived from it —
 anything that is not literally `municipal` resolves to the stricter `commercial`
@@ -210,6 +213,21 @@ that shouldn't be paid yet — with the extracted date written unchanged so the
 reviewer sees what the document said. `invoice_date` is otherwise never critical: an
 unresolved one is blanked quietly and does not trigger review — which is exactly why
 writing a wrong date there was invisible.
+
+A written `total_invoice_amount` of **zero or below** also routes to
+`REVIEW_B4_CRITICAL_FIELD`, on **every bill type**: nothing is payable, either because the
+account is in credit (an overpayment — a property tax notice whose instalments exceeded the
+year's taxes prints a negative amount due) or because the balance is zero. `reviewReasons`
+is `Payment is not required either due to overpayment or zero balance (total_invoice_amount <amount>)`,
+the amount to two decimals, with `; <fields> need attention` appended when other critical
+fields failed too — including `total_invoice_amount` itself when its own read failed the
+confidence check. The amount is written unchanged so the reviewer sees what the document
+said, and the advisory
+`B4 total_invoice_amount <amount> is zero or negative: payment not required` carries it too.
+In the ledger the row's `RoutingDecision` is `REVIEW_B4_CRITICAL_FIELD`, the same as a
+critical-field failure; `reviewReasons` is not a ledger column — it is kept in the decision blob.
+A *missing* total is not a zero total: it fails as empty, exactly as before
+(`field_policy.total_is_overpayment`).
 
 Billing-period fields (municipal utility bills): `billing_period_start_date`,
 `billing_period_end_date`, and `number_of_days` feed the tenant utility-sharing

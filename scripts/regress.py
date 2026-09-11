@@ -23,6 +23,8 @@ Three outcomes per (doc, field):
   OK       - matches the expectation on every replicate
   WRONG    - disagrees with the expectation
   UNSTABLE - replicates disagree with each other (a coin-flip doc)
+A sidecar value written "A || B" accepts either value, so replicates that flip
+between accepted values are OK.
 Exit is non-zero on any WRONG or UNSTABLE. A fully green run stamps
 out/regress/<git-sha>.json, which scripts/create_analyzer.py's prod push gate
 requires.
@@ -245,6 +247,11 @@ def _strip_vendor_suffix(value: Any) -> Any:
 
 
 def _values_equal(expected: Any, actual: Any, field: Optional[str] = None) -> bool:
+    if isinstance(expected, str) and "||" in expected:
+        # A sidecar can accept more than one value, written "A || B" (user, 2026-09-10: a
+        # vendor that bills under two names). Each option is compared by the rules below.
+        return any(_values_equal(option.strip(), actual, field)
+                   for option in expected.split("||"))
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         return abs(float(expected) - float(actual)) <= MONEY_TOLERANCE
     if field == "vendor_name" and isinstance(expected, str) and isinstance(actual, str):
@@ -305,10 +312,13 @@ def score_doc(
         observed = [_observed(d, section, name) for d in decisions]
         unstable = any(not _values_equal(observed[0], o, name) for o in observed[1:])
         matches = all(_values_equal(expected, o, name) for o in observed)
-        if unstable:
-            verdict = "UNSTABLE"
-        elif matches:
+        # Match first, so replicates that flip between the options of an "A || B" expectation
+        # are OK. The only other case this reorders -- two amounts each within MONEY_TOLERANCE
+        # of the expectation but further apart -- changed 0 of 3,438 verdicts (2026-09-10).
+        if matches:
             verdict = "OK"
+        elif unstable:
+            verdict = "UNSTABLE"
         else:
             verdict = "WRONG"
         rows.append(

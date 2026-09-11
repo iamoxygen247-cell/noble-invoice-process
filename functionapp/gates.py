@@ -15,6 +15,7 @@ Gates implemented here (post-extraction, Stage B):
     B4   critical field (per bill_type bucket) missing/empty/low-confidence
                                                      -> REVIEW_B4_CRITICAL_FIELD
          written invoice_date after today            -> REVIEW_B4_CRITICAL_FIELD
+         written total_invoice_amount zero or below  -> REVIEW_B4_CRITICAL_FIELD
     (no child fields)                                -> REVIEW_NO_CHILD_EXTRACTION
     B6   line-item row confidence < threshold        -> advisory only
 
@@ -48,6 +49,12 @@ HAPPY_PATH_CANDIDATE = "HAPPY_PATH_CANDIDATE"
 REVIEW_B4_CRITICAL_FIELD = "REVIEW_B4_CRITICAL_FIELD"
 REJECT_B2_OTHER_CATEGORY = "REJECT_B2_OTHER_CATEGORY"
 REVIEW_NO_CHILD_EXTRACTION = "REVIEW_NO_CHILD_EXTRACTION"
+
+# The reviewer-facing reviewReasons text when the written total is zero or below (user
+# wording, 2026-09-10). evaluate appends the amount -- " (total_invoice_amount -2254.43)" --
+# so the reviewer sees it without opening advisoryFlags. The one B4 message that is not
+# "<field> needs attention": nothing failed to read -- the document simply asks for no payment.
+NO_PAYMENT_REQUIRED = "Payment is not required either due to overpayment or zero balance"
 
 LINE_ITEM_ROW_THRESHOLD = 0.65  # gate B6 (advisory)
 
@@ -818,7 +825,25 @@ def evaluate(
         write_values[field_policy.BILLING_START_FINAL],
         write_values[field_policy.BILLING_END_FINAL],
     )
-    if reconciled is not None:
+    # ...but only a count something actually read is corrected. When the extract twin found
+    # nothing and the twins do not agree, the generate twin alone carried the count -- the
+    # invented "1" of open-defects B3 -- and replacing it with the span would SUPPLY a count on
+    # exactly the reads where CU hallucinated, while every other read of the same bill writes
+    # "" (reconcile_number_of_days never supplies). Measured 2026-09-10 over 3,994 cached reads:
+    # all 45 such corrections were an invented 1 (bug_260601_0018 wrote 30 on 1 read in 145).
+    if reconciled is not None and resolutions[field_policy.DAYS_FINAL][4] not in (
+            "extract", "agreement"):
+        previous = write_values[field_policy.DAYS_FINAL]
+        resolutions[field_policy.DAYS_FINAL] = (
+            "", 0.0, False, None, "period_contradicted",
+        )
+        write_values[field_policy.DAYS_FINAL] = ""
+        advisory.append(
+            f"number_of_days {previous!r} discarded: only the generate twin read it, and the "
+            f"billing period {write_values[field_policy.BILLING_START_FINAL]}.."
+            f"{write_values[field_policy.BILLING_END_FINAL]} contradicts it"
+        )
+    elif reconciled is not None:
         previous = write_values[field_policy.DAYS_FINAL]
         resolutions[field_policy.DAYS_FINAL] = (
             reconciled, 1.0, True, None, "period_derived",
@@ -1369,12 +1394,37 @@ def evaluate(
         b4_reasons.append(f"invoice_date {invoice_date_value} is after today")
         b4_failed.append(field_policy.INVOICE_DATE_FINAL)
 
+    # A total of zero or below asks for no payment -- an overpaid account in credit, or a
+    # zero balance -- so it goes to a human rather than auto-writing as a payable (user
+    # requirement, 2026-09-10, every bill type). property_richmond2 is the anchor: its
+    # instalments exceeded the year's taxes, both twins read -2254.43 on all 6 reads, the
+    # total cleared the confidence bar on every one, and all 6 routed HAPPY_PATH_CANDIDATE
+    # before this rule. Judged on the WRITTEN value, like the future-date check above, and
+    # nothing below changes the total. The amount is
+    # written unchanged so the reviewer sees what CU read.
+    #
+    # total_invoice_amount is deliberately NOT added to b4_failed by this rule: evaluate_b4
+    # already adds it when its own read failed, so the summary names it only then -- a
+    # doubtful negative carries both messages.
+    total_value = write_values.get(field_policy.TOTAL_FINAL)
+    no_payment = field_policy.total_is_overpayment(total_value)
+    if no_payment:
+        b4_review = True
+        b4_reasons.append(
+            f"total_invoice_amount {total_value:.2f} is zero or negative: payment not required"
+        )
+
     if b4_review:
         # reviewReasons carries ONE reviewer-facing summary naming every failing
         # field; the per-field diagnostics (confidence values, twin keys, format
-        # hints, PO candidates) go to advisoryFlags so nothing is lost.
+        # hints, PO candidates) go to advisoryFlags so nothing is lost. A zero or
+        # negative total leads it with NO_PAYMENT_REQUIRED and the amount.
         routing_decision = REVIEW_B4_CRITICAL_FIELD
-        review_reasons = [b4_summary(b4_failed)]
+        summary = b4_summary(b4_failed)
+        if no_payment:
+            no_payment_message = f"{NO_PAYMENT_REQUIRED} (total_invoice_amount {total_value:.2f})"
+            summary = f"{no_payment_message}; {summary}" if summary else no_payment_message
+        review_reasons = [summary]
         advisory.extend(f"B4 {reason}" for reason in b4_reasons)
     else:
         routing_decision = HAPPY_PATH_CANDIDATE

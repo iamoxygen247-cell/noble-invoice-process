@@ -2028,6 +2028,25 @@ def test_number_of_days_reconciled_against_its_period():
     check("passed period end still licenses a generate-only count",
           r["writeValues"]["number_of_days"] == 19, str(r["writeValues"].get("number_of_days")))
 
+    # ...but a count ONLY the generate twin read is discarded, not corrected, when the period
+    # contradicts it. bug_260601_0018 (2026-09-10 live r1): the extract twin reads the printed
+    # June range's end at 0.875, so the period passes, while the generate twin alone invents a
+    # 1 at 0.722. Correcting it would write 30 on this read and "" on every other read.
+    r = ev(commercial_fields(
+        billing_period_start_date_extract=fdate("2026-06-01", 0.95),
+        billing_period_end_date_extract=fdate("2026-06-30", 0.875),
+        number_of_days_generate=fint(1, 0.722),
+    ))
+    check("an ungrounded count the period contradicts is blanked, not corrected",
+          r["writeValues"]["number_of_days"] == "", str(r["writeValues"].get("number_of_days")))
+    check("source = period_contradicted",
+          r["resolutions"]["number_of_days"]["source"] == "period_contradicted",
+          str(r["resolutions"].get("number_of_days")))
+    check("discard advisory raised, correction advisory not",
+          any(a.startswith("number_of_days 1 discarded") for a in r["advisoryFlags"])
+          and not any("taken from the billing period" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
 
 def test_municipal_vendor_name_restored_from_its_printed_prefix():
     print("\n[gates: a municipal name reduced to its bare place name is restored]")
@@ -3251,6 +3270,82 @@ def test_b4_review_summary():
     check("summary of none", gates.b4_summary([]) == "")
 
 
+def test_zero_or_negative_total_needs_no_payment():
+    print("\n[gates: a total of zero or below needs no payment -> review]")
+    message = "Payment is not required either due to overpayment or zero balance"
+
+    # A municipal bill whose total is negative, both twins confident (property_richmond2
+    # reads -2254.43 on both twins).
+    r = ev(municipal_fields(total_invoice_amount_extract=fnum(-2254.43, 0.90),
+                            total_invoice_amount_generate=fnum(-2254.43, 0.74)))
+    check("negative total -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD,
+          r["routingDecision"])
+    check("negative total -> the no-payment message with the amount",
+          r["reviewReasons"] == [f"{message} (total_invoice_amount -2254.43)"],
+          str(r["reviewReasons"]))
+    check("negative total written unchanged for the reviewer",
+          r["writeValues"]["total_invoice_amount"] == -2254.43,
+          str(r["writeValues"].get("total_invoice_amount")))
+    check("advisory carries the amount",
+          any("B4 total_invoice_amount -2254.43 is zero or negative" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+    check("negative total not marked defaulted",
+          "total_invoice_amount" not in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # A zero balance asks for no payment either.
+    r = ev(municipal_fields(total_invoice_amount_extract=fnum(0.0, 0.96)))
+    check("zero total -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD,
+          r["routingDecision"])
+    check("zero total -> the no-payment message",
+          r["reviewReasons"] == [f"{message} (total_invoice_amount 0.00)"],
+          str(r["reviewReasons"]))
+
+    # Every bill type: a commercial credit memo reviews the same way.
+    r = ev(commercial_fields(total_invoice_amount_extract=fnum(-105.0, 0.96)))
+    check("commercial credit memo -> review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+    check("commercial credit memo -> the no-payment message",
+          r["reviewReasons"] == [f"{message} (total_invoice_amount -105.00)"],
+          str(r["reviewReasons"]))
+
+    # Another failing field is appended in the uniform wording.
+    r = ev(commercial_fields(total_invoice_amount_extract=fnum(-105.0, 0.96),
+                             vendor_name_extract=fstr("Bob", 0.60)))
+    check("no-payment message leads, other failures follow",
+          r["reviewReasons"]
+          == [f"{message} (total_invoice_amount -105.00); vendor_name needs attention"],
+          str(r["reviewReasons"]))
+
+    # A negative total read below the bar is still written, and the summary says the amount
+    # itself needs attention as well.
+    r = ev(municipal_fields(total_invoice_amount_extract=fnum(-2254.43, 0.50)))
+    check("doubtful negative total -> both messages",
+          r["reviewReasons"]
+          == [f"{message} (total_invoice_amount -2254.43); total_invoice_amount needs attention"],
+          str(r["reviewReasons"]))
+
+    # A missing total is not a zero total: today's wording, never the no-payment message.
+    fields = municipal_fields()
+    del fields["total_invoice_amount_extract"]
+    r = ev(fields)
+    check("missing total -> review", r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD,
+          r["routingDecision"])
+    check("missing total -> 'needs attention', not the no-payment message",
+          r["reviewReasons"] == ["total_invoice_amount needs attention"], str(r["reviewReasons"]))
+
+    # A positive total is untouched.
+    r = ev(municipal_fields())
+    check("positive total -> still happy", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE,
+          r["routingDecision"])
+
+    # helper boundaries.
+    needs_no_payment = field_policy.total_is_overpayment
+    for value in (0, 0.0, -0.01, -2254.43):
+        check(f"{value!r} needs no payment", needs_no_payment(value))
+    for value in (0.01, 2041.65, None, "", "0", "-5", False, True):
+        check(f"{value!r} is not a zero-or-below total", not needs_no_payment(value))
+
+
 def test_vendor_domain_corroboration():
     print("\n[gates: vendor rescued by the printed web/e-mail domain]")
 
@@ -4065,6 +4160,7 @@ def main():
     test_invoice_number_filename_fallback()
     test_sub_bill_type()
     test_b4_review_summary()
+    test_zero_or_negative_total_needs_no_payment()
     test_po_ocr_rescue()
     test_billing_period_twins_and_derivation()
     test_payment_due_date_corroboration_rescue()

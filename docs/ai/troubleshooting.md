@@ -65,7 +65,9 @@ Two tiers:
   `tests/pre-commit-test/` through the real `gates.evaluate`, and compares against a
   per-doc `<stem>.expected.json`. Each (doc, field) is **OK / WRONG / UNSTABLE**
   (replicates disagreeing → UNSTABLE, which is how a coin-flip doc is told apart
-  from a clean regression). Non-zero exit on any WRONG/UNSTABLE.
+  from a clean regression). A sidecar value written `A || B` accepts either value,
+  so replicates that flip between accepted values are OK (user, 2026-09-10).
+  Non-zero exit on any WRONG/UNSTABLE.
 
 **The corpus is gitignored** (`tests/pre-commit-test/`) — real customer invoices,
 same as `samples/`. A missing folder is a clean skip, so a fresh clone still passes.
@@ -1802,6 +1804,32 @@ the `invoice_date` print-timestamp bug and the original invented `1`.
   pin; replaying all **2,327** cached decisions across every analyzer version is what proved
   the one-clause change touched exactly the 2 intended decisions, kept all 46 legitimate
   reconciliations, and left `bug_260609_0031`'s generate-only 19 at 101/101.
+
+### ...and a third time, through the correction itself (2026-09-10)
+
+Both guards above ask whether a *period* is there. On `bug_260601_0018` the extract twin
+sometimes reads the printed `06/01/26 - 06/30/26` range's end at 0.875, so the period passes.
+On one read, the generate twin alone offered count `1` (0.722) against a confident-null extract
+twin, and `reconcile_number_of_days` then "corrected" the `1` to 30. That function never
+*supplies* a count, so the same bill's other 144 cached reads wrote `""`: the written value
+depended on whether CU hallucinated. Across 3,994 cached reads the same shape corrected 45 counts
+on four documents (to 30 or 365), and every one was an invented `1`.
+
+**Fix (`commercial-narrative-v22`, user decision 2026-09-10):** `gates.evaluate` discards a count
+whose resolution is not `extract` or `agreement` when the period contradicts it, instead of
+correcting it. A count the extract twin read, or both twins agreed on, is still corrected. Exactly
+those 45 decisions changed, only `number_of_days` moved, and no routing changed. This reverses the
+span correction that the original A2 + B3 fix applied to an invented `1` (open-defects
+*Resolved*).
+
+**Still open:** on `property_surrey` the invented `1` first *derives* a start equal to the end
+date. The span guard rejects that one-day period and blanks the start, so nothing is left to
+contradict the `1`, and it is written (2 of 6 current reads).
+
+**Reusable lesson: an unread value must not trigger a correction either.** Correcting a guess from
+other fields supplies a value in disguise, because it writes exactly on the reads where the guess
+appeared. This is the same rule as "a below-bar value must never serve as another field's
+precondition", applied to the repair step.
 
 ---
 

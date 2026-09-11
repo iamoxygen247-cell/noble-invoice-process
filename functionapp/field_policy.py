@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v20"
+POLICY_VERSION = "commercial-narrative-v22"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -542,6 +542,25 @@ def invoice_date_in_future(value: Any, now: Optional[datetime] = None) -> bool:
     if normalized is None:
         return False
     return datetime.strptime(normalized, DATE_FORMAT).date() > _now_pacific(now).date()
+
+
+def total_is_overpayment(value: Any) -> bool:
+    """
+    True when the written total is a real number at or below zero: nothing is payable,
+    either because the account is in credit (an overpayment) or because the balance is zero.
+
+    A property tax notice whose instalments exceeded the year's taxes can print a NEGATIVE
+    amount due. property_richmond2 prints -2,254.43 in the no-grant column, CU reads it
+    confidently, and before this rule it routed HAPPY_PATH_CANDIDATE on 6 of 6 corpus reads.
+    The caller routes the run to review (gates.evaluate) for every bill type and writes the
+    amount unchanged (user requirement, 2026-09-10).
+
+    ``bool`` is excluded on purpose: ``False <= 0`` is True in Python, so a stray boolean
+    would otherwise read as a zero balance. An absent total (None), an empty string or any
+    other non-number is never a zero balance -- a missing total already fails B4 as before
+    (its twins resolve to nothing).
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value <= 0
 
 
 # Three-letter month prefixes, indexed by month number - 1. Used to recognise a date

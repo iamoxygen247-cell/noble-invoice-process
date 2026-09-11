@@ -316,7 +316,10 @@
         <td>One reviewer-facing summary naming every failing critical field, e.g.
             <code>vendor_name and po_or_job_number need attention</code> &mdash; use it directly as the
             review-item text. Per-field diagnostics (confidence values, twin detail) are in
-            <code>advisoryFlags</code>.</td></tr>
+            <code>advisoryFlags</code>. When the written total is zero or below (an overpayment
+            or a zero balance) the summary leads with
+            <code>Payment is not required either due to overpayment or zero balance (total_invoice_amount &lt;amount&gt;)</code>,
+            followed by <code>; &lt;fields&gt; need attention</code> if other fields also failed.</td></tr>
     <tr><td><code>defaultedFields</code> contains <code>invoice_number</code></td>
         <td>A municipal bill carried no invoice number, so the Function defaulted it from
             <code>fileName</code> (extension stripped). Keep sending <code>fileName</code> &mdash; it feeds this
