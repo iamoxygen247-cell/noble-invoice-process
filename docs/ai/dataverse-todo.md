@@ -74,6 +74,7 @@ still carry the wrong value.
 | DV-6 | Refresh the stale `warranty` contract in `power-automate-design.html` | **now** — semantics changed tonight |
 | DV-7 | `account_number` is now written with an `Account No: ` label | **now** — column width + is the label wanted in the data at all |
 | DV-10 | Telecom bills (Telus, Rogers/Shaw) now write `bill_type = municipal` | **informational** — value change in a live column, no backfill |
+| DV-12 | `property_surrey`: an invented `number_of_days = 1` survives and the correct `billing_period_start_date` is blanked (2 of 6 reads) | **deferred** (user, 2026-09-10) — record-only; the flow does not consume either field for property tax |
 
 ---
 
@@ -395,8 +396,42 @@ Four things to settle on the Dynamics side:
    assertions, not the record. Its observed value on a tax notice flipped between `""` and the
    period-derived `365` until `commercial-narrative-v22` (2026-09-10), which discards an invented
    count instead of correcting it. The only non-blank value still seen on the current analyzer is an
-   invented `1` on `property_surrey` (2 of 132 property-tax reads; the open-defects A13b chain), so
+   invented `1` on `property_surrey` (2 of 132 property-tax reads; deferred as DV-12 below), so
    anything consuming it for property tax should still treat it as unreliable.
+
+### DV-12 — `property_surrey`: an invented day count survives and a correct start date is blanked (deferred)
+
+**Deferred (user, 2026-09-10).** Its only effect is on two informational values in the written
+record, on 2 of `property_surrey`'s 6 current-analyzer reads (both from 2026-09-09):
+
+| field | written on those 2 reads | what the page supports | on the other 4 reads |
+|---|---|---|---|
+| `number_of_days` | `1`, invented by the generate twin alone (0.664) | `""`: the notice prints no day count | `""` |
+| `billing_period_start_date` | `""` | `2026-01-01`, printed "JANUARY 1 TO DECEMBER 31, 2026" | `2026-01-01` |
+
+**Why it is record-only (checked 2026-09-10):**
+- Neither field is critical for any bill type (`field_policy.BASE_CRITICAL` and the commercial,
+  municipal and property-tax deltas), so neither can change routing. All 6 reads route
+  `HAPPY_PATH_CANDIDATE`.
+- No other written value is computed from them. In `gates.py` and `field_policy.py` they are used
+  only by the billing-period block itself.
+- Nothing else reads them: they do not appear in `function_app.py`, `ledger.py`,
+  `diagnostics.py` or `cu_client.py`, so the ledger and monitoring never see them.
+- For property tax the flow does not consume either field (user, 2026-09-09). Whether the live
+  flow maps them at all is DV-3.
+
+**Mechanism:**
+1. The invented `1` derives a start date equal to the end date (2026-12-31).
+2. The span guard rejects that one-day period and blanks the start.
+3. With no start left, the v22 rule (open-defects *Resolved*, "A2 + B3 follow-on (2)") has no
+   period to judge the `1` against, so it is written.
+
+This is the A13b chain noted in open-defects. Neither field is asserted on tax notices, so the
+corpus cannot see it.
+
+**Fix direction, if it is ever needed (not designed or measured):** don't let a count only the
+generate twin read derive the start date, the same rule v22 applies to the correction. That would
+also keep the printed start.
 
 ---
 

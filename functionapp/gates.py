@@ -815,8 +815,8 @@ def evaluate(
     # Number of days reconciled against the period, once both dates are final (the
     # derivation and the range repair above have run). The count is the least reliable of
     # the three fields -- it is the one CU has been seen inventing a "1" for -- so the dates
-    # arbitrate it: they supply it when it is missing and correct it when it contradicts
-    # them by more than a metered count honestly can. A count that merely differs from the
+    # arbitrate it: they correct it when it contradicts them by more than a metered count
+    # honestly can, but never supply a missing one. A count that merely differs from the
     # span is KEPT: on a water bill the meter-reading dates are not the period dates, and
     # that printed count is the consumption the utility actually billed, which is what the
     # tenant utility-sharing calculation wants (field_policy.reconcile_number_of_days).

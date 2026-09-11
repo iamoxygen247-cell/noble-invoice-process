@@ -1822,9 +1822,10 @@ those 45 decisions changed, only `number_of_days` moved, and no routing changed.
 span correction that the original A2 + B3 fix applied to an invented `1` (open-defects
 *Resolved*).
 
-**Still open:** on `property_surrey` the invented `1` first *derives* a start equal to the end
-date. The span guard rejects that one-day period and blanks the start, so nothing is left to
-contradict the `1`, and it is written (2 of 6 current reads).
+**Deferred** (its only effect is on the written record; `dataverse-todo.md` DV-12, user
+2026-09-10): on `property_surrey` the invented `1` first *derives* a start equal to the end date.
+The span guard rejects that one-day period and blanks the start, so nothing is left to contradict
+the `1`, and it is written (2 of 6 current reads).
 
 **Reusable lesson: an unread value must not trigger a correction either.** Correcting a guess from
 other fields supplies a value in disguise, because it writes exactly on the reads where the guess
