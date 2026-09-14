@@ -519,6 +519,52 @@ prompts (`11024580`, `33001022`) still have a third digit of `0`, so CU may gene
 examples rather than the stated rule. The fix would be to add one third-digit-≠0 example — held
 back deliberately to keep the prompt diff minimal (see C4 on cross-field coupling).
 
+### C7. The Bell telecom allowlist entries have no real-document coverage — **OPEN** (`commercial-narrative-v23`)
+
+**A test-coverage gap, not a measured wrong value.** No rate can be recorded: no Bell telecom bill
+exists in the repo.
+
+`commercial-narrative-v23` added `bell`, `bell canada`, `bell mts` and `bell mobility` to
+`field_policy._MUNICIPAL_VENDOR_EXACT` (user list, 2026-09-12; `bell mobility` 2026-09-13), and converted the whole allowlist
+from prefix to exact whole-name matching. Telus and Rogers are anchored by `260825_telus` and
+`260901_rogers`. Bell is not: no Bell telecom invoice has ever been through CU, so nothing shows
+which spelling CU returns for one, or whether any of the four entries fires. The unit test pins
+the entries with **synthetic values** only, and the corpus sweep (53 documents, no Bell bill)
+cannot show whether they fire or are safe. Because matching is exact, a Bell bill whose vendor
+normalises to anything else (`Bell Canada Enterprises`, `Bell Aliant`, `Bell Mobility Canada`)
+stays commercial, which routes to review when no PO is read.
+
+Two things to watch for on the first real Bell bill:
+
+1. **The vendor spelling.** If it misses, add its normalised form to `_MUNICIPAL_VENDOR_EXACT`
+   and a positive to `test_telecom_vendor_bill_type_override`.
+2. **`account_number`.** The municipal bucket makes it critical, so the bill auto-writes only if CU
+   reads the account number; otherwise it reviews on `account_number` instead of
+   `po_or_job_number`.
+
+Separately, the bare `bell` entry carries a false-positive path, **probed only with synthetic
+twins** on the `Bell Alliance LLP` invoice text:
+
+- A commercial vendor whose generate twin shortens its name to `Bell` is flipped to municipal.
+- Its `vendor_name` is written as `'Bell'`, and its narrative columns are blanked.
+- It routes to review on `account_number`, **unless** a printed remittance line such as that
+  invoice's wire-transfer `Account Number` is read as `account_number`. Then it auto-writes.
+
+The negative anchor for this is **`260414_bell_alliance`**, added 2026-09-13 with 12 replicates
+(analyzer `b5b984bc1a88`). Measured on all 12 reads:
+
+- **Vendor twins:** extract `BELL ALLIANCE LLP` (0.725) and generate `Bell Alliance` (0.779). **No
+  read returned a bare `Bell`.**
+- **Bucket:** `bill_type` stayed `commercial`, and the bill routed `REVIEW_B4_CRITICAL_FIELD` on
+  `po_or_job_number` (no PO printed).
+- **Account number:** the wire-transfer bank account number was never read as `account_number`.
+
+So the auto-write path above did not occur on this document. It is still reachable in principle: 12
+reads bound how often CU shortens this name, they don't rule it out. The corpus re-scores only these
+12 cached reads, so a future re-roll is what would show a change.
+
+**Close this item when a real Bell telecom bill is added as a corpus anchor.**
+
 ### A6. `invoice_date` silently defaults to today on an "Order Date" page — **FIXED 2026-08-27**
 
 **D1 — wrote a silently wrong value.** Same failure mode as A1, on a document shape the A1

@@ -3513,25 +3513,52 @@ def test_telecom_vendor_bill_type_override():
     print("\n[bill_type: telecom vendors are booked municipal]")
     override = field_policy.vendor_bill_type_override
 
-    # The spellings actually observed, plus the legal-entity and brand variants either
+    # The spellings actually observed, plus the legal-entity and brand variants each
     # biller can print. 'TELUS Communications Inc.' and 'Shaw Cablesystems' are the two
-    # measured on the corpus documents (5/5 replicates each).
-    for name in ("TELUS", "TELUS Communications Inc.", "Telus Communications Company",
+    # measured on the corpus documents. The Bell spellings are the user's list (2026-09-12;
+    # Bell Mobility added 2026-09-13); no Bell telecom bill has been through CU yet. Legal
+    # suffixes are dropped before the exact comparison, so 'Bell Canada Inc.' and 'Bell Ltd.'
+    # match too.
+    positives = ("TELUS", "TELUS Communications Inc.", "Telus Communications Company",
                  "TELUS Mobility", "Rogers", "ROGERS BUSINESS",
-                 "Rogers Business together with Shaw", "Rogers together with Shaw",
-                 "Rogers Communications Canada Inc.", "Shaw Cablesystems",
-                 "Shaw Cablesystems G.P.", "Shaw Business", "Shaw Communications Inc."):
+                 "Rogers Communications Canada Inc.", "Rogers Communications Inc.",
+                 "Shaw Cablesystems", "Shaw Communications Inc.",
+                 "Bell", "BELL", "Bell Ltd.", "Bell Canada", "Bell Canada Inc.", "Bell MTS",
+                 "Bell MTS Inc.", "Bell Mobility", "BELL MOBILITY", "Bell Mobility Inc.")
+    for name in positives:
         check(f"{name!r} -> municipal", override(name) == field_policy.MUNICIPAL, repr(override(name)))
+    # The spellings above and the allowlist must describe the same set, in both directions:
+    # an entry added to or removed from _MUNICIPAL_VENDOR_EXACT fails here until this test
+    # is edited to match.
+    pinned = {field_policy._normalize_vendor(name) for name in positives}
+    check("every allowlist entry has a spelling above, and every spelling above is on the allowlist",
+          pinned == field_policy._MUNICIPAL_VENDOR_EXACT,
+          f"not pinned: {sorted(field_policy._MUNICIPAL_VENDOR_EXACT - pinned)}; "
+          f"not listed: {sorted(pinned - field_policy._MUNICIPAL_VENDOR_EXACT)}")
 
-    # The false-positive guard. 'Shaw' and 'Rogers' are surnames a BC trade business can
-    # carry, so a bare token or substring test would flip a real commercial invoice to
-    # municipal -- dropping its PO and GST checks and blanking its narrative. The
-    # trailing space in the prefix rule is what saves 'Telusys' and 'Rogersville'.
+    # The false-positive guard. 'Shaw', 'Rogers' and 'Bell' are surnames or words a BC
+    # business name can carry, so a bare token or substring test would flip a real
+    # commercial invoice to municipal -- dropping its PO and GST checks and blanking its
+    # narrative. Exact whole-name matching is what saves 'Telusys', 'Rogersville' and
+    # 'Bell Alliance'. The three Bell Alliance spellings are the ones printed on the law-firm
+    # invoice the user supplied as a negative example.
     for name in ("Shaw Plumbing Ltd.", "Robert Shaw", "Rogers Plumbing",
                  "Rogers & Sons Roofing", "Shaw", "Shawn Electric", "Rogersville Waste",
                  "Telusys Consulting", "Shaw Contracting Ltd", "Bob's Plumbing Ltd.",
-                 "City of Vancouver", "FortisBC Energy Inc.", "", "   ", None):
+                 "City of Vancouver", "FortisBC Energy Inc.",
+                 "BELL ALLIANCE LLP", "Bell Alliance LLP", "Bell Alliance", "Bell Plumbing Ltd.",
+                 "Bell Electric", "Campbell Heating", "Bluebell Landscaping", "Robert Bell",
+                 "", "   ", None):
         check(f"{name!r} -> no opinion", override(name) is None, repr(override(name)))
+
+    # EXACT match, not prefix (user requirement, 2026-09-12). Each of these starts with a
+    # listed spelling and would have matched a prefix rule; none is listed, so none matches.
+    # They are not claims that these entities must stay commercial -- if a real bill prints
+    # one, add its normalised spelling to _MUNICIPAL_VENDOR_EXACT and move it up.
+    for name in ("TELUS Business", "Rogers Communications Partnership",
+                 "Shaw Business Solutions", "Bell Canada Enterprises", "Bell Mobility Canada"):
+        check(f"{name!r} -> no opinion (not listed; exact match only)",
+              override(name) is None, repr(override(name)))
 
     # Every vendor spelling the corpus has ever produced for a NON-telecom document --
     # resolved finals and raw twins alike, harvested from out/regress-cache. None of them
@@ -3542,7 +3569,8 @@ def test_telecom_vendor_bill_type_override():
     # replicates, and it is excluded from the allowlist because it is also a surname.
     corpus_vendors = (
         "ABBOTSFORD", "Alpha Integrated Systems", "Alpha Integrated Systems Ltd.",
-        "BC Hydro", "Bonacare Mechanical", "Bonacare Mechanical LTD", "Burnaby",
+        "BC Hydro", "BELL ALLIANCE LLP", "Bell Alliance",
+        "Bonacare Mechanical", "Bonacare Mechanical LTD", "Burnaby",
         "Burnaby Revenue Services", "CAMBIE ROOFING", "CAMBIE ROOFING CONTRACTORS",
         "CAMBIE ROOFING CONTRACTORS LTD.", "Cambie Roofing", "CITY OF ABBOTSFORD",
         "CITY OF SURREY", "CITY OF VANCOUVER", "CentiMark", "CentiMark Ltd",
@@ -3584,10 +3612,13 @@ def test_telecom_vendor_bill_type_override():
           override("Shaw", "Bob's Plumbing Ltd.", None) is None)
     check("no candidates at all -> no opinion", override() is None)
 
-    # One-directional by construction: it can never move a bill INTO the stricter
-    # bucket, so it can never add a critical-field requirement.
+    # It only ever returns municipal or no opinion -- never commercial. That is NOT the same
+    # as only relaxing the critical-field set: the municipal delta (account_number,
+    # invoice_number) differs from the commercial one (po_or_job_number, gst_amount), so a
+    # flipped bill trades two requirements for two others. The TELUS end-to-end case below
+    # pins that.
     check("only ever returns municipal or None",
-          set(filter(None, (override(v) for v in ("TELUS", "Rogers", "Bob's Plumbing"))))
+          set(filter(None, (override(v) for v in ("TELUS", "Rogers", "Bell", "Bob's Plumbing"))))
           == {field_policy.MUNICIPAL})
 
     # End to end: CU says commercial (which is what the analyzer prompt tells it to say
@@ -3616,6 +3647,22 @@ def test_telecom_vendor_bill_type_override():
         check(f"municipal bucket blanks {name}", r["writeValues"][name] == "", repr(r["writeValues"][name]))
     check("bill_type is not reported as defaulted (it was overridden, not absent)",
           "bill_type" not in r["defaultedFields"], str(r["defaultedFields"]))
+
+    # The critical-field SWAP. A telecom bill prints no PO, so in the commercial bucket it
+    # fails B4 on po_or_job_number. Flipped to municipal, the PO is no longer critical but
+    # account_number is: the bill auto-writes only when an account number is read, and
+    # otherwise still routes to review -- for a different field.
+    check("with its account number read, the telecom bill auto-writes",
+          r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+    r = ev({name: value for name, value in fields.items() if name != "account_number_extract"},
+           file_name="260825_telus.pdf")
+    check("without an account number: still municipal",
+          r["policyBucket"] == field_policy.MUNICIPAL, r["policyBucket"])
+    check("without an account number: review, on account_number not the PO",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD
+          and any("account_number" in reason for reason in r["reviewReasons"])
+          and not any("po_or_job_number" in reason for reason in r["reviewReasons"]),
+          f"{r['routingDecision']} {r['reviewReasons']}")
 
     # End to end for the twin-rescue case: the RESOLVED vendor is the bare 'Shaw' that
     # does not match, and the extract twin carries the spelling that does.
@@ -3664,6 +3711,56 @@ def test_telecom_vendor_bill_type_override():
           field_policy.municipal_name_with_prefix("Burnaby", city) == "City of Burnaby")
     check("control: licence_location_address fires on a licence notice",
           field_policy.licence_location_address(city) == "4949 Canada Way")
+
+
+def test_bell_alliance_is_not_a_telecom_vendor():
+    print("\n[bill_type: Bell Alliance, a commercial vendor whose name starts with 'Bell', stays commercial]")
+    override = field_policy.vendor_bill_type_override
+
+    # Negative anchor for the Bell entries of the telecom allowlist (user, 2026-09-12).
+    # Bell Alliance LLP is a law firm; its invoice prints the three spellings below, and its
+    # web/e-mail domain is bellalliance.ca. All three normalise to 'bell alliance', which is
+    # not on _MUNICIPAL_VENDOR_EXACT -- the exact whole-name match is what keeps a vendor
+    # that merely starts with 'Bell' out of the municipal bucket.
+    for name in ("BELL ALLIANCE LLP", "Bell Alliance LLP", "Bell Alliance"):
+        check(f"{name!r} -> no opinion", override(name) is None, repr(override(name)))
+        check(f"{name!r} normalises to 'bell alliance'",
+              field_policy._normalize_vendor(name) == "bell alliance",
+              repr(field_policy._normalize_vendor(name)))
+    check("the printed domain label is 'bellalliance', not the suppressed ISP label 'bell'",
+          field_policy.vendor_domain_labels(
+              "pay online at https://www.bellalliance.ca/payments/general/ "
+              "or e-mail payments@bellalliance.ca") == {"bellalliance"})
+
+    # End to end with the invoice's printed values, when both vendor twins read the firm's
+    # name. The bill keeps the commercial bucket and everything that follows from it: the
+    # written bill_type, the vendor name, the narrative fields, and no override advisory.
+    # A bare 'Bell' from one twin WOULD flip it (the documented residual risk of the bare
+    # 'bell' entry) -- that case is deliberately not pinned here, because it is the failure
+    # this anchor exists to expose, not a behaviour to preserve.
+    page = ('BELL ALLIANCE LLP  Inv #: 114374  Total $490.81\n'
+            'Payment remitted to Bell Alliance for: Inv #: 114374\n'
+            'Cheque #: Payable to "Bell Alliance LLP", sent to our address at the top of this invoice.\n'
+            'pay online at https://www.bellalliance.ca/payments/general/')
+    r = ev_md(commercial_fields(
+        vendor_name_extract=fstr("BELL ALLIANCE LLP", 0.90),
+        vendor_name_generate=fstr("Bell Alliance LLP", 0.90),
+        po_or_job_number_extract=fstr("", None),
+        gst_amount_extract=fnum(21.38, 0.93),
+        total_invoice_amount_extract=fnum(490.81, 0.95),
+        invoice_number_extract=fstr("114374", 0.92),
+        diagnosis_solution=fstr("Reviewed documentation and drafted a resolution.", 0.9),
+    ), page, file_name="260414_bell_alliance")
+    check("Bell Alliance keeps the commercial bucket",
+          r["policyBucket"] == field_policy.COMMERCIAL, r["policyBucket"])
+    check("Bell Alliance writes bill_type commercial",
+          r["writeValues"]["bill_type"] == field_policy.COMMERCIAL, repr(r["writeValues"]["bill_type"]))
+    check("Bell Alliance keeps its vendor name",
+          r["writeValues"]["vendor_name"] == "Bell Alliance LLP", repr(r["writeValues"]["vendor_name"]))
+    check("Bell Alliance keeps its narrative (not blanked as a municipal bill would be)",
+          r["writeValues"]["diagnosis_solution"] != "", repr(r["writeValues"]["diagnosis_solution"]))
+    check("no telecom override advisory on Bell Alliance",
+          not any("booked as municipal" in a for a in r["advisoryFlags"]), str(r["advisoryFlags"]))
 
 
 def test_literal_null_sentinel_is_not_a_value():
@@ -4167,6 +4264,7 @@ def main():
     test_vendor_domain_corroboration()
     test_commercial_narrative_fields()
     test_telecom_vendor_bill_type_override()
+    test_bell_alliance_is_not_a_telecom_vendor()
     test_literal_null_sentinel_is_not_a_value()
     test_collapsed_billing_period_extracts_are_discarded()
 

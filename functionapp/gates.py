@@ -521,7 +521,7 @@ def evaluate(
         if _final[3]:
             advisory.append(_final[3])
 
-    # Noble books its telecom/cable accounts (Telus, Rogers) as municipal -- a booking
+    # Noble books its telecom/cable accounts (Telus, Rogers, Bell) as municipal -- a booking
     # policy no classifier can read off the page. The analyzer prompt in fact says the
     # opposite in as many words ("private telecom, internet, and phone companies" are
     # listed as commercial), and both samples were measured classifying 'commercial' on

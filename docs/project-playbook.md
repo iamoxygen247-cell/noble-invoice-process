@@ -137,12 +137,15 @@ Otherwise changing a field policy silently changes the type determination, and t
 become impossible to separate.
 
 The allowlist carve-out exists because some type decisions are *booking policy*, not something
-readable off the page: Noble books its telecom/cable accounts (Telus, Rogers) as municipal, and no
-classifier can know that — the analyzer prompt in fact classifies telecom as commercial in as many
-words. `field_policy.vendor_bill_type_override` encodes it against the resolved `vendor_name`.
-Two properties keep it from eroding the rule: it is **one-directional** (it can only relax the
-bucket, never tighten it, so it can never *add* a critical-field requirement), and it reads a field
-**value**, not a field's presence — so the feedback loop the rule guards against stays closed.
+readable off the page: Noble books its telecom/cable accounts (Telus, Rogers, Bell) as municipal, and
+no classifier can know that — the analyzer prompt in fact classifies telecom as commercial in as many
+words. `field_policy.vendor_bill_type_override` encodes it as an **exact** whole-name match against
+the resolved `vendor_name` **and both raw vendor twins** (any one matching is enough). Two properties
+keep it from eroding the rule: it is **one-directional** in label (it only ever returns `municipal`,
+never `commercial`), and it reads a field **value**, not a field's presence — so the feedback loop
+the rule guards against stays closed. One-directional does *not* mean it only relaxes the checks:
+the municipal delta (`account_number`, `invoice_number`) differs from the commercial one
+(`po_or_job_number`, `gst_amount`), so a flipped bill trades two critical fields for two others.
 
 ### 2.4 Idempotency, claims, and who owns each write
 

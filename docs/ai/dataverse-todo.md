@@ -73,7 +73,7 @@ still carry the wrong value.
 | DV-5 | Narrative column headroom (ex-C4, closes stage D1) | mitigated, see below |
 | DV-6 | Refresh the stale `warranty` contract in `power-automate-design.html` | **now** — semantics changed tonight |
 | DV-7 | `account_number` is now written with an `Account No: ` label | **now** — column width + is the label wanted in the data at all |
-| DV-10 | Telecom bills (Telus, Rogers/Shaw) now write `bill_type = municipal` | **informational** — value change in a live column, no backfill |
+| DV-10 | Telecom bills (Telus, Rogers/Shaw, Bell) now write `bill_type = municipal` | **informational** — value change in a live column, no backfill |
 | DV-12 | `property_surrey`: an invented `number_of_days = 1` survives and the correct `billing_period_start_date` is blanked (2 of 6 reads) | **deferred** (user, 2026-09-10) — record-only; the flow does not consume either field for property tax |
 
 ---
@@ -262,6 +262,20 @@ examples no longer cover the class:
   Function defaulted it from `fileName`"* — still true, now also reached by telecom bills.
 
 Neither is wrong; both would mislead a reader trying to predict which documents blank narratives.
+
+**Update 2026-09-13 (`commercial-narrative-v23`) — Bell joins the class, and matching becomes exact.**
+
+- **Bell.** `bell`, `bell canada`, `bell mts` and `bell mobility` were added to the allowlist (user
+  list). The same five columns change for Bell invoices as for Telus and Rogers.
+- **Exact matching.** The allowlist is now an exact whole-name match, not a prefix match. An
+  unlisted variant (e.g. `TELUS Business`) now writes `commercial`.
+- **Coverage.** No Bell telecom bill has been through CU yet — see open-defects C7.
+- **Cut-over date.** This is *as recorded, not verified against the live app*. The allowlist first
+  appears in git at `dfa013a`, after the last recorded prod watermark `23c36a9` (2026-08-26). If
+  nothing was deployed since, Telus, Rogers/Shaw and Bell all cut over together on the next deploy,
+  so anyone reporting on `bill_type` needs that one date, not two.
+- **Ledger.** The same flip changes the ledger's `BillType` and `PolicyBucket` columns for these rows
+  (`functionapp/function_app.py`, the ledger stamp), not only the Dataverse record.
 
 ### DV-8 — `sub_bill_type` gains a new value, `propertytax`
 

@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v22"
+POLICY_VERSION = "commercial-narrative-v23"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -848,41 +848,49 @@ def vendor_twins_agree(extract_value: Any, generate_value: Any) -> bool:
 
 
 # Billers Noble books as municipal utility accounts although they are private companies:
-# its telecom/cable accounts. Two billers -- Telus and Rogers -- but Rogers still BILLS
-# under the Shaw brands it acquired, so the Shaw trading names are Rogers spellings here,
-# not a third biller. Measured: the Rogers sample resolves to 'Shaw Cablesystems' on 5 of
-# 5 replicates (its payment slip prints "make your cheque payable to Shaw Cablesystems",
-# and the vendor_name_extract prompt reads the payable-to line first), so dropping the
-# Shaw spellings would miss the very document this rule exists for.
+# its telecom/cable accounts. Three billers -- Telus, Rogers and Bell -- but Rogers still
+# BILLS under the Shaw brands it acquired, so the Shaw trading names are Rogers spellings
+# here, not a fourth biller. Measured: the Rogers sample resolves to 'Shaw Cablesystems'
+# (its payment slip prints "make your cheque payable to Shaw Cablesystems", and the
+# vendor_name_extract prompt reads the payable-to line first), so dropping the Shaw
+# spellings would miss the very document this rule exists for.
 #
-# Matched as a WHOLE normalised name or a word-boundary PREFIX of one, never a bare token
-# or a substring. The prefix form is required because one biller routinely yields several
-# spellings that normalise differently -- FortisBC appears in the corpus cache as four
-# ('fortisbc energy', 'fortisbc natural gas', 'fortisbc', 'fortisbc energy inc does
-# business as fortisbc') and its sidecar records the resolved value flipping run to run.
-# The trailing space is what keeps the prefix safe: 'telusys consulting' and
-# 'rogersville waste' do not start with 'telus ' / 'rogers '.
+# EXACT whole-name match on the normalised name, never a prefix, token or substring (user
+# requirement, 2026-09-12). An unlisted variant -- 'TELUS Business', 'Rogers Communications
+# Partnership', 'Shaw Business Solutions', 'Bell Canada Enterprises', 'Bell Aliant' --
+# misses by design and leaves the bill commercial, which on a telecom bill with no PO read
+# routes to review. Adding a spelling a real bill prints is a one-string fix. Exact match is
+# also what keeps surnames out: a bare 'shaw' is deliberately absent ('Shaw Plumbing Ltd.'),
+# and 'rogers' / 'bell' match only a vendor whose WHOLE normalised name is that word.
+# 'Bell Alliance LLP', a commercial law-firm invoice kept as a negative example, normalises
+# to 'bell alliance' and does not match.
 #
-# A bare 'shaw' is deliberately absent, and 'rogers' is exact-match only: both are
-# surnames a BC trade business can carry ('Shaw Plumbing Ltd.'), and flipping such an
-# invoice to municipal would drop its PO and GST checks and blank its narrative fields.
-# A spelling not covered here simply misses, leaving the bill commercial -- the safe
-# direction, and a one-string fix.
+# The Telus and Rogers entries are the user's list (2026-09-13). It drops four spellings the
+# earlier prefix rule matched -- 'rogers business together with shaw', 'rogers together with
+# shaw', 'shaw business', 'shaw cablesystems g p' -- and the corpus still passes 1146 of 1146
+# checks with it. No Bell TELECOM bill has ever been through CU: the Bell entries are the user's list, unverified
+# against a real Bell bill, and the corpus sweep (53 documents) cannot show whether they fire.
 #
-# Measured over all 3,350 cached corpus reads, with the twin-OR candidate set the caller
-# actually passes (resolved final + both raw twins): exactly 10 match, and all 10 are the
-# two telecom anchors themselves ('TELUS Communications Inc.' 5x, 'Shaw Cablesystems' 5x).
-# Reading the twins as well as the resolved value added no false positive -- no raw twin
-# of the other 36 documents matches either. test_telecom_vendor_bill_type_override pins
-# that offline against the full harvested vendor list, which includes the bare 'Shaw' the
-# Rogers generate twin returns: alone it must NOT match, and the document is carried by
-# its 'Shaw Cablesystems' extract twin instead.
-_MUNICIPAL_VENDOR_PREFIXES: Tuple[str, ...] = (
-    "telus",
-    "rogers business", "rogers communications", "rogers together with shaw",
-    "shaw cablesystems", "shaw business", "shaw communications",
-)
-_MUNICIPAL_VENDOR_EXACT = frozenset({"rogers"})
+# Residual risk of the bare 'bell' entry. vendor_bill_type_override reads the resolved
+# vendor AND both raw twins, and _normalize_vendor drops legal suffixes, so 'Bell Ltd.' is
+# 'bell', and a commercial vendor whose generate twin shortens 'BELL ALLIANCE LLP' to 'Bell'
+# is flipped to municipal. Probed on that invoice's text with synthetic twins: vendor_name
+# is written 'Bell' (commercial_printed_vendor_name needs a two-word drop, and the domain
+# tiebreak needs the twins to disagree), the narrative columns are blanked, and the bill
+# routes to review on account_number -- unless the wire-transfer 'Account Number' line is
+# read as account_number, in which case it auto-writes. Measured on the corpus anchor
+# 260414_bell_alliance (12 reads, analyzer b5b984bc1a88): no read returned a bare 'Bell', and
+# bill_type stayed commercial on all 12 -- a bound on how often CU shortens the name, not proof
+# that it never does.
+_MUNICIPAL_VENDOR_EXACT = frozenset({
+    # Telus
+    "telus", "telus communications", "telus mobility",
+    # Rogers, and the Shaw brands it still bills under
+    "rogers", "rogers business",  "rogers communications", "rogers communications canada",
+    "shaw cablesystems", "shaw communications",
+    # Bell
+    "bell", "bell canada", "bell mts", "bell mobility",
+})
 
 
 def vendor_bill_type_override(*vendor_values: Any) -> Optional[str]:
@@ -900,23 +908,23 @@ def vendor_bill_type_override(*vendor_values: Any) -> Optional[str]:
     the bill to commercial. A 0.06 margin is well inside CU's documented +-0.3 confidence
     noise. Reading every spelling makes the outcome independent of that tiebreak.
 
-    Same shape as gates.resolve_is_handwritten ("either twin saying yes wins"), and safe
-    for the same reason: a miss is the costly direction, and a twin would have to return
-    a whole telecom brand name for a non-telecom invoice to false-positive.
+    Same shape as gates.resolve_is_handwritten ("either twin saying yes wins"): a miss is
+    the costly direction. The price is that ONE twin is enough to false-positive -- for most
+    entries it would have to return a whole telecom brand name, but the bare 'bell' and
+    'rogers' entries also match a twin that shortened a longer vendor name to that word
+    (see the residual-risk note above _MUNICIPAL_VENDOR_EXACT).
 
-    One-directional by construction: it returns only ``municipal``, never ``commercial``,
-    so it can never move a bill into the stricter bucket and can never ADD a critical-field
-    requirement. See gates.evaluate for where it is applied, and resolve_bucket for the
-    label rule it overrides.
+    It returns only ``municipal``, never ``commercial``. That does NOT mean it can only relax
+    the critical-field set: the municipal delta (account_number, invoice_number) differs from
+    the commercial delta (po_or_job_number, gst_amount), so a flipped bill trades two
+    requirements for two others. See gates.evaluate for where it is applied, and
+    resolve_bucket for the label rule it overrides.
     """
     for vendor_value in vendor_values:
         name = _normalize_vendor(vendor_value)
         if not name:
             continue
-        if name in _MUNICIPAL_VENDOR_EXACT or any(
-            name == prefix or name.startswith(prefix + " ")
-            for prefix in _MUNICIPAL_VENDOR_PREFIXES
-        ):
+        if name in _MUNICIPAL_VENDOR_EXACT:
             return MUNICIPAL
     return None
 

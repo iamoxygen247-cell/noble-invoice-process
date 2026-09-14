@@ -1,0 +1,31 @@
+{
+  "note": "Bell Alliance LLP law-firm invoice -- the NEGATIVE anchor for the Bell entries of the telecom allowlist (user, 2026-09-12). Its name starts with 'Bell', and _MUNICIPAL_VENDOR_EXACT contains a bare 'bell', so this document exists to catch the telecom rule booking a commercial vendor as municipal. Added 2026-09-13 with 12 replicates (analyzer b5b984bc1a88) rather than the default 3, because the corpus re-scores only the reads cached at --add time, and a twin that shortens the name on only some reads needs the larger sample to show up. || MEASURED on all 12 reads: vendor_name_extract 'BELL ALLIANCE LLP' (0.725) and vendor_name_generate 'Bell Alliance' (0.779) -- no read returned a bare 'Bell'. Both normalise to 'bell alliance', which is not on the allowlist, so the vendor rule never fired, bill_type stayed 'commercial' (CU label 0.779-0.878), and no 'booked as municipal' advisory was emitted. If a future re-roll turns bill_type to 'municipal' here, the first thing to check is whether a vendor twin collapsed to 'Bell'. || vendor_name 'Bell Alliance' is printed ('Payment remitted to Bell Alliance for:'); the comparison is case- and legal-suffix-insensitive, so the printed 'BELL ALLIANCE LLP' / 'Bell Alliance LLP' also pass. Deliberately NOT accepted: a bare 'Bell' -- accepting it would bless the misbooking this anchor exists to expose. || routingDecision REVIEW_B4_CRITICAL_FIELD on 12/12, reason po_or_job_number: the commercial bucket makes the PO critical and a law-firm invoice prints none. po_or_job_number '' is a verifiable absence; the printed 'File #: 170573-005' is a matter number, not a PO. || service_address is the client's mailing block ('5816 Kingston Road / Vancouver, BC V6T 1J3'), the only address printed besides the firm's own letterhead; the invoice has no service-address block, and the pipeline writes the bill-to block in its place (stable 12/12). || total_invoice_amount 490.81, gst_amount 21.38, pst_amount 29.93 are the page-2 summary. The previous balance was paid in full (Balance Forward $0.00), so the total is this invoice's own charges. amount_excluding_gst 469.43 verified by arithmetic (490.81 - 21.38), which also equals fees and disbursements 439.50 + PST 29.93. || invoice_number '114374' ('Inv #') and invoice_date 2026-04-14 are printed. payment_due_date 2026-05-15 is the printed 'Overdue Date' (the invoice also says 'Due on Receipt'); the raw field is non-null on 12/12 (confidence 0.49-0.79), so this is a read value, not a today+30 default. || Verifiable absences: folio_number, billing_period_start_date, billing_period_end_date and number_of_days '' (no folio, no service period, no day count printed -- the single '2026-04-01' is a work-entry date); recommendation, recommendation_zh_hant and warranty '' (none printed). sub_bill_type 'other' follows from the commercial rule with no PO. || NOT asserted, measured UNSTABLE across the 12 reads: account_number (the File # '170573-005' on 2 reads, '' on 10 -- the page prints no customer account number; its wire-transfer section's bank account number was never read, 0 of 12), invoice_description (four rewordings of 'professional legal services'), diagnosis_solution and diagnosis_solution_zh_hant (free-text summaries that reword between reads).",
+  "expect": {
+    "routingDecision": "REVIEW_B4_CRITICAL_FIELD",
+    "writeValues": {
+      "vendor_name": "Bell Alliance",
+      "service_address": "5816 Kingston Road Vancouver, BC V6T 1J3",
+      "total_invoice_amount": 490.81,
+      "invoice_date": "2026-04-14",
+      "payment_due_date": "2026-05-15",
+      "invoice_number": "114374",
+      "po_or_job_number": "",
+      "gst_amount": 21.38,
+      "pst_amount": 29.93,
+      "folio_number": "",
+      "bill_type": "commercial",
+      "sub_bill_type": "other",
+      "billing_period_start_date": "",
+      "billing_period_end_date": "",
+      "number_of_days": "",
+      "amount_excluding_gst": 469.43,
+      "recommendation": "",
+      "recommendation_zh_hant": "",
+      "warranty": ""
+    },
+    "fields": {
+      "total_invoice_amount_extract": 490.81,
+      "total_invoice_amount_generate": 490.81
+    }
+  }
+}
