@@ -1,5 +1,5 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Its heading ('# City of Surrey - Utility Bill Information') carries no number, so this bill genuinely has no invoice number and the filename fallback is correct. Guard rail: if the invoice_number prompt ever over-reaches, this goes red. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# City of Surrey - Utility Bill Information') carries no number, so this bill genuinely has no invoice number and the filename fallback is correct. Guard rail: if the invoice_number prompt ever over-reaches, this goes red. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught. || RAW-READING ASSERTIONS REMOVED 2026-09-14 (user authorised, all 54 sidecars): the corpus checks only written values (writeValues) and routingDecision, never a raw CU extract/generate reading. Removed here: total_invoice_amount_extract, total_invoice_amount_generate.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
@@ -25,10 +25,6 @@
       "recommendation_zh_hant": "",
       "warranty": "",
       "folio_number": ""
-    },
-    "fields": {
-      "total_invoice_amount_extract": 401.71,
-      "total_invoice_amount_generate": 401.71
     }
   }
 }

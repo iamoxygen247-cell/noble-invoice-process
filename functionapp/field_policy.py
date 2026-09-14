@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 # --- constants ---------------------------------------------------------------
 
-POLICY_VERSION = "commercial-narrative-v23"
+POLICY_VERSION = "commercial-narrative-v24"
 
 # Critical-field confidence bar (the auto-write threshold). Also used as the
 # reliability bar for date defaulting. Single constant => one place to retune.
@@ -87,12 +87,13 @@ SERVICE_ADDRESS_GENERATE = "service_address_generate"
 SERVICE_ADDRESS_FINAL = "service_address"
 
 # bill_to_address is captured from the customer / Bill To block and twinned like the
-# other fields (extract authoritative, generate validator). It is NOT critical and is
-# NOT written to Dynamics (absent from WRITE_FIELDS): it exists only to backfill
-# service_address when a document carries no SHIP TO / Service Address block at all and
-# addresses the invoice solely to the property manager's Bill To block. gates.evaluate
-# promotes it only when service_address is empty and it is not Noble's own head office
-# (see is_noble_office_address).
+# other fields (extract authoritative, generate validator). It is NOT critical. Its main job
+# is to backfill service_address when a document carries no SHIP TO / Service Address block
+# at all and addresses the invoice solely to the property manager's Bill To block.
+# gates.evaluate promotes it only when service_address is empty and it is not Noble's own
+# head office (see is_noble_office_address). It is also written to Dynamics as read, on
+# every bill type and INCLUDING when it is Noble's head office (user requirement, 2026-09-14):
+# the promotion guard protects service_address, not this field.
 BILL_TO_ADDRESS_EXTRACT = "bill_to_address_extract"
 BILL_TO_ADDRESS_GENERATE = "bill_to_address_generate"
 BILL_TO_ADDRESS_FINAL = "bill_to_address"
@@ -147,6 +148,13 @@ ACCOUNT_FINAL = "account_number"
 FOLIO_EXTRACT = "folio_number_extract"
 FOLIO_GENERATE = "folio_number_generate"
 FOLIO_FINAL = "folio_number"
+
+# The PID (BC parcel identifier) of the taxed property (user requirement, 2026-09-14). A lone
+# extract -- no generate twin, so no agreement to resolve -- written as printed, dashes kept
+# ('006-718-591'). Not critical itself, but together with the folio it can set sub_bill_type to
+# propertytax (see propertytax_from_identifiers), which can change routing. Blank on every document
+# that is not a property tax notice, by policy (see build_write_values), like folio_number.
+PID_FINAL = "pid"
 
 # invoice_date is twinned like the identifiers, but unlike the billing-period dates
 # below it IS defaulted: when the twins resolve to nothing usable the write value
@@ -205,6 +213,7 @@ COMMERCIAL_ONLY_FIELDS: Tuple[str, ...] = (
 WRITE_FIELDS: Tuple[str, ...] = (
     "vendor_name",
     "service_address",
+    BILL_TO_ADDRESS_FINAL,
     "total_invoice_amount",
     "invoice_date",
     "payment_due_date",
@@ -214,6 +223,7 @@ WRITE_FIELDS: Tuple[str, ...] = (
     "pst_amount",
     "account_number",
     FOLIO_FINAL,
+    PID_FINAL,
     "bill_type",
     "sub_bill_type",
     "invoice_description",
@@ -1208,6 +1218,42 @@ def propertytax_account_from_folio(
     return " ".join(str(folio).split())
 
 
+def propertytax_from_identifiers(
+    bucket: str,
+    label: Any,
+    folio_passed: bool,
+    pid_value: Any,
+    pid_confidence: Optional[float],
+    threshold: float = THRESHOLD,
+) -> bool:
+    """
+    True when a municipal bill CU labelled ``other`` should be treated as ``propertytax``
+    because CU confidently read BOTH a folio/roll number and a PID from it (user-approved,
+    2026-09-14).
+
+    property_ubc2 (a UBC Services Levy) sits at ~0.78 sub-type confidence, just under
+    SUB_BILL_TYPE_THRESHOLD. On 1 read in 3 on commercial-narrative-v24 both classify twins said
+    'other' and agreed, so 'other' was written -- and the folio, account number and PID
+    followed it -- while the same read had the folio at 0.981 and the PID at 0.989.
+
+    Every condition is load-bearing, measured over the 162 cached v24 corpus reads:
+      * the raw LABEL must be 'other' -- a folio alone also passes on water bills
+        (richmond_water, vancouver_water, delta_water), and on 260521_0024, which CU labels
+        'water' and gates.evaluate later demotes to 'other'. Checking CU's label rather than the
+        resolved sub-type leaves every bill CU labelled anything but 'other' alone;
+      * the folio must PASS its own resolution and the PID must clear the threshold -- a PID was
+        read on 60 tax-notice reads and on none of the 99 non-tax reads.
+    With all of them the rule fires on exactly one corpus read: property_ubc2 r1.
+    """
+    if bucket != MUNICIPAL or not folio_passed:
+        return False
+    if not isinstance(label, str) or label.strip().lower() != SUB_OTHER:
+        return False
+    if not isinstance(pid_value, str) or not pid_value.strip():
+        return False
+    return pid_confidence is not None and pid_confidence >= threshold
+
+
 def propertytax_vendor_rescue(generate_value: Any, text: str) -> Optional[str]:
     """
     The municipality printed on a property tax notice, taken from the vendor GENERATE twin
@@ -2193,7 +2239,7 @@ def build_write_values(
     # CORPORATION" vs the spaced form; "4338 Pandora St\nBurnaby , BC" 2 runs in 10 against
     # the spaced form the other 8). Collapse it so Dynamics gets one stable spelling and the
     # same property groups together across invoices.
-    for name in (VENDOR_FINAL, SERVICE_ADDRESS_FINAL):
+    for name in (VENDOR_FINAL, SERVICE_ADDRESS_FINAL, BILL_TO_ADDRESS_FINAL):
         write[name] = normalize_written_text(write[name])
 
     # An invoice line that prints the number and the date together ('Invoice # / Date:
@@ -2208,8 +2254,9 @@ def build_write_values(
     # fields keep null: they are numeric columns, which reject "".
     # folio_number joins these two: it is null on every document that is not a property tax
     # notice, which is most of them, and Dynamics should receive an empty string rather than
-    # a null for an identifier the document simply does not carry.
-    for name in (PO_FINAL, ACCOUNT_FINAL, FOLIO_FINAL):
+    # a null for an identifier the document simply does not carry. pid follows folio_number, and
+    # bill_to_address is a text column too.
+    for name in (PO_FINAL, ACCOUNT_FINAL, FOLIO_FINAL, PID_FINAL, BILL_TO_ADDRESS_FINAL):
         if write[name] is None or (isinstance(write[name], str) and write[name].strip() == ""):
             write[name] = ""
 
@@ -2283,6 +2330,17 @@ def build_write_values(
         parsed.get(SUB_BILL_TYPE_GENERATE, (None, None))[0],
     )
 
+    # A municipal bill CU labelled 'other' that yielded a confident folio AND a confident PID is a
+    # property tax notice (see propertytax_from_identifiers). Applied before the blanking below so
+    # the folio, PID, account number and gates' critical-field set all follow the corrected label.
+    # gates.evaluate re-checks the same predicate to raise the advisory.
+    pid_value, pid_confidence = parsed.get(PID_FINAL, (None, None))
+    if propertytax_from_identifiers(
+        bucket, sub_value, resolve_field(FOLIO_FINAL, parsed, threshold)[2],
+        pid_value, pid_confidence, threshold,
+    ):
+        write[SUB_BILL_TYPE] = SUB_PROPERTY_TAX
+
     # folio_number is a PROPERTY TAX field and blank on everything else, by policy rather than
     # by trusting the prompt to decline (the same reasoning as the narrative blanking below).
     # The prompt does say "if it is not a property tax notice, return null", and CU disagrees
@@ -2294,9 +2352,11 @@ def build_write_values(
     #     -- an invented value, the generate-twin failure mode this codebase has repeatedly
     #     had to guard in code rather than in prompt wording.
     # Blanking here kills both, deterministically, and makes "" on a non-tax bill an
-    # assertable constant instead of a coin flip.
+    # assertable constant instead of a coin flip. pid is blanked the same way: the requirement
+    # is property tax only.
     if write[SUB_BILL_TYPE] != "propertytax":
         write[FOLIO_FINAL] = ""
+        write[PID_FINAL] = ""
 
     # On a property tax notice the folio IS the account identifier, so it wins whenever the
     # notice prints both (user requirement, 2026-09-09). Applied HERE rather than beside the

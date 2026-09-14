@@ -402,6 +402,12 @@ connection (encrypted at rest, never in run history) rather than in the flow.
      string, `""` on municipal bills) — map each to a **Multiple Lines of Text**
      column sized **1000 / 1000 / 500** so an occasional over-length summary
      cannot fail the row write.
+     Since `commercial-narrative-v24` it also includes `bill_to_address` (the
+     Bill To block as read, `""` when absent, on every bill type) and `pid`
+     (the parcel identifier as printed, e.g. `"006-718-591"`, on a property
+     tax notice; `""` on everything else). A municipal bill CU labels `other`
+     is written as `sub_bill_type` = `propertytax` when CU also read a passing
+     folio and a PID at ≥ 0.73 (an advisory flag records it).
    - any `REVIEW_*` / `REJECT_*` → write the SharePoint review-queue item (the
      approval flow later re-enters the same write action, which adds the row).
    - `alreadyProcessed: true` → do nothing.

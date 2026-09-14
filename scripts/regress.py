@@ -376,22 +376,14 @@ def update_expected(runner: CuRunner, analyzer_hash: str, stem: str, replicates:
             continue
         (proposed_wv.__setitem__(k, v) if ok else unstable.append((k, vals)))
 
-    # The twin fields for total_invoice_amount are the most common bug target;
-    # include them when stable so the scaffold matches the hand-written sidecars.
-    proposed_fields = {}
-    for k in ("total_invoice_amount_extract", "total_invoice_amount_generate"):
-        ok, v, _ = stable(lambda d: {n: (e.get("value") if isinstance(e, dict) else None)
-                                     for n, e in d.get("fields", {}).items()}, k)
-        if ok and v is not None:
-            proposed_fields[k] = v
-
+    # No "fields" block: the corpus checks written values and routing only, never a raw
+    # CU extract/generate reading (user, 2026-09-14).
     sidecar = {
         "note": "REVIEW before trusting: observed values, not yet human-verified. "
                 "Read the PDF, trim to what you have verified, then keep it.",
         "expect": {
             "routingDecision": decisions[0].get("routingDecision"),
             "writeValues": proposed_wv,
-            "fields": proposed_fields,
         },
     }
     out = CORPUS_DIR / f"{stem}.expected.json"

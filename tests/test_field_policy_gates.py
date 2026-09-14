@@ -4233,6 +4233,140 @@ def test_propertytax_account_number_comes_from_the_folio():
           str(r["reviewReasons"]))
 
 
+def test_bill_to_address_is_written():
+    print("\n[field_policy: bill_to_address is written to Dynamics as read]")
+    check("bill_to_address in WRITE_FIELDS", "bill_to_address" in field_policy.WRITE_FIELDS)
+    check("not critical (commercial)", "bill_to_address" not in field_policy.critical_fields("commercial"))
+    check("not critical (municipal)", "bill_to_address" not in field_policy.critical_fields("municipal"))
+
+    # Written alongside a real service_address, with an OCR line break collapsed.
+    r = ev(commercial_fields(
+        bill_to_address_extract=fstr("#307-7480 Gilbert Road\nRichmond BC", 0.90),
+    ))
+    check("bill_to_address written, whitespace collapsed",
+          r["writeValues"]["bill_to_address"] == "#307-7480 Gilbert Road Richmond BC",
+          repr(r["writeValues"].get("bill_to_address")))
+    check("service_address untouched",
+          r["writeValues"]["service_address"] == "123 Main St, Vancouver BC",
+          str(r["writeValues"].get("service_address")))
+    check("routing untouched", r["routingDecision"] == gates.HAPPY_PATH_CANDIDATE, r["routingDecision"])
+
+    # Absent -> "" on both buckets (a text column never receives null).
+    r = ev(commercial_fields())
+    check("absent bill_to_address -> '' (commercial)",
+          r["writeValues"]["bill_to_address"] == "", repr(r["writeValues"].get("bill_to_address")))
+    r = ev(municipal_fields())
+    check("absent bill_to_address -> '' (municipal)",
+          r["writeValues"]["bill_to_address"] == "", repr(r["writeValues"].get("bill_to_address")))
+
+    # Noble's head office in the Bill To block is still written as read (user, 2026-09-14) --
+    # while the service_address guard keeps it out of service_address, unchanged.
+    office = "155 - 13988 Maycrest Way, Richmond, BC V6V 3C3"
+    r = ev(commercial_fields(
+        service_address_extract=fstr("", None),
+        bill_to_address_extract=fstr(office, 0.95),
+    ))
+    check("office Bill To is written to bill_to_address",
+          r["writeValues"]["bill_to_address"] == office, repr(r["writeValues"].get("bill_to_address")))
+    check("office Bill To is still not promoted to service_address",
+          r["resolutions"]["service_address"]["source"] != "bill_to_fallback",
+          str(r["resolutions"].get("service_address")))
+    check("and the empty service_address still routes to review",
+          r["routingDecision"] == gates.REVIEW_B4_CRITICAL_FIELD, r["routingDecision"])
+
+
+def test_pid_is_written_on_property_tax_only():
+    print("\n[field_policy: pid is written on property tax notices only, never critical]")
+    crit = field_policy.critical_fields
+    check("pid in WRITE_FIELDS", "pid" in field_policy.WRITE_FIELDS)
+    check("pid is not a twin field", "pid" not in field_policy.TWIN_FIELDS)
+    for bucket, sub in (("commercial", None), ("municipal", None), ("municipal", "water"),
+                        ("municipal", "propertytax")):
+        check(f"pid not critical ({bucket}, {sub})", "pid" not in crit(bucket, sub))
+
+    tax = dict(
+        sub_bill_type=fstr("propertytax", 0.88),
+        sub_bill_type_generate=fstr("propertytax", 0.88),
+        invoice_number_extract=fstr("2026 PROPERTY TAX", 0.9),
+        folio_number_extract=fstr("328-314-00-0", 0.91),
+        folio_number_generate=fstr("328-314-00-0", 0.88),
+    )
+
+    r = ev(municipal_fields(**dict(tax, pid=fstr("006-718-591", 0.95))))
+    check("pid written on a property tax notice",
+          r["writeValues"]["pid"] == "006-718-591", repr(r["writeValues"].get("pid")))
+    with_pid = r["routingDecision"]
+
+    # Written regardless of confidence -- it is informational and never gates.
+    r = ev(municipal_fields(**dict(tax, pid=fstr("006-718-591", 0.40))))
+    check("a below-bar pid is still written",
+          r["writeValues"]["pid"] == "006-718-591", repr(r["writeValues"].get("pid")))
+    check("and is not a review reason",
+          not any("pid" in x for x in r["reviewReasons"]), str(r["reviewReasons"]))
+
+    r = ev(municipal_fields(**tax))
+    check("absent pid -> ''", r["writeValues"]["pid"] == "", repr(r["writeValues"].get("pid")))
+    check("a missing pid does not change the routing",
+          r["routingDecision"] == with_pid == gates.HAPPY_PATH_CANDIDATE,
+          f"{r['routingDecision']} vs {with_pid}")
+
+    # Any other document -> blank by policy, even when CU returned a value.
+    r = ev(municipal_fields(
+        sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9),
+        pid=fstr("006-718-591", 0.95),
+    ))
+    check("pid blanked on a water bill", r["writeValues"]["pid"] == "", repr(r["writeValues"].get("pid")))
+    r = ev(commercial_fields(pid=fstr("006-718-591", 0.95)))
+    check("pid blanked on a commercial invoice",
+          r["writeValues"]["pid"] == "", repr(r["writeValues"].get("pid")))
+
+
+def test_propertytax_from_folio_and_pid():
+    print("\n[field_policy: a municipal 'other' with a confident folio AND PID is property tax]")
+    pick = field_policy.propertytax_from_identifiers
+    M, C = field_policy.MUNICIPAL, field_policy.COMMERCIAL
+    check("fires: municipal + 'other' + passing folio + confident pid",
+          pick(M, "other", True, "030-002-877", 0.989))
+    check("not on a commercial invoice", not pick(C, "other", True, "030-002-877", 0.989))
+    check("not when CU labelled it water", not pick(M, "water", True, "030-002-877", 0.989))
+    check("not without a label", not pick(M, None, True, "030-002-877", 0.989))
+    check("not when the folio failed", not pick(M, "other", False, "030-002-877", 0.989))
+    check("not without a pid", not pick(M, "other", True, "", 0.989))
+    check("not with a below-bar pid", not pick(M, "other", True, "030-002-877", 0.50))
+
+    # property_ubc2 r1: both classify twins 'other' at 0.780, folio 0.981, PID 0.989.
+    ubc2 = municipal_fields(
+        sub_bill_type=fstr("other", 0.780),
+        sub_bill_type_generate=fstr("other", 0.780),
+        account_number_extract=fstr("CST-20000015", 0.823),
+        account_number_generate=fstr("CST-20000015", 0.731),
+        folio_number_extract=fstr("01060018", 0.981),
+        folio_number_generate=fstr("01060018", 0.862),
+        pid=fstr("030-002-877", 0.989),
+    )
+    r = ev(ubc2)
+    check("ubc2 r1 -> sub_bill_type propertytax",
+          r["writeValues"]["sub_bill_type"] == "propertytax", str(r["writeValues"].get("sub_bill_type")))
+    check("and the folio, pid and bare account number follow",
+          (r["writeValues"]["folio_number"], r["writeValues"]["pid"], r["writeValues"]["account_number"])
+          == ("01060018", "030-002-877", "01060018"),
+          str({k: r["writeValues"].get(k) for k in ("folio_number", "pid", "account_number")}))
+    check("advisory raised",
+          any("sub_bill_type set to 'propertytax'" in a for a in r["advisoryFlags"]),
+          str(r["advisoryFlags"]))
+
+    # Same read without the PID -> unchanged (CU's 'other' stands, nothing property-tax written).
+    r = ev(dict(ubc2, pid=fstr("", None)))
+    check("without a pid the label stands",
+          r["writeValues"]["sub_bill_type"] == "other", str(r["writeValues"].get("sub_bill_type")))
+    check("and no advisory", not any("sub_bill_type set to" in a for a in r["advisoryFlags"]))
+
+    # A water bill with a folio and a PID is never relabelled.
+    r = ev(dict(ubc2, sub_bill_type=fstr("water", 0.9), sub_bill_type_generate=fstr("water", 0.9)))
+    check("a labelled water bill is untouched",
+          r["writeValues"]["sub_bill_type"] != "propertytax", str(r["writeValues"].get("sub_bill_type")))
+
+
 def main():
     test_policy_constants_and_buckets()
     test_field_format_rules()
@@ -4253,6 +4387,9 @@ def main():
     test_account_number_twin()
     test_folio_number_is_critical_only_on_property_tax()
     test_propertytax_account_number_comes_from_the_folio()
+    test_bill_to_address_is_written()
+    test_pid_is_written_on_property_tax_only()
+    test_propertytax_from_folio_and_pid()
     test_invoice_number_twin()
     test_invoice_number_filename_fallback()
     test_sub_bill_type()

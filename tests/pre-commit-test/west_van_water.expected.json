@@ -1,8 +1,9 @@
 {
-  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || vendor_name is NOT asserted: the resolved value alternates between 'DISTRICT OF WEST VANCOUVER' and 'District of West Vancouver' -- the same correct vendor in two casings, observed on the UNMODIFIED HEAD analyzer as well (live control 2026-08-17). Casing-only variance is not assertable under exact string comparison. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught.",
+  "note": "Municipal water baseline; full municipal critical set. Its heading ('# METERED UTILITY STATEMENT') carries no number, so the filename fallback is correct. Guard rail: an over-eager invoice_number prompt once returned the heading text 'METERED UTILITIES' here, which this assertion catches. || NOT asserted here: invoice_description. || Narrative fields (diagnosis_solution, diagnosis_solution_zh_hant, recommendation, recommendation_zh_hant, warranty) are asserted '' by design: build_write_values blanks all five for the municipal bucket, so these are the live counterpart of the offline bucket-gate test -- a non-empty value here means the gate broke, or bill_type misclassified this bill as commercial. || vendor_name is NOT asserted: the resolved value alternates between 'DISTRICT OF WEST VANCOUVER' and 'District of West Vancouver' -- the same correct vendor in two casings, observed on the UNMODIFIED HEAD analyzer as well (live control 2026-08-17). Casing-only variance is not assertable under exact string comparison. || folio_number ADDED 2026-09-09 with the new folio twins (commercial-narrative-v20). It is a critical field on property tax notices only (field_policy.PROPERTYTAX_DELTA), and is asserted on every sidecar -- the value on a tax notice, \"\" everywhere else -- so a regression that starts populating it on ordinary invoices is caught. || RAW-READING ASSERTIONS REMOVED 2026-09-14 (user authorised, all 54 sidecars): the corpus checks only written values (writeValues) and routingDecision, never a raw CU extract/generate reading. Removed here: total_invoice_amount_extract, total_invoice_amount_generate. || vendor_name ASSERTED 2026-09-14 (user: vendor_name is critical and must be in every sidecar), as 'District of West Vancouver'. Supersedes the 'vendor_name NOT asserted' entries above: 'District of West Vancouver' on 169 of 169 cached reads; the 'DISTRICT OF WEST VANCOUVER' casing named above also passes, because the vendor compare ignores case.",
   "expect": {
     "routingDecision": "HAPPY_PATH_CANDIDATE",
     "writeValues": {
+      "vendor_name": "District of West Vancouver",
       "service_address": "2487 WESTHILL COURT",
       "total_invoice_amount": 598.82,
       "invoice_date": "2026-03-31",
@@ -24,10 +25,6 @@
       "recommendation_zh_hant": "",
       "warranty": "",
       "folio_number": ""
-    },
-    "fields": {
-      "total_invoice_amount_extract": 598.82,
-      "total_invoice_amount_generate": 598.82
     }
   }
 }

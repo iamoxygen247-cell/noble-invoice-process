@@ -255,7 +255,7 @@ resolves them:
 |---|---|---|
 | **Combine** | `vendor_name` | either twin clearing the bar can satisfy the requirement; code computes the final |
 | **Validator** | `service_address` | extract is authoritative; the generate value is *never written*, it can only rescue a below-threshold extract when the two agree |
-| **Backfill** | `bill_to_address` | not critical, not written; exists solely to fill another field when the document lacks that block |
+| **Backfill** | `bill_to_address` | not critical; fills another field when the document lacks that block, and since 2026-09-14 is also written as read |
 
 **Rule.** Decide per field whether the second opinion is a *peer*, a *validator*, or a
 *fallback source*, and write it in the constants block. "We have two values" is not a design.

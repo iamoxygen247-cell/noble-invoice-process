@@ -1414,7 +1414,9 @@ critical-field gate sends the doc to review.
 **Fix (code + prompt, additive):** a new **twinned** `bill_to_address` field
 (`bill_to_address_extract` / `bill_to_address_generate`) captures the Bill To block. It is
 **internal-only** — registered in `field_policy.TWIN_FIELDS` and `gates.FIELD_PRINT_ORDER`
-but **not** in `WRITE_FIELDS` (no Dynamics/Dataverse column). A code rescue in
+but **not** in `WRITE_FIELDS` (no Dynamics/Dataverse column). *(Superseded 2026-09-14,
+`commercial-narrative-v24`: `bill_to_address` is now in `WRITE_FIELDS` and written as read; see
+`dataverse-todo.md` DV-13.)* A code rescue in
 `gates.evaluate`, placed in the pre-`evaluate_b4` rescue region (alongside the PO / filename /
 billing-start rescues), promotes `bill_to_address` to `service_address` **only when the
 resolved `service_address` is empty** AND the Bill To clears the confidence bar (threshold or

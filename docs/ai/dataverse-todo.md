@@ -68,13 +68,15 @@ still carry the wrong value.
 |---|---|---|
 | DV-1 | Read the invoice table's real column sizes | **now** — an oversized value fails the row write in production |
 | DV-2 | Stamp `Written` + `DynamicsRecordId` back to the ledger after the write | **now** — no audit trail today |
-| DV-3 | Audit which of the 21 `WRITE_FIELDS` the flow actually maps; `pst_amount` is undocumented | **now** — unmapped keys are silently discarded |
+| DV-3 | Audit which of the 24 `WRITE_FIELDS` the flow actually maps; `pst_amount` is undocumented | **now** — unmapped keys are silently discarded |
 | DV-4 | Normalise `vendor_name` / `service_address` before the write | data quality |
 | DV-5 | Narrative column headroom (ex-C4, closes stage D1) | mitigated, see below |
 | DV-6 | Refresh the stale `warranty` contract in `power-automate-design.html` | **now** — semantics changed tonight |
 | DV-7 | `account_number` is now written with an `Account No: ` label | **now** — column width + is the label wanted in the data at all |
 | DV-10 | Telecom bills (Telus, Rogers/Shaw, Bell) now write `bill_type = municipal` | **informational** — value change in a live column, no backfill |
 | DV-12 | `property_surrey`: an invented `number_of_days = 1` survives and the correct `billing_period_start_date` is blanked (2 of 6 reads) | **deferred** (user, 2026-09-10) — record-only; the flow does not consume either field for property tax |
+| DV-13 | `bill_to_address` is a new `WRITE_FIELDS` entry | **before deploy** — needs a column + mapping |
+| DV-14 | `pid` is a new `WRITE_FIELDS` entry (property tax only) | **before deploy** — needs a column + mapping |
 
 ---
 
@@ -119,9 +121,10 @@ rows sit at `Extracted` forever. Costs today:
 never blanks a recorded `DynamicsRecordId`. The flow needs an update action after the Dataverse
 step, mapping the returned row id.
 
-### DV-3 — Which of the 21 `WRITE_FIELDS` are actually mapped?
+### DV-3 — Which of the 24 `WRITE_FIELDS` are actually mapped?
 
-`field_policy.WRITE_FIELDS` carries 21 keys. The design doc documents mapping expressions for 8
+`field_policy.WRITE_FIELDS` carries 24 keys (21 when this was written; `folio_number` in v20,
+`bill_to_address` and `pid` in v24). The design doc documents mapping expressions for 8
 (the billing-period trio and the five narratives). **`pst_amount` appears nowhere in `docs/`** —
 it has been in `WRITE_FIELDS` since 2026-07-13 with no column and no mapping recorded.
 
@@ -361,7 +364,7 @@ invoice).
 
 Four things to settle on the Dynamics side:
 
-1. **A new column is required.** `writeValues` now carries a 22nd key. If the flow maps fields
+1. **A new column is required.** `writeValues` now carries a 22nd key (24 since v24, see DV-13/DV-14). If the flow maps fields
    explicitly, `folio_number` is dropped silently until the mapping is added; if it maps
    dynamically, the write fails on an unknown column. Confirm which, before the deploy.
 2. **It is now IDENTICAL to `account_number` on every property tax notice — decided 2026-09-09.**
@@ -446,6 +449,40 @@ corpus cannot see it.
 **Fix direction, if it is ever needed (not designed or measured):** don't let a count only the
 generate twin read derive the start date, the same rule v22 applies to the correction. That would
 also keep the printed start.
+
+### DV-13 — `bill_to_address` is a new `WRITE_FIELDS` entry
+
+User requirement, 2026-09-14: show the Bill To address in `writeValues`. Code-only
+(`commercial-narrative-v24`); the analyzer already read it, so **no analyzer push**. Not critical,
+no routing effect, no corpus assertion (user, 2026-09-14).
+
+1. **A new column is required** — same explicit-vs-dynamic mapping question as DV-11.1.
+2. **It can be Noble's own head office** (`155 - 13988 Maycrest Way …`), written as read (user,
+   2026-09-14). The guard that keeps the office out of `service_address` is unchanged and does not
+   apply to this field.
+3. **Shape:** free text, whitespace collapsed like `service_address`; `""` when the document has no
+   Bill To block. Width not yet measured.
+
+### DV-14 — `pid` is a new `WRITE_FIELDS` entry
+
+User requirement, 2026-09-14: capture the **PID** (parcel identifier) on property tax notices.
+New lone extract field `pid` in the analyzer (no generate twin), `field_policy.PID_FINAL` in
+`WRITE_FIELDS`. Not critical itself, but together with the folio it can set `sub_bill_type` to
+`propertytax` (item 4), which can change routing. No corpus assertion (user, 2026-09-14). **Needs an
+analyzer push as well as a function deploy**; an old analyzer just yields `""`.
+
+1. **A new column is required** — as DV-11.1.
+2. **Shape:** text, dashes kept as printed (`006-718-591`), so **not numeric** (leading zeros).
+   On the v24 analyzer (`9c65a65caad2`, 3 reads per doc) CU read the PID the OCR shows on 20 of 21
+   corpus tax notices at 0.974–0.992; `property_white_rock` prints none and wrote `""`.
+3. **Empty on every other document, enforced in code**, in the same `build_write_values` block that
+   blanks `folio_number`.
+4. **It can change `sub_bill_type` in the written record** (user-approved 2026-09-14,
+   `field_policy.propertytax_from_identifiers`). A municipal bill CU labels `other` becomes
+   `propertytax` when the folio passes and the PID reads at ≥ 0.73; the folio, PID and bare account
+   number are then written as on any tax notice, and `advisoryFlags` says so. Across the 162 cached
+   v24 corpus reads it changes one read (`property_ubc2` r1, a UBC Services Levy). Records from such
+   bills carry `propertytax` where CU alone would have written `other`.
 
 ---
 

@@ -103,6 +103,7 @@ FIELD_PRINT_ORDER = [
     "folio_number",
     "folio_number_extract",
     "folio_number_generate",
+    "pid",
     "bill_type",
     "sub_bill_type",
     "sub_bill_type_generate",
@@ -565,6 +566,21 @@ def evaluate(
         bucket = field_policy.resolve_bucket(override)
 
     write_values, defaulted = field_policy.build_write_values(parsed, field_threshold)
+
+    # build_write_values set sub_bill_type to propertytax from the folio + PID reads; say so, so
+    # a corrected label is never mistaken for the one CU returned.
+    _sub_label, _sub_conf = parsed.get(field_policy.SUB_BILL_TYPE, (None, None))
+    _pid_value, _pid_conf = parsed.get(field_policy.PID_FINAL, (None, None))
+    if field_policy.propertytax_from_identifiers(
+        bucket, _sub_label, resolutions[field_policy.FOLIO_FINAL][2],
+        _pid_value, _pid_conf, field_threshold,
+    ):
+        advisory.append(
+            f"sub_bill_type set to 'propertytax': CU labelled it {_sub_label!r} "
+            f"(confidence {_sub_conf}), but it read a folio "
+            f"({write_values[field_policy.FOLIO_FINAL]!r}) and a PID ({_pid_value!r} at "
+            f"{_pid_conf:.3f})"
+        )
 
     # bill_type absent from the CU response (defect A9): write the bucket that was actually
     # applied instead of null. `bucket` above already resolved to commercial via the same
