@@ -652,7 +652,7 @@ Every email you receive has at least one PDF attachment, but you can't see insid
 
 <span class="p-lbl">INVOICE:</span> the email is sending one or more invoice-type documents, such as:
 - an invoice, tax or VAT invoice, or bill, including utility, telecom and subscription bills
-- a bill or fee notice from a government body, municipality, utility or strata, such as a business licence fee, permit fee, property tax or utility bill
+- a bill or fee notice from a government body, municipality, utility or strata, such as a business license fee, permit fee, property tax or utility bill
 - a credit note, credit memo or debit note
 - a corrected, duplicate or re-sent invoice, including reminders and forwards that say the invoice is attached
 - a colleague or agent passing a bill on for payment, for example "please arrange payment."
@@ -708,7 +708,7 @@ Apply these in order and stop at the first one that gives a label:
 4. It is a chargeback notice, or it asks for a cost to be charged back to a tenant or owner (for example, "Please charge back the cost to the tenant") &rarr; NOT INVOICE.
 5. It is a record of a payment that has already been made or received, with nothing left to pay (for example, a subject line saying "PAYMENT RECEIVED - here is the invoice for your payment", or an invoice sent to confirm a card charge) &rarr; NOT INVOICE.
 6. It says an invoice is void, cancelled or was sent in error, and doesn't send a corrected invoice or credit note &rarr; UNCERTAIN.
-7. It sends at least one invoice-type document, or asks for a specific bill, fee or invoice to be paid (for example, "Please find attached invoice INV-4471 for $1,250, due October 15", "Please arrange payment for this business licence fee", or "Please see attached" in reply to "Can you send us the invoice for September?") &rarr; INVOICE.
+7. It sends at least one invoice-type document, or asks for a specific bill, fee or invoice to be paid (for example, "Please find attached invoice INV-4471 for $1,250, due October 15", "Please arrange payment for this business license fee", or "Please see attached" in reply to "Can you send us the invoice for September?") &rarr; INVOICE.
 8. It is anything else &rarr; NOT INVOICE.
 
 <span class="p-h">## Output</span>
@@ -758,7 +758,7 @@ Email Body:
         <div class="code">
           <div class="code-bar"><span>JSON output example</span><button type="button" class="btn-copy" id="copy-json" data-copy="json-example">Copy JSON</button></div>
 <pre id="json-example">{
-  "reason": "The body asks the billing team to arrange payment for a business licence fee and the file name ends in Bill.pdf.",
+  "reason": "The body asks the billing team to arrange payment for a business license fee and the file name ends in Bill.pdf.",
   "classification": "INVOICE"
 }</pre>
         </div>
@@ -854,7 +854,7 @@ Email Body:
               <tr><th scope="col">Test email</th><th scope="col">Expected</th><th scope="col">Decision step</th></tr>
             </thead>
             <tbody>
-              <tr><td><span class="who">From a colleague</span>"Please arrange payment for this business licence fee", file name "Ka Ki Catherine Lau - Bill.pdf"</td><td><span class="chip t-ok">INVOICE</span></td><td class="num">7</td></tr>
+              <tr><td><span class="who">From a colleague</span>"Please arrange payment for this business license fee", file name "Ka Ki Catherine Lau - Bill.pdf"</td><td><span class="chip t-ok">INVOICE</span></td><td class="num">7</td></tr>
               <tr><td>"Please find attached invoice INV-4471 for $1,250, due October 15."</td><td><span class="chip t-ok">INVOICE</span></td><td class="num">7</td></tr>
               <tr><td>"Please see attached." above an earlier message asking "Can you send us the invoice for September?"</td><td><span class="chip t-ok">INVOICE</span></td><td class="num">2, 7</td></tr>
               <tr><td>A forward with nothing added, of a vendor email saying "Invoice 553 for landscaping is attached."</td><td><span class="chip t-ok">INVOICE</span></td><td class="num">2, 7</td></tr>
@@ -879,7 +879,7 @@ Email Body:
             <span class="chip t-ok">INVOICE</span>
             <ul>
               <li>Credit notes and debit notes</li>
-              <li>Government, utility and strata bills, such as business licence fees and property taxes</li>
+              <li>Government, utility and strata bills, such as business license fees and property taxes</li>
               <li>A colleague passing a bill on for payment</li>
               <li>Reminders and forwards that say the invoice is attached</li>
             </ul>
