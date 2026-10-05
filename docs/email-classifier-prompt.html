@@ -758,8 +758,9 @@ Email Body:
         <div class="code">
           <div class="code-bar"><span>JSON output example</span><button type="button" class="btn-copy" id="copy-json" data-copy="json-example">Copy JSON</button></div>
 <pre id="json-example">{
-  "reason": "The body asks the billing team to arrange payment for a business license fee and the file name ends in Bill.pdf.",
-  "classification": "INVOICE"
+  "classification": "INVOICE",
+  "reason": "The email explicitly states that an invoice is attached for a specific job order, indicating a new payment obligation requiring processing.",
+  "evidence": "Body: \"Please see attached invoice for job order 11024949.\" Subject references \"Invoice Not Received\" for the HVAC filter replacement job."
 }</pre>
         </div>
       </section>
